@@ -54,6 +54,8 @@ export interface CaptureStats {
   totalReceived: number;
   inBuffer: number;
   bufferCapacity: number;
+  bufferBytes: number;
+  bufferByteCapacity: number;
   drops: number;
   throughputPerSec: number;
 }

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,6 +20,16 @@ pub struct AppState {
     pub buffer: Arc<RingBuffer>,
     pub filter: Arc<RwLock<Option<CompiledFilter>>>,
     pub profiles: Arc<ProfileStore>,
+    /// Whether the user has armed MCP-initiated capture connect.
+    /// Defaults to `false` so an agent cannot kick off a capture
+    /// without an explicit human action in the GUI.
+    mcp_connect_allowed: AtomicBool,
+    /// Reservation flag flipped under `inner.lock()` to make the
+    /// "no current capture, install one" sequence atomic. Distinct
+    /// from `inner.capture.is_some()` because the reserve happens
+    /// before the rdkafka consumer is constructed; if construction
+    /// fails the flag is released.
+    capture_pending: AtomicBool,
     inner: Mutex<Inner>,
 }
 
@@ -37,6 +48,8 @@ impl AppState {
             buffer: Arc::new(RingBuffer::new(DEFAULT_RING_CAPACITY)),
             filter: Arc::new(RwLock::new(None)),
             profiles,
+            mcp_connect_allowed: AtomicBool::new(false),
+            capture_pending: AtomicBool::new(false),
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -47,23 +60,53 @@ impl AppState {
         sr_client: Option<Arc<SchemaRegistryClient>>,
         correlator: Arc<ProtoCorrelator>,
     ) {
-        let mut guard = self.inner.lock();
-        guard.capture = Some(handle);
-        guard.sr_client = sr_client;
-        guard.correlator = Some(correlator);
-        guard.started_at = Some(Instant::now());
+        {
+            let mut guard = self.inner.lock();
+            guard.capture = Some(handle);
+            guard.sr_client = sr_client;
+            guard.correlator = Some(correlator);
+            guard.started_at = Some(Instant::now());
+        }
+        // Slot is now backed by a real handle — clear the starting
+        // reservation so future check-and-claim calls see
+        // `capture.is_some()` instead.
+        self.capture_pending.store(false, Ordering::Release);
     }
 
     pub fn take_capture(&self) -> Option<CaptureHandle> {
-        let mut guard = self.inner.lock();
-        guard.started_at = None;
-        guard.sr_client = None;
-        guard.correlator = None;
-        guard.capture.take()
+        let taken = {
+            let mut guard = self.inner.lock();
+            guard.started_at = None;
+            guard.sr_client = None;
+            guard.correlator = None;
+            guard.capture.take()
+        };
+        self.capture_pending.store(false, Ordering::Release);
+        taken
     }
 
     pub fn is_capturing(&self) -> bool {
-        self.inner.lock().capture.is_some()
+        let has_handle = self.inner.lock().capture.is_some();
+        has_handle || self.capture_pending.load(Ordering::Acquire)
+    }
+
+    /// Atomically reserve the capture slot. Returns `true` if no
+    /// capture is currently running and no other caller has reserved
+    /// the slot. The reservation MUST be cleared by `install()` on
+    /// success or `release_capture_slot()` on failure.
+    pub fn try_claim_capture_slot(&self) -> bool {
+        let already_running = self.inner.lock().capture.is_some();
+        if already_running {
+            return false;
+        }
+        // CAS only succeeds when no other caller is mid-start.
+        self.capture_pending
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn release_capture_slot(&self) {
+        self.capture_pending.store(false, Ordering::Release);
     }
 
     pub fn elapsed_secs(&self) -> f64 {
@@ -71,5 +114,13 @@ impl AppState {
             .lock()
             .started_at
             .map_or(0.0, |started| started.elapsed().as_secs_f64())
+    }
+
+    pub fn mcp_connect_allowed(&self) -> bool {
+        self.mcp_connect_allowed.load(Ordering::Acquire)
+    }
+
+    pub fn set_mcp_connect_allowed(&self, allowed: bool) {
+        self.mcp_connect_allowed.store(allowed, Ordering::Release);
     }
 }

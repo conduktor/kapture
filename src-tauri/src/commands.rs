@@ -118,29 +118,6 @@ fn empty_to_none(value: Option<String>) -> Option<String> {
     value.and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
 }
 
-/// Canonicalise + assert the path points at a regular file. We refuse
-/// directories, sockets, FIFOs, and symlinks pointing nowhere. This
-/// is defence-in-depth on top of OS file permissions: librdkafka opens
-/// the path with the app's effective uid, so a malicious profile
-/// pointing at `/etc/shadow` would otherwise read whatever the OS
-/// allows. Failing fast also gives the user a clearer error than the
-/// `Unable to open` library log.
-fn check_path(field: &str, path: Option<&str>) -> Result<()> {
-    let Some(p) = path else {
-        return Ok(());
-    };
-    let canonical = std::fs::canonicalize(p)
-        .map_err(|err| KaptureError::Config(format!("{field}: cannot resolve `{p}`: {err}")))?;
-    let meta = std::fs::metadata(&canonical)
-        .map_err(|err| KaptureError::Config(format!("{field}: stat `{p}` failed: {err}")))?;
-    if !meta.is_file() {
-        return Err(KaptureError::Config(format!(
-            "{field}: `{p}` is not a regular file"
-        )));
-    }
-    Ok(())
-}
-
 impl AuthArgs {
     fn parse(self) -> Result<AuthConfig> {
         let mechanism = match self.mechanism.to_uppercase().as_str() {
@@ -161,39 +138,7 @@ impl AuthArgs {
         let tls = if self.use_tls {
             let creds = self.tls.unwrap_or_default().into_creds();
             if let Some(t) = &creds {
-                // Reject misleading combinations early so users see
-                // a clear error instead of librdkafka silently
-                // ignoring the misconfiguration.
-                if t.key_password.is_some() && t.key_path.is_none() {
-                    return Err(KaptureError::Config(
-                        "tls.keyPassword set without tls.keyPath — \
-                         librdkafka would ignore the password"
-                            .to_owned(),
-                    ));
-                }
-                if t.cert_path.is_some() && t.key_path.is_none() {
-                    return Err(KaptureError::Config(
-                        "tls.certPath set without tls.keyPath — \
-                         mutual TLS needs both"
-                            .to_owned(),
-                    ));
-                }
-                if t.key_path.is_some() && t.cert_path.is_none() {
-                    return Err(KaptureError::Config(
-                        "tls.keyPath set without tls.certPath — \
-                         mutual TLS needs both"
-                            .to_owned(),
-                    ));
-                }
-                // Validate every cert/key path exists and is a
-                // regular file before passing to librdkafka. This
-                // turns the "/etc/shadow class" defence-in-depth
-                // concern into an explicit failure mode and gives
-                // the user a clearer error than the librdkafka
-                // confused-state log.
-                check_path("tls.caPath", t.ca_path.as_deref())?;
-                check_path("tls.certPath", t.cert_path.as_deref())?;
-                check_path("tls.keyPath", t.key_path.as_deref())?;
+                t.validate_paths().map_err(KaptureError::Config)?;
             }
             creds
         } else {
@@ -219,7 +164,9 @@ pub fn connect(
     schema_registry_url: Option<String>,
     auth: Option<AuthArgs>,
 ) -> Result<ConnectResponse> {
-    if state.is_capturing() {
+    // Atomic claim — prevents the GUI and an MCP agent from starting
+    // two captures concurrently (Codex review #5).
+    if !state.try_claim_capture_slot() {
         return Err(KaptureError::AlreadyCapturing);
     }
     state.buffer.clear();
@@ -403,6 +350,19 @@ pub fn load_profile(state: State<'_, AppState>, name: String) -> Result<LoadedPr
 pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<()> {
     state.profiles.delete(&name)?;
     Ok(())
+}
+
+/// Allow or revoke MCP-initiated `kafka_connect_profile`. Defaults
+/// to revoked at startup; the GUI exposes a toggle so the user must
+/// explicitly arm agent-driven captures.
+#[tauri::command]
+pub fn set_mcp_connect_allowed(state: State<'_, AppState>, allowed: bool) {
+    state.set_mcp_connect_allowed(allowed);
+}
+
+#[tauri::command]
+pub fn mcp_connect_allowed(state: State<'_, AppState>) -> bool {
+    state.mcp_connect_allowed()
 }
 
 #[tauri::command]

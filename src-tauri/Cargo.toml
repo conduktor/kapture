@@ -46,6 +46,7 @@ rmcp = { version = "1.6", features = [
 axum = "0.8"
 tower = "0.5"
 schemars = "1"
+subtle = "2"
 
 [dev-dependencies]
 tempfile = "3"

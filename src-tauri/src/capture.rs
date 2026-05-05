@@ -147,6 +147,47 @@ pub struct TlsCreds {
     pub key_password: Option<String>,
 }
 
+impl TlsCreds {
+    /// Validate every cert / key path: canonicalise, check the path
+    /// resolves and points at a regular file. Same defence-in-depth
+    /// as the Tauri command path; reused by the MCP connect-by-profile
+    /// flow so an agent cannot ask librdkafka to open `/etc/shadow`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable description of the offending field /
+    /// path on the first failure.
+    pub fn validate_paths(&self) -> std::result::Result<(), String> {
+        check_tls_path("tls.caPath", self.ca_path.as_deref())?;
+        check_tls_path("tls.certPath", self.cert_path.as_deref())?;
+        check_tls_path("tls.keyPath", self.key_path.as_deref())?;
+        if self.key_password.is_some() && self.key_path.is_none() {
+            return Err("tls.keyPassword set without tls.keyPath".to_owned());
+        }
+        if self.cert_path.is_some() && self.key_path.is_none() {
+            return Err("tls.certPath set without tls.keyPath".to_owned());
+        }
+        if self.key_path.is_some() && self.cert_path.is_none() {
+            return Err("tls.keyPath set without tls.certPath".to_owned());
+        }
+        Ok(())
+    }
+}
+
+fn check_tls_path(field: &str, path: Option<&str>) -> std::result::Result<(), String> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let canonical =
+        std::fs::canonicalize(p).map_err(|err| format!("{field}: cannot resolve `{p}`: {err}"))?;
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|err| format!("{field}: stat `{p}` failed: {err}"))?;
+    if !meta.is_file() {
+        return Err(format!("{field}: `{p}` is not a regular file"));
+    }
+    Ok(())
+}
+
 impl std::fmt::Debug for TlsCreds {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TlsCreds")

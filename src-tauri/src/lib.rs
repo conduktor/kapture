@@ -39,15 +39,17 @@ pub fn run() {
                     .unwrap_or_else(std::env::temp_dir)
                     .join("io.kapture.app")
             });
-            let store = Arc::new(ProfileStore::open(dir)?);
+            let store = Arc::new(ProfileStore::open(dir.clone())?);
             app.manage(state::AppState::new(store));
 
             // Spawn the MCP server so AI agents can drive Kapture
             // through the standardised protocol. Bound to localhost
-            // only — see `mcp.rs` for the threat model.
+            // only and gated behind a bearer token persisted in
+            // `<config_dir>/mcp-token` — see `mcp.rs` for the
+            // full threat model.
             let mcp_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = mcp::spawn(mcp_handle, mcp::default_port()).await {
+                if let Err(err) = mcp::spawn(mcp_handle, mcp::default_port(), dir).await {
                     eprintln!("failed to start MCP server: {err}");
                 }
             });
@@ -66,6 +68,8 @@ pub fn run() {
             commands::save_profile,
             commands::delete_profile,
             commands::load_profile,
+            commands::set_mcp_connect_allowed,
+            commands::mcp_connect_allowed,
         ])
         .run(tauri::generate_context!());
 

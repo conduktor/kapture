@@ -21,6 +21,8 @@ const INITIAL_STATS: CaptureStats = {
   totalReceived: 0,
   inBuffer: 0,
   bufferCapacity: 100_000,
+  bufferBytes: 0,
+  bufferByteCapacity: 256 * 1024 * 1024,
   drops: 0,
   throughputPerSec: 0,
 };

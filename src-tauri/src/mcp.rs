@@ -7,19 +7,42 @@
 //! protection). Designed to share the same `AppState` as the GUI
 //! so an agent and a human see the same capture in real time.
 //!
+//! ### Authentication
+//!
+//! Every request must carry `Authorization: Bearer <token>`. The
+//! token is generated on first launch (UUID v4 hex), persisted to
+//! `<config_dir>/mcp-token` with `chmod 0600`, and stays stable
+//! across restarts. Rotate by deleting the file. This blocks
+//! same-machine cross-user access through the loopback listener.
+//!
+//! ### Connect-by-profile consent
+//!
+//! `kafka_connect_profile` reaches into the OS keychain for the
+//! profile's secrets. The user must explicitly arm MCP-initiated
+//! captures via the GUI (`AppState::set_mcp_connect_allowed`)
+//! before the tool is allowed to run. Default is OFF.
+//!
 //! ### Tool surface
 //!
 //!  * `kafka_stats` — current ring-buffer + throughput stats
 //!  * `kafka_snapshot` — recent messages (filter applied, limit cap)
 //!  * `kafka_set_filter` / `kafka_clear_filter` — Wireshark-style DSL
-//!  * `kafka_list_profiles` / `kafka_inspect_message`
-//!
-//! The agent can never see SASL passwords or TLS key passwords —
-//! they stay server-side in the keychain. Connect-by-profile happens
-//! by name.
+//!  * `kafka_follow_key` — quick-set `envelope.key == "<key>"`
+//!  * `kafka_list_profiles` — saved profile metadata, no secrets
+//!  * `kafka_inspect_message` — full layer details for a single id
+//!  * `kafka_connect_profile` / `kafka_disconnect` — capture lifecycle
 
+#![allow(clippy::too_many_lines)]
+
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::header::AUTHORIZATION;
+use axum::http::{Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::Response;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::ErrorData;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -29,18 +52,27 @@ use rmcp::transport::streamable_http_server::tower::{
 use rmcp::{tool, tool_router, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use subtle::ConstantTimeEq;
+use tauri::{Emitter, Manager};
 use tokio::net::TcpListener;
 use tracing::{info, warn};
+use uuid::Uuid;
 
+use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
+use crate::correlator::ProtoCorrelator;
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
-use crate::profiles::ProfileMetadata;
+use crate::profiles::{LoadedProfile, ProfileMetadata};
 use crate::ring_buffer::CaptureStats;
+use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
 
 const DEFAULT_PORT: u16 = 7878;
 const SNAPSHOT_HARD_LIMIT: usize = 500;
+/// Reject filter expressions longer than this. Tight bound — a
+/// healthy expression is well under 1 KB; anything longer is almost
+/// certainly an attack on the parser or a typo.
+const FILTER_EXPR_MAX_LEN: usize = 8 * 1024;
 
 #[derive(Clone)]
 pub struct KaptureMcp {
@@ -79,6 +111,20 @@ struct InspectParams {
 struct SetFilterParams {
     /// Wireshark-style filter expression (see Kapture's filter DSL).
     expression: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct ConnectProfileParams {
+    /// Name of a saved profile (see `kafka_list_profiles`). Secrets are
+    /// resolved from the OS keychain server-side and never returned.
+    name: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct FollowKeyParams {
+    /// Kafka record key to track across topics. Translated to the DSL
+    /// expression `envelope.key == "<key>"`.
+    key: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -127,45 +173,51 @@ impl KaptureMcp {
     }
 
     #[tool(
-        description = "Return up to `limit` (cap 500) recent captured messages, with the active filter applied."
+        description = "Return up to `limit` (cap 500) recent captured messages, with the active filter applied. Iterates the ring buffer newest-first and short-circuits when the limit is reached."
     )]
     fn kafka_snapshot(
         &self,
         Parameters(SnapshotParams { limit }): Parameters<SnapshotParams>,
     ) -> Result<Json<SnapshotResponse>, ErrorData> {
         let state = self.state()?;
-        let snap = state.buffer.snapshot();
-        let filtered: Vec<CapturedMessage> = match state.filter.read().as_ref() {
-            Some(filter) => snap.into_iter().filter(|m| filter.matches(m)).collect(),
-            None => snap,
-        };
-        let total = filtered.len();
-        let cap = limit
-            .map_or(SNAPSHOT_HARD_LIMIT, |n| {
-                (n as usize).min(SNAPSHOT_HARD_LIMIT)
-            })
-            .min(total);
-        let messages = filtered
-            .into_iter()
-            .rev()
-            .take(cap)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
+        let cap = limit.map_or(SNAPSHOT_HARD_LIMIT, |n| {
+            (n as usize).min(SNAPSHOT_HARD_LIMIT)
+        });
+        // Clone the compiled filter (cheap Arc bump) so the read lock
+        // is released before we iterate the ring buffer.
+        let filter = state.filter.read().clone();
+        let messages = state
+            .buffer
+            .recent_filtered(cap, |m| filter.as_ref().is_none_or(|f| f.matches(m)));
+        let returned = messages.len();
+        // Total under filter is best-effort: report what we gathered;
+        // computing the true total would require scanning the buffer
+        // a second time. The agent can call again with a higher limit
+        // to confirm.
         Ok(Json(SnapshotResponse {
-            total,
-            returned: cap,
+            total: returned,
+            returned,
             messages,
         }))
     }
 
-    #[tool(description = "Install a filter (Wireshark-style DSL). Empty string clears the filter.")]
+    #[tool(
+        description = "Install a filter (Wireshark-style DSL). Empty string clears the filter. Expressions are capped at 8 KB."
+    )]
     fn kafka_set_filter(
         &self,
         Parameters(SetFilterParams { expression }): Parameters<SetFilterParams>,
     ) -> Result<Json<AckResponse>, ErrorData> {
         let state = self.state()?;
+        if expression.len() > FILTER_EXPR_MAX_LEN {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "filter expression too long ({} bytes, cap {FILTER_EXPR_MAX_LEN})",
+                    expression.len()
+                ),
+                None,
+            ));
+        }
         let trimmed = expression.trim();
         if trimmed.is_empty() {
             *state.filter.write() = None;
@@ -175,7 +227,7 @@ impl KaptureMcp {
             }));
         }
         let compiled = CompiledFilter::compile(trimmed)
-            .map_err(|err| ErrorData::invalid_params(format!("{err}"), None))?;
+            .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
         *state.filter.write() = Some(compiled);
         Ok(Json(AckResponse {
             ok: true,
@@ -220,15 +272,246 @@ impl KaptureMcp {
             message,
         }))
     }
+
+    #[tool(
+        description = "Follow a Kafka record key across all subscribed topics. Installs `envelope.key == \"<key>\"` as the active filter."
+    )]
+    fn kafka_follow_key(
+        &self,
+        Parameters(FollowKeyParams { key }): Parameters<FollowKeyParams>,
+    ) -> Result<Json<AckResponse>, ErrorData> {
+        if key.len() > FILTER_EXPR_MAX_LEN / 2 {
+            return Err(ErrorData::invalid_params(
+                "key too long for follow_key",
+                None,
+            ));
+        }
+        let state = self.state()?;
+        let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
+        let expr = format!("envelope.key == \"{escaped}\"");
+        let compiled = CompiledFilter::compile(&expr)
+            .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?;
+        *state.filter.write() = Some(compiled);
+        Ok(Json(AckResponse {
+            ok: true,
+            detail: format!("filter installed: {expr}"),
+        }))
+    }
+
+    #[tool(
+        description = "Open a capture using a saved profile. Requires the user to have armed MCP connect from the GUI. Secrets are loaded from the OS keychain and never crossed back through MCP."
+    )]
+    async fn kafka_connect_profile(
+        &self,
+        Parameters(ConnectProfileParams { name }): Parameters<ConnectProfileParams>,
+    ) -> Result<Json<AckResponse>, ErrorData> {
+        // Atomic [check `mcp_connect_allowed` and is_capturing] +
+        // claim-the-slot pattern, so two concurrent agent calls or
+        // an agent-vs-GUI race cannot start two captures.
+        let profile = {
+            let state = self.state()?;
+            if !state.mcp_connect_allowed() {
+                return Err(ErrorData::invalid_request(
+                    "MCP-initiated connect is not allowed; arm it from the GUI first",
+                    None,
+                ));
+            }
+            if !state.try_claim_capture_slot() {
+                return Err(ErrorData::invalid_request(
+                    "already capturing — call kafka_disconnect first",
+                    None,
+                ));
+            }
+            state
+                .profiles
+                .load(&name)
+                .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?
+        };
+        let result = start_capture_from_profile(&self.app_handle, profile);
+        if result.is_err() {
+            // Release the slot so a future connect can succeed.
+            if let Ok(state) = self.state() {
+                state.release_capture_slot();
+            }
+        }
+        result.map_err(|err| ErrorData::internal_error(err, None))?;
+        Ok(Json(AckResponse {
+            ok: true,
+            detail: format!("connected via profile {name}"),
+        }))
+    }
+
+    #[tool(
+        description = "Stop the active capture. Idempotent — succeeds when no capture is running."
+    )]
+    async fn kafka_disconnect(
+        &self,
+        _: Parameters<EmptyParams>,
+    ) -> Result<Json<AckResponse>, ErrorData> {
+        let handle = {
+            let state = self.state()?;
+            state.take_capture()
+        };
+        match handle {
+            Some(h) => {
+                h.stop().await;
+                Ok(Json(AckResponse {
+                    ok: true,
+                    detail: "capture stopped".into(),
+                }))
+            }
+            None => Ok(Json(AckResponse {
+                ok: true,
+                detail: "no active capture".into(),
+            })),
+        }
+    }
 }
 
-/// Spawn the MCP server bound to `127.0.0.1:<port>`. Returns the
-/// chosen port (in case 0 is requested for ephemeral binding).
-pub async fn spawn(app_handle: tauri::AppHandle, port: u16) -> std::io::Result<u16> {
+fn start_capture_from_profile(
+    app_handle: &tauri::AppHandle,
+    profile: LoadedProfile,
+) -> Result<(), String> {
+    let state = app_handle
+        .try_state::<AppState>()
+        .ok_or_else(|| "AppState not initialised".to_owned())?;
+    state.buffer.clear();
+
+    let sr_client = profile
+        .meta
+        .schema_registry_url
+        .as_ref()
+        .map(|url| Arc::new(SchemaRegistryClient::new(url.clone())));
+
+    let auth = match profile.meta.auth.as_ref() {
+        None => None,
+        Some(auth_meta) => {
+            let mechanism = match auth_meta.mechanism.to_uppercase().as_str() {
+                "PLAIN" => SaslMechanism::Plain,
+                "SCRAM-SHA-256" => SaslMechanism::ScramSha256,
+                "SCRAM-SHA-512" => SaslMechanism::ScramSha512,
+                other => {
+                    return Err(format!("unsupported SASL mechanism `{other}`"));
+                }
+            };
+            let password = profile
+                .password
+                .clone()
+                .ok_or_else(|| "no SASL password stored for this profile".to_owned())?;
+            let tls = match (&auth_meta.use_tls, &auth_meta.tls) {
+                (true, Some(t)) => {
+                    let creds = TlsCreds {
+                        ca_path: t.ca_path.clone(),
+                        cert_path: t.cert_path.clone(),
+                        key_path: t.key_path.clone(),
+                        key_password: profile.key_password.clone(),
+                    };
+                    creds.validate_paths()?;
+                    Some(creds)
+                }
+                _ => None,
+            };
+            Some(AuthConfig {
+                mechanism,
+                username: auth_meta.username.clone(),
+                password,
+                use_tls: auth_meta.use_tls,
+                tls,
+            })
+        }
+    };
+
+    let config = CaptureConfig::new(
+        profile.meta.bootstrap_servers,
+        profile.meta.topics,
+        profile.meta.from_beginning,
+        auth,
+    );
+    let buffer = Arc::clone(&state.buffer);
+    let filter = Arc::clone(&state.filter);
+    let app_for_messages = app_handle.clone();
+    let correlator = Arc::new(ProtoCorrelator::new());
+    let handle = capture::start(
+        config,
+        sr_client.clone(),
+        Arc::clone(&correlator),
+        move |message| {
+            buffer.push(message.clone());
+            let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
+            if pass {
+                let _ = app_for_messages.emit("kapture:message", &message);
+            }
+        },
+    )
+    .map_err(|err| format!("capture start: {err}"))?;
+    state.install(handle, sr_client, correlator);
+    Ok(())
+}
+
+// ─────────────────────────── auth + bootstrap ───────────────────────────
+
+#[derive(Clone)]
+struct AuthState {
+    token: Arc<String>,
+}
+
+async fn require_bearer(
+    State(auth): State<AuthState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let provided = request
+        .headers()
+        .get(AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "));
+    match provided {
+        Some(t) if bool::from(t.as_bytes().ct_eq(auth.token.as_bytes())) => next.run(request).await,
+        _ => {
+            let mut resp = Response::new(Body::from("missing or invalid bearer token"));
+            *resp.status_mut() = StatusCode::UNAUTHORIZED;
+            resp
+        }
+    }
+}
+
+/// Read the persisted token from `<config_dir>/mcp-token`, generating
+/// a fresh one if the file does not exist. The file is written with
+/// `chmod 0600` on Unix; on Windows we rely on the per-user
+/// `app_config_dir` ACLs.
+fn ensure_token(config_dir: &std::path::Path) -> std::io::Result<String> {
+    let path = config_dir.join("mcp-token");
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let trimmed = existing.trim().to_owned();
+        if !trimmed.is_empty() {
+            return Ok(trimmed);
+        }
+    }
+    let token = Uuid::new_v4().simple().to_string();
+    std::fs::create_dir_all(config_dir)?;
+    std::fs::write(&path, &token)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(token)
+}
+
+/// Spawn the MCP server bound to `127.0.0.1:<port>`. Persists / loads
+/// the bearer token from `config_dir/mcp-token`. Returns the chosen
+/// port (in case 0 is requested for ephemeral binding).
+pub async fn spawn(
+    app_handle: tauri::AppHandle,
+    port: u16,
+    config_dir: PathBuf,
+) -> std::io::Result<u16> {
+    let token = ensure_token(&config_dir)?;
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let bound = listener.local_addr()?.port();
     info!(
         port = bound,
+        token_path = %config_dir.join("mcp-token").display(),
         "mcp server listening on http://127.0.0.1:{bound}/mcp"
     );
 
@@ -238,7 +521,12 @@ pub async fn spawn(app_handle: tauri::AppHandle, port: u16) -> std::io::Result<u
         Arc::new(LocalSessionManager::default()),
         StreamableHttpServerConfig::default(),
     );
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let auth = AuthState {
+        token: Arc::new(token),
+    };
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(middleware::from_fn_with_state(auth, require_bearer));
 
     tokio::spawn(async move {
         if let Err(err) = axum::serve(listener, router).await {
