@@ -21,6 +21,8 @@
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
     "rust:smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example smoke",
     "rust:sr-smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example sr_smoke",
+    "rust:proto-smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example proto_smoke",
+    "librdkafka:build": "cd vendor/librdkafka && mkdir -p build && cd build && cmake .. -DRDKAFKA_BUILD_STATIC=OFF -DRDKAFKA_BUILD_TESTS=OFF -DRDKAFKA_BUILD_EXAMPLES=OFF -DENABLE_LZ4_EXT=OFF -DWITH_CURL=OFF -DWITH_SASL=ON -DWITH_SASL_CYRUS=OFF -DCMAKE_INSTALL_PREFIX=\"$(cd .. && pwd)/install\" && cmake --build . --target install -j",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm rust:fmt && pnpm rust:lint && pnpm rust:test",
     "stack:up": "docker compose up -d",
     "stack:up:redpanda": "docker compose --profile redpanda up -d",

@@ -26,7 +26,7 @@ Wire-compatible with Apache Kafka and any derivative (Redpanda, MSK, Confluent C
 
 ## Quick start
 
-Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82, Docker, `cyrus-sasl` (`brew install cyrus-sasl` on macOS — needed when `librdkafka` is built with SASL).
+Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82, Docker. No system Kafka or SASL package required — Kapture's vendored librdkafka builds with built-in SASL (PLAIN / SCRAM-SHA-256/512 / OAUTHBEARER) and no `libsasl2` runtime dependency.
 
 The dev stack runs **two Kafka clusters side-by-side** so Kapture can be smoke-tested against canonical Apache Kafka and Redpanda in parallel:
 
@@ -36,18 +36,14 @@ The dev stack runs **two Kafka clusters side-by-side** so Kapture can be smoke-t
 | Apache Kafka | `localhost:29092` | `http://localhost:28081` |
 
 ```bash
-# 1. Install JS deps and the Kapture-patched librdkafka
+# 1. Install JS deps and build the Kapture-patched librdkafka
 pnpm install
-# librdkafka is vendored under vendor/librdkafka with a patch that
-# adds rd_kafka_set_proto_hook_cb (per-message protocol context).
-# Build it once into vendor/librdkafka/install:
-cd vendor/librdkafka && mkdir -p build && cd build \
-  && cmake .. -DRDKAFKA_BUILD_STATIC=OFF -DRDKAFKA_BUILD_TESTS=OFF \
-              -DRDKAFKA_BUILD_EXAMPLES=OFF -DENABLE_LZ4_EXT=OFF \
-              -DWITH_CURL=OFF \
-              -DCMAKE_INSTALL_PREFIX="$(cd .. && pwd)/install" \
-  && cmake --build . --target install -j
-cd ../../..
+# librdkafka is vendored under vendor/librdkafka with two Kapture
+# patches: rd_kafka_set_proto_hook_cb (per-message protocol
+# context) and a CMakeLists tweak that lets WITH_SASL_CYRUS=OFF
+# disable the libsasl2 link entirely. The result is a single
+# librdkafka.dylib that needs no system SASL package at runtime.
+pnpm librdkafka:build
 
 # 2. Boot one (or both) local clusters
 pnpm stack:up:redpanda     # Redpanda only
