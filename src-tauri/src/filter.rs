@@ -440,6 +440,30 @@ fn resolve<'a>(path: &[String], message: &'a CapturedMessage) -> Value<'a> {
         "headers" => resolve_header(rest, message),
         "schema" => resolve_schema(rest, message),
         "payload" => resolve_decoded(rest, &message.payload),
+        "fetch" => resolve_fetch(rest, message),
+        _ => Value::Missing,
+    }
+}
+
+#[allow(clippy::cast_lossless)]
+fn resolve_fetch<'a>(rest: &[String], message: &'a CapturedMessage) -> Value<'a> {
+    let Some(field) = rest.first() else {
+        return Value::Missing;
+    };
+    if rest.len() != 1 {
+        return Value::Missing;
+    }
+    let Some(fetch) = &message.fetch else {
+        return Value::Missing;
+    };
+    match field.as_str() {
+        "api_key" => Value::Number(f64::from(fetch.api_key)),
+        "api_version" => Value::Number(f64::from(fetch.api_version)),
+        "api_name" => Value::String(fetch.api_name),
+        "broker_id" => Value::Number(f64::from(fetch.broker_id)),
+        "corr_id" => Value::Number(f64::from(fetch.corr_id)),
+        "response_size" => Value::Number(fetch.response_size as f64),
+        "rtt_ms" => Value::Number(fetch.rtt_ms),
         _ => Value::Missing,
     }
 }
@@ -618,6 +642,15 @@ mod tests {
                 ],
             },
             raw_hex: String::new(),
+            fetch: Some(crate::correlator::FetchMetadata {
+                api_key: 1,
+                api_name: "Fetch",
+                api_version: 11,
+                broker_id: 0,
+                corr_id: 0x12,
+                response_size: 5_711,
+                rtt_ms: 1.7,
+            }),
         }
     }
 
@@ -770,5 +803,30 @@ mod tests {
         // Pest reports `expected ...` lists in its display form. Not
         // brittle on exact wording — just assert it is multi-piece.
         assert!(msg.contains("expected") || msg.contains("syntax"));
+    }
+
+    // --- fetch.* namespace ------------------------------------------------
+
+    #[test]
+    fn fetch_numeric_paths() {
+        assert!(matches("fetch.broker_id == 0"));
+        assert!(matches("fetch.api_version == 11"));
+        assert!(matches("fetch.response_size > 1000"));
+        assert!(!matches("fetch.response_size > 1000000"));
+        assert!(matches("fetch.rtt_ms < 5"));
+        assert!(!matches("fetch.rtt_ms > 100"));
+    }
+
+    #[test]
+    fn fetch_string_paths() {
+        assert!(matches("fetch.api_name == \"Fetch\""));
+        assert!(!matches("fetch.api_name == \"Produce\""));
+    }
+
+    #[test]
+    fn fetch_combined_with_payload() {
+        assert!(matches(
+            "fetch.broker_id == 0 && payload.amount > 1000 && fetch.rtt_ms < 5"
+        ));
     }
 }

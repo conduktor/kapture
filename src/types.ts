@@ -9,6 +9,16 @@ export interface KafkaHeader {
   value: string;
 }
 
+export interface FetchMetadata {
+  apiKey: number;
+  apiName: string;
+  apiVersion: number;
+  brokerId: number;
+  corrId: number;
+  responseSize: number;
+  rttMs: number;
+}
+
 export interface KafkaMessage {
   id: string;
   timestamp: string;
@@ -22,6 +32,7 @@ export interface KafkaMessage {
   headers: KafkaHeader[];
   payload: DecodedValue;
   rawHex: string;
+  fetch: FetchMetadata | null;
 }
 
 export interface AppInfo {

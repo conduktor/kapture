@@ -1,6 +1,7 @@
 mod avro;
 mod capture;
 mod commands;
+mod correlator;
 mod decode;
 mod error;
 mod filter;

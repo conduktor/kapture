@@ -1,3 +1,7 @@
+// `unsafe` is needed in this module to install the FFI proto hook.
+#![allow(unsafe_code)]
+
+use std::ffi::c_void;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,19 +16,32 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::avro;
+use crate::correlator::ProtoCorrelator;
 use crate::decode::{decode_payload, render_hex, DecodedValue};
 use crate::error::{KaptureError, Result};
 use crate::message::{CapturedMessage, KafkaHeader};
+use crate::proto_hook::ProtoHookHandle;
 use crate::schema_registry::{ConfluentEnvelope, ResolvedSchema, SchemaKind, SchemaRegistryClient};
 
 /// Default poll interval. Kafka consumers naturally batch via librdkafka.
 const POLL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// A running capture, owning the consumer task and its stop signal.
-#[derive(Debug)]
 pub struct CaptureHandle {
     stop_tx: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
+    /// Detached on Drop, must outlive the consumer task.
+    proto_hook: Option<ProtoHookHandle>,
+}
+
+impl std::fmt::Debug for CaptureHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `stop_tx` is omitted as it is purely a control channel.
+        f.debug_struct("CaptureHandle")
+            .field("task", &self.task.is_some())
+            .field("proto_hook", &self.proto_hook.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl CaptureHandle {
@@ -32,6 +49,30 @@ impl CaptureHandle {
         let _ = self.stop_tx.send(true);
         if let Some(task) = self.task.take() {
             let _ = task.await;
+        }
+        // Drop the hook *after* the consumer task has stopped polling.
+        // The C callback is detached here; the boxed state is leaked
+        // intentionally to avoid a use-after-free against in-flight
+        // broker-thread invocations (see `proto_hook::HookState`).
+        self.proto_hook = None;
+    }
+}
+
+impl Drop for CaptureHandle {
+    fn drop(&mut self) {
+        // Best-effort teardown for callers that don't await `stop()`:
+        //   - signal the consumer task to exit at its next iteration,
+        //   - abort the task so we don't keep a detached future running
+        //     forever if the watch signal hasn't been observed yet,
+        //   - the `proto_hook` field then drops, detaching the C
+        //     callback (state intentionally leaked, see
+        //     `proto_hook::HookState`).
+        // Any in-flight broker-thread hook call sees a still-valid
+        // opaque pointer and updates the (possibly already-dropped)
+        // `Weak<ProtoCorrelator>`, which no-ops on upgrade failure.
+        let _ = self.stop_tx.send(true);
+        if let Some(task) = self.task.take() {
+            task.abort();
         }
     }
 }
@@ -57,10 +98,12 @@ impl CaptureConfig {
 }
 
 /// Spawn a capture task. Each delivered message is decoded (with optional
-/// schema-registry resolution) and then handed to `on_message`.
+/// schema-registry resolution + proto correlation) and then handed to
+/// `on_message`.
 pub fn start<F>(
     config: CaptureConfig,
     sr_client: Option<Arc<SchemaRegistryClient>>,
+    correlator: Arc<ProtoCorrelator>,
     on_message: F,
 ) -> Result<CaptureHandle>
 where
@@ -93,8 +136,22 @@ where
     let topic_refs: Vec<&str> = config.topics.iter().map(String::as_str).collect();
     consumer.subscribe(&topic_refs)?;
 
+    // Wire the proto hook before subscribing to avoid missing the very
+    // first ApiVersions / Metadata exchanges. The hook updates the
+    // correlator synchronously on the broker thread (see
+    // `proto_hook::proto_hook_trampoline`), so by the time
+    // `consumer.recv()` returns a message the correlator already
+    // reflects the matching Fetch RECV.
+    let rk_ptr: *mut c_void = consumer.client().native_ptr().cast();
+    // SAFETY: `rk_ptr` is the live `rd_kafka_t` produced just above; it
+    // lives for the whole consumer lifetime, which is strictly longer
+    // than the `ProtoHookHandle` (we drop the handle in `stop()` before
+    // the consumer is destroyed).
+    let proto_hook = unsafe { ProtoHookHandle::install(rk_ptr, Arc::clone(&correlator)) };
+
     let (stop_tx, mut stop_rx) = watch::channel(false);
     let on_message = Arc::new(on_message);
+    let correlator_for_task = Arc::clone(&correlator);
 
     let task = tokio::spawn(async move {
         info!(
@@ -114,7 +171,12 @@ where
                 received = tokio::time::timeout(POLL_TIMEOUT, consumer.recv()) => {
                     match received {
                         Ok(Ok(msg)) => {
-                            let captured = to_captured(&msg, sr_client.as_deref()).await;
+                            let captured = to_captured(
+                                &msg,
+                                sr_client.as_deref(),
+                                correlator_for_task.as_ref(),
+                            )
+                            .await;
                             on_message(captured);
                         }
                         Ok(Err(err)) => {
@@ -132,12 +194,14 @@ where
     Ok(CaptureHandle {
         stop_tx,
         task: Some(task),
+        proto_hook: Some(proto_hook),
     })
 }
 
 async fn to_captured<M: Message + Sync>(
     msg: &M,
     sr_client: Option<&SchemaRegistryClient>,
+    correlator: &ProtoCorrelator,
 ) -> CapturedMessage {
     let payload = msg.payload();
     let key = msg
@@ -176,6 +240,8 @@ async fn to_captured<M: Message + Sync>(
         schema_id,
     } = decode_with_registry(payload, sr_client).await;
 
+    let fetch = correlator.lookup(msg.topic(), msg.partition());
+
     CapturedMessage {
         id: Uuid::new_v4().to_string(),
         timestamp,
@@ -189,6 +255,7 @@ async fn to_captured<M: Message + Sync>(
         headers,
         payload: decoded,
         raw_hex,
+        fetch,
     }
 }
 

@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::correlator::FetchMetadata;
 use crate::decode::DecodedValue;
 
 #[derive(Debug, Serialize, Clone)]
@@ -25,4 +26,8 @@ pub struct CapturedMessage {
     pub payload: DecodedValue,
     /// Raw bytes rendered as space-separated hex.
     pub raw_hex: String,
+    /// Approximate Fetch response that brought this message — populated
+    /// when the consumer was created against the Kapture-patched
+    /// librdkafka and the proto correlator is wired in.
+    pub fetch: Option<FetchMetadata>,
 }

@@ -47,6 +47,55 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
         />
         <Field name="size" value={`${message.sizeBytes} bytes`} />
       </Layer>
+      {message.fetch ? (
+        <Layer title={`fetch — ${message.fetch.apiName} v${message.fetch.apiVersion}`}>
+          <Field
+            name="api"
+            value={`${message.fetch.apiName} v${message.fetch.apiVersion}`}
+            expression={equalityExpr("fetch.api_name", {
+              kind: "string",
+              value: message.fetch.apiName,
+            })}
+            onApplyFilter={onApplyFilter}
+          />
+          <Field
+            name="broker_id"
+            value={String(message.fetch.brokerId)}
+            expression={equalityExpr("fetch.broker_id", {
+              kind: "number",
+              value: String(message.fetch.brokerId),
+            })}
+            onApplyFilter={onApplyFilter}
+          />
+          <Field
+            name="corr_id"
+            value={`0x${message.fetch.corrId.toString(16).padStart(8, "0")}`}
+            expression={equalityExpr("fetch.corr_id", {
+              kind: "number",
+              value: String(message.fetch.corrId),
+            })}
+            onApplyFilter={onApplyFilter}
+          />
+          <Field
+            name="response_size"
+            value={`${message.fetch.responseSize.toLocaleString()} bytes`}
+            expression={equalityExpr("fetch.response_size", {
+              kind: "number",
+              value: String(message.fetch.responseSize),
+            })}
+            onApplyFilter={onApplyFilter}
+          />
+          <Field
+            name="rtt_ms"
+            value={`${message.fetch.rttMs.toFixed(2)} ms`}
+            expression={equalityExpr("fetch.rtt_ms", {
+              kind: "number",
+              value: message.fetch.rttMs.toString(),
+            })}
+            onApplyFilter={onApplyFilter}
+          />
+        </Layer>
+      ) : null}
       <Layer title={`headers (${message.headers.length})`}>
         {message.headers.length === 0 ? (
           <span className="muted">no headers</span>

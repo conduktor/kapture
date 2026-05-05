@@ -1,9 +1,14 @@
 //! FFI shim for the Kapture-patched `rd_kafka_set_proto_hook_cb`.
 //!
 //! The hook is installed against a live `rd_kafka_t` after the
-//! consumer has been created. Each protocol frame the broker thread
-//! sends or receives is captured into a `ProtoEvent` and pushed into
-//! the channel given to `install`.
+//! consumer has been created. The C trampoline runs on the librdkafka
+//! broker thread and updates the [`ProtoCorrelator`] **synchronously**
+//! before returning. This guarantees that by the time
+//! `rd_kafka_req_response` finishes dispatching the Fetch response —
+//! which happens on the same broker thread, after our hook returns —
+//! the correlator already holds the freshest `Fetch` metadata. So when
+//! the high-level `consumer.recv()` later returns a message, the
+//! capture loop's `correlator.lookup()` cannot observe a stale state.
 //!
 //! Safety contract: the underlying librdkafka must be the patched
 //! build from `vendor/librdkafka` (see Kapture's docs/spec.md). Without
@@ -11,15 +16,14 @@
 //! binary fails to link.
 
 #![allow(unsafe_code)]
-// The capture pipeline does not yet consume these hooks (next round);
-// the `proto_smoke` example exercises them today.
-#![allow(dead_code)]
 
 use std::ffi::c_void;
 use std::os::raw::{c_double, c_int};
+use std::sync::{Arc, Weak};
 
 use serde::Serialize;
-use tokio::sync::mpsc;
+
+use crate::correlator::ProtoCorrelator;
 
 /// Direction constants matching `rdkafka.h`.
 const PROTO_DIR_SEND: c_int = 0;
@@ -95,9 +99,22 @@ impl ProtoEvent {
 
 /// State shared between the C callback and the Rust side. Lives in a
 /// `Box` whose pointer is the C `opaque`, so the C side can locate it
-/// without keeping a copy of the channel sender.
+/// without any extra indirection. Held by `Weak` so the underlying
+/// `ProtoCorrelator` is owned by the application (e.g. `AppState`) and
+/// drops naturally; the trampoline upgrades the weak ref and no-ops
+/// if the correlator has been released.
+///
+/// IMPORTANT: this state is intentionally **leaked** when the hook is
+/// detached (see [`ProtoHookHandle::Drop`]). librdkafka's setter
+/// installs the new (NULL) callback non-atomically, so a broker
+/// thread already inside `rd_kafka_req_response` could still observe
+/// the previous callback / opaque after we've returned from the
+/// setter. Freeing the box before the in-flight invocation completes
+/// would be a use-after-free. Leaking is bounded — one allocation per
+/// capture session (~24 B + a `Weak` count) — and the `Weak` lets the
+/// real correlator memory drop normally.
 struct HookState {
-    sender: mpsc::UnboundedSender<ProtoEvent>,
+    correlator: Weak<ProtoCorrelator>,
 }
 
 unsafe extern "C" fn proto_hook_trampoline(
@@ -114,16 +131,18 @@ unsafe extern "C" fn proto_hook_trampoline(
     if opaque.is_null() {
         return;
     }
+    // Safety: `opaque` is a `Box::into_raw(HookState)` we passed at
+    // install time. The box is intentionally leaked on detach (see
+    // `Drop` below) so the pointer stays valid for the lifetime of
+    // the process — this avoids the non-atomic detach race in
+    // librdkafka's setter.
     let state = unsafe { &*opaque.cast::<HookState>() };
     let direction = if dir == PROTO_DIR_RECV {
         ProtoDirection::Recv
     } else {
         ProtoDirection::Send
     };
-    // Best-effort send: if the receiver has been dropped (capture
-    // teardown), we silently drop the event — librdkafka is on the
-    // broker thread and must never block.
-    let _ = state.sender.send(ProtoEvent {
+    let event = ProtoEvent {
         direction,
         api_key,
         api_version,
@@ -131,14 +150,26 @@ unsafe extern "C" fn proto_hook_trampoline(
         broker_id,
         payload_size,
         rtt_ms,
-    });
+    };
+    // Run the correlator update inside `catch_unwind` because a panic
+    // unwinding into the C broker thread would be undefined behaviour.
+    // Update is synchronous: by the time librdkafka returns from the
+    // hook and continues parsing the response, the correlator is fresh.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if let Some(correlator) = state.correlator.upgrade() {
+            correlator.record_event(&event);
+        }
+    }));
     debug_assert!(matches!(dir, PROTO_DIR_SEND | PROTO_DIR_RECV));
 }
 
-/// Handle that owns the hook installation. Drop to detach the hook and
-/// free the shared state.
+/// Handle that owns the hook installation. Drop to detach the hook
+/// (the boxed state is intentionally leaked, see [`HookState`]).
 pub struct ProtoHookHandle {
     rk: *mut c_void,
+    /// Held only so install / Drop can move the pointer through; the
+    /// box itself is intentionally never freed by Drop.
+    #[allow(dead_code)]
     state: *mut HookState,
 }
 
@@ -151,15 +182,18 @@ unsafe impl Send for ProtoHookHandle {}
 
 impl ProtoHookHandle {
     /// Install a hook on `rk`. The returned handle owns the C-side
-    /// state; dropping it detaches the hook.
+    /// state pointer; dropping it detaches the hook (and intentionally
+    /// leaks the boxed state — see `HookState` for why).
     ///
     /// # Safety
     /// `rk` must point to a valid `rd_kafka_t` produced by the
     /// Kapture-patched librdkafka. The caller guarantees that `rk`
     /// outlives the returned handle (rdkafka client must not be
     /// destroyed before the handle is dropped).
-    pub unsafe fn install(rk: *mut c_void, sender: mpsc::UnboundedSender<ProtoEvent>) -> Self {
-        let state = Box::into_raw(Box::new(HookState { sender }));
+    pub unsafe fn install(rk: *mut c_void, correlator: Arc<ProtoCorrelator>) -> Self {
+        let state = Box::into_raw(Box::new(HookState {
+            correlator: Arc::downgrade(&correlator),
+        }));
         unsafe {
             rd_kafka_set_proto_hook_cb(rk, Some(proto_hook_trampoline), state.cast::<c_void>());
         }
@@ -169,9 +203,19 @@ impl ProtoHookHandle {
 
 impl Drop for ProtoHookHandle {
     fn drop(&mut self) {
+        // Detach the C callback. We intentionally do NOT free the
+        // boxed state: librdkafka's setter is not synchronised with
+        // broker-thread reads, so a hook invocation could already
+        // hold the previous opaque pointer when we return. Leaking
+        // bounds the cost to one small allocation per capture
+        // session, and the `Weak<ProtoCorrelator>` held inside means
+        // the underlying correlator memory drops normally when the
+        // owning `Arc` is released elsewhere.
         unsafe {
             rd_kafka_set_proto_hook_cb(self.rk, None, std::ptr::null_mut());
-            drop(Box::from_raw(self.state));
         }
+        // Intentionally do not free `self.state` — see the doc comment
+        // on `HookState`. A use-after-free can occur if we free while
+        // the broker thread is mid-callback with the previous opaque.
     }
 }

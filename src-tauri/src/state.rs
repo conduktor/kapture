@@ -4,6 +4,7 @@ use std::time::Instant;
 use parking_lot::{Mutex, RwLock};
 
 use crate::capture::CaptureHandle;
+use crate::correlator::ProtoCorrelator;
 use crate::filter::CompiledFilter;
 use crate::ring_buffer::RingBuffer;
 use crate::schema_registry::SchemaRegistryClient;
@@ -23,6 +24,7 @@ pub struct AppState {
 struct Inner {
     capture: Option<CaptureHandle>,
     sr_client: Option<Arc<SchemaRegistryClient>>,
+    correlator: Option<Arc<ProtoCorrelator>>,
     started_at: Option<Instant>,
 }
 
@@ -36,10 +38,16 @@ impl AppState {
         }
     }
 
-    pub fn install(&self, handle: CaptureHandle, sr_client: Option<Arc<SchemaRegistryClient>>) {
+    pub fn install(
+        &self,
+        handle: CaptureHandle,
+        sr_client: Option<Arc<SchemaRegistryClient>>,
+        correlator: Arc<ProtoCorrelator>,
+    ) {
         let mut guard = self.inner.lock();
         guard.capture = Some(handle);
         guard.sr_client = sr_client;
+        guard.correlator = Some(correlator);
         guard.started_at = Some(Instant::now());
     }
 
@@ -47,6 +55,7 @@ impl AppState {
         let mut guard = self.inner.lock();
         guard.started_at = None;
         guard.sr_client = None;
+        guard.correlator = None;
         guard.capture.take()
     }
 

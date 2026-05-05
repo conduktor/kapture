@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::info;
 
 use crate::capture::{self, CaptureConfig};
+use crate::correlator::ProtoCorrelator;
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
@@ -63,15 +64,21 @@ pub fn connect(
     let buffer = Arc::clone(&state.buffer);
     let filter = Arc::clone(&state.filter);
     let app_for_messages = app.clone();
-    let handle = capture::start(config, sr_client.clone(), move |message| {
-        buffer.push(message.clone());
-        let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
-        if pass {
-            let _ = app_for_messages.emit("kapture:message", &message);
-        }
-    })?;
+    let correlator = Arc::new(ProtoCorrelator::new());
+    let handle = capture::start(
+        config,
+        sr_client.clone(),
+        Arc::clone(&correlator),
+        move |message| {
+            buffer.push(message.clone());
+            let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
+            if pass {
+                let _ = app_for_messages.emit("kapture:message", &message);
+            }
+        },
+    )?;
 
-    state.install(handle, sr_client);
+    state.install(handle, sr_client, correlator);
     spawn_stats_emitter(&app);
 
     info!(

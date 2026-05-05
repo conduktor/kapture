@@ -95,6 +95,7 @@ mod tests {
                 length: 0,
             },
             raw_hex: String::new(),
+            fetch: None,
         }
     }
 
