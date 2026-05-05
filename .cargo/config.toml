@@ -1,0 +1,9 @@
+# Redirect rdkafka-sys's pkg-config lookup to our patched librdkafka
+# install prefix. The patched build adds rd_kafka_conf_set_proto_hook_cb
+# which Kapture uses for per-message protocol context.
+#
+# `relative = true` resolves against the directory containing this file
+# (the kapture repo root), so `vendor/librdkafka/install/...` is the
+# committed dev-stack location.
+[env]
+PKG_CONFIG_PATH = { value = "vendor/librdkafka/install/lib/pkgconfig", relative = true, force = false }

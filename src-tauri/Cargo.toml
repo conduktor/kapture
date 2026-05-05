@@ -19,7 +19,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rdkafka = { version = "0.36", features = ["tokio"] }
+rdkafka = { version = "0.36", default-features = false, features = ["tokio", "dynamic-linking", "libz"] }
 tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
 thiserror = "2"
@@ -36,7 +36,10 @@ apache-avro = "0.17"
 lru = "0.12"
 
 [lints.rust]
-unsafe_code = "forbid"
+# Forbid is too strong: the proto_hook module wraps a C FFI from our
+# patched librdkafka and needs `unsafe`. We deny by default and that
+# module locally allows it with #![allow(unsafe_code)].
+unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
 [lints.clippy]

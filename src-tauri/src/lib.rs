@@ -5,6 +5,7 @@ mod decode;
 mod error;
 mod filter;
 mod message;
+mod proto_hook;
 mod ring_buffer;
 mod schema_registry;
 mod state;
