@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from "react";
 import type { DecodedValue, KafkaMessage } from "../types";
-import { equalityExpr, type PrimitiveLiteral } from "../lib/filterExpr";
+import { equalityExpr, isValidPathSegment, type PrimitiveLiteral } from "../lib/filterExpr";
 
 interface Props {
   message: KafkaMessage | null;
@@ -21,39 +21,29 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
         <Field
           name="topic"
           value={message.topic}
-          onFilter={() => {
-            onApplyFilter(equalityExpr("topic", { kind: "string", value: message.topic }));
-          }}
+          expression={equalityExpr("topic", { kind: "string", value: message.topic })}
+          onApplyFilter={onApplyFilter}
         />
         <Field
           name="partition"
           value={String(message.partition)}
-          onFilter={() => {
-            onApplyFilter(
-              equalityExpr("envelope.partition", {
-                kind: "number",
-                value: String(message.partition),
-              }),
-            );
-          }}
+          expression={equalityExpr("envelope.partition", {
+            kind: "number",
+            value: String(message.partition),
+          })}
+          onApplyFilter={onApplyFilter}
         />
         <Field name="offset" value={String(message.offset)} />
         <Field name="timestamp" value={message.timestamp} />
         <Field
           name="key"
           value={message.key ?? "—"}
-          onFilter={
-            message.key
-              ? () => {
-                  onApplyFilter(
-                    equalityExpr("envelope.key", {
-                      kind: "string",
-                      value: message.key ?? "",
-                    }),
-                  );
-                }
-              : undefined
+          expression={
+            message.key === null
+              ? null
+              : equalityExpr("envelope.key", { kind: "string", value: message.key })
           }
+          onApplyFilter={onApplyFilter}
         />
         <Field name="size" value={`${message.sizeBytes} bytes`} />
       </Layer>
@@ -66,14 +56,18 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
               key={header.key}
               name={header.key}
               value={header.value}
-              onFilter={() => {
-                onApplyFilter(
-                  equalityExpr(`headers.${header.key}`, {
-                    kind: "string",
-                    value: header.value,
-                  }),
-                );
-              }}
+              // Header names containing dots, spaces, or characters outside
+              // the DSL identifier grammar can't be addressed directly —
+              // hide the filter button rather than emit a broken expression.
+              expression={
+                isValidPathSegment(header.key)
+                  ? equalityExpr(`headers.${header.key}`, {
+                      kind: "string",
+                      value: header.value,
+                    })
+                  : null
+              }
+              onApplyFilter={onApplyFilter}
             />
           ))
         )}
@@ -89,14 +83,11 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
           <Field
             name="name"
             value={message.schemaName}
-            onFilter={() => {
-              onApplyFilter(
-                equalityExpr("schema.name", {
-                  kind: "string",
-                  value: message.schemaName ?? "",
-                }),
-              );
-            }}
+            expression={equalityExpr("schema.name", {
+              kind: "string",
+              value: message.schemaName,
+            })}
+            onApplyFilter={onApplyFilter}
           />
         ) : (
           <span className="muted">no schema resolved</span>
@@ -121,17 +112,25 @@ function Layer({ title, children }: { title: string; children: ReactNode }): JSX
 function Field({
   name,
   value,
-  onFilter,
+  expression,
+  onApplyFilter,
 }: {
   name: string;
   value: string;
-  onFilter?: (() => void) | undefined;
+  expression?: string | null;
+  onApplyFilter?: (expression: string) => void;
 }): JSX.Element {
   return (
     <div className="field">
       <span className="field__name">{name}</span>
       <span className="field__value">{value}</span>
-      {onFilter ? <FilterButton onClick={onFilter} /> : null}
+      {expression && onApplyFilter ? (
+        <FilterButton
+          onClick={() => {
+            onApplyFilter(expression);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -162,13 +161,14 @@ function DecodedNode({
   switch (value.kind) {
     case "primitive": {
       const literal: PrimitiveLiteral = { kind: value.type, value: value.value };
+      const expression = value.type === "null" ? null : equalityExpr(basePath, literal);
       return (
         <span className="token-row">
           <span className={`token token--${value.type}`}>{value.value}</span>
-          {value.type !== "null" ? (
+          {expression ? (
             <FilterButton
               onClick={() => {
-                onApplyFilter(equalityExpr(basePath, literal));
+                onApplyFilter(expression);
               }}
             />
           ) : null}
@@ -180,16 +180,27 @@ function DecodedNode({
     case "object":
       return (
         <div className="object">
-          {value.fields.map((field) => (
-            <div key={field.name} className="object__entry">
-              <span className="object__key">{field.name}</span>
-              <DecodedNode
-                value={field.value}
-                basePath={`${basePath}.${field.name}`}
-                onApplyFilter={onApplyFilter}
-              />
-            </div>
-          ))}
+          {value.fields.map((field) => {
+            // JSON object keys are arbitrary strings; only descend with a
+            // filterable path when the segment is grammar-valid. Keys that
+            // contain dots / spaces / quotes still render but without the
+            // filter affordance.
+            const childPath = isValidPathSegment(field.name) ? `${basePath}.${field.name}` : null;
+            return (
+              <div key={field.name} className="object__entry">
+                <span className="object__key">{field.name}</span>
+                {childPath === null ? (
+                  <DecodedDisplayOnly value={field.value} />
+                ) : (
+                  <DecodedNode
+                    value={field.value}
+                    basePath={childPath}
+                    onApplyFilter={onApplyFilter}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       );
     case "array":
@@ -203,6 +214,40 @@ function DecodedNode({
                 basePath={`${basePath}.${index}`}
                 onApplyFilter={onApplyFilter}
               />
+            </div>
+          ))}
+        </div>
+      );
+    default:
+      return ((_: never) => <span className="muted">unknown</span>)(value);
+  }
+}
+
+/** Render-only variant for nodes whose path can't be expressed in the DSL. */
+function DecodedDisplayOnly({ value }: { value: DecodedValue }): JSX.Element {
+  switch (value.kind) {
+    case "primitive":
+      return <span className={`token token--${value.type}`}>{value.value}</span>;
+    case "bytes":
+      return <span className="token token--bytes">{`<${value.length} bytes> ${value.hex}`}</span>;
+    case "object":
+      return (
+        <div className="object">
+          {value.fields.map((field) => (
+            <div key={field.name} className="object__entry">
+              <span className="object__key">{field.name}</span>
+              <DecodedDisplayOnly value={field.value} />
+            </div>
+          ))}
+        </div>
+      );
+    case "array":
+      return (
+        <div className="array">
+          {value.items.map((item, index) => (
+            <div key={index} className="array__entry">
+              <span className="array__idx">[{index}]</span>
+              <DecodedDisplayOnly value={item} />
             </div>
           ))}
         </div>

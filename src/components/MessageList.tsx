@@ -57,6 +57,7 @@ export function MessageList({ messages, selectedId, onSelect, onFollow }: Props)
 }
 
 function MessageRow({
+  ariaAttributes,
   index,
   style,
   messages,
@@ -81,6 +82,9 @@ function MessageRow({
         onFollow(message);
       }}
       title="Click to inspect — double-click to follow this key"
+      aria-posinset={ariaAttributes["aria-posinset"]}
+      aria-setsize={ariaAttributes["aria-setsize"]}
+      role={ariaAttributes.role}
     >
       <span className="msglist__col msglist__col--ts">{message.timestamp}</span>
       <span className="msglist__col msglist__col--topic">{message.topic}</span>

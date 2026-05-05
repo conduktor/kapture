@@ -2,11 +2,14 @@
  * Build filter DSL expressions from UI interactions, escaping strings safely.
  *
  * The grammar lives in `src-tauri/src/filter.pest`. Keep this in sync:
- *   - strings are double-quoted; backslashes and double quotes are escaped
+ *   - strings are double-quoted; backslash, double-quote and control bytes
+ *     are escaped to keep the input single-line and unambiguous
  *   - numbers are emitted as-is
  *   - booleans → `true` / `false`
- *   - null → `<path> != <path>` (no real null literal in grammar; we
- *     approximate as "always false" for null payload values)
+ *   - null is not a first-class literal in the DSL (callers must avoid
+ *     emitting it; this module returns `false` as a defensive no-match)
+ *   - identifier path segments must match the grammar
+ *     (letter-led `[A-Za-z][A-Za-z0-9_-]*` or pure digits for array indices)
  */
 
 export interface PrimitiveLiteral {
@@ -14,8 +17,45 @@ export interface PrimitiveLiteral {
   value: string;
 }
 
+const PATH_SEGMENT_RE = /^(?:[A-Za-z][A-Za-z0-9_-]*|\d+)$/u;
+
+/** True when `segment` parses as a single identifier segment in the DSL. */
+export function isValidPathSegment(segment: string): boolean {
+  return PATH_SEGMENT_RE.test(segment);
+}
+
+/** True when every dotted segment of `path` is grammar-valid. */
+export function isValidPath(path: string): boolean {
+  if (path.length === 0) {
+    return false;
+  }
+  return path.split(".").every(isValidPathSegment);
+}
+
 export function escapeString(raw: string): string {
-  return raw.replace(/\\/gu, "\\\\").replace(/"/gu, '\\"');
+  let out = "";
+  for (const ch of raw) {
+    switch (ch) {
+      case "\\":
+        out += "\\\\";
+        break;
+      case '"':
+        out += '\\"';
+        break;
+      case "\n":
+        out += "\\n";
+        break;
+      case "\r":
+        out += "\\r";
+        break;
+      case "\t":
+        out += "\\t";
+        break;
+      default:
+        out += ch;
+    }
+  }
+  return out;
 }
 
 export function literalToken(literal: PrimitiveLiteral): string {
@@ -27,16 +67,23 @@ export function literalToken(literal: PrimitiveLiteral): string {
     case "boolean":
       return literal.value === "true" ? "true" : "false";
     case "null":
-      // null is not a first-class literal in the DSL; the closest faithful
-      // expression is `<path> != <path>` which is always false.
+      // Defensive only — callers should gate on kind != "null". The DSL has
+      // no null literal; we return an always-false token so a stray call
+      // produces a well-formed (if useless) filter rather than malformed input.
       return "false";
     default:
       return ((_: never): string => "false")(literal.kind);
   }
 }
 
-/** Build `path == literal` (or `path != path` for null). */
-export function equalityExpr(path: string, literal: PrimitiveLiteral): string {
+/**
+ * Build `path == literal`. Returns null if `path` is not valid in the DSL,
+ * so callers can gate the filter UI on a successful build.
+ */
+export function equalityExpr(path: string, literal: PrimitiveLiteral): string | null {
+  if (!isValidPath(path)) {
+    return null;
+  }
   return `${path} == ${literalToken(literal)}`;
 }
 

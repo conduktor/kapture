@@ -40,6 +40,10 @@ function App(): JSX.Element {
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
   const messagesRef = useRef<KafkaMessage[]>([]);
+  // Monotonic generation. Each filter change bumps it; only the latest
+  // generation is allowed to commit set_filter / snapshot results, so a
+  // slow backend round-trip from a stale filter can't overwrite the UI.
+  const filterGenRef = useRef(0);
 
   // Initial: fetch app info
   useEffect(() => {
@@ -89,25 +93,52 @@ function App(): JSX.Element {
     };
   }, [connection.status]);
 
-  // Debounced filter sync to backend.
+  // Debounced filter sync to backend, with a generation guard so concurrent
+  // filter edits cannot let a stale snapshot overwrite a fresher view.
   useEffect(() => {
     const handle = setTimeout(() => {
+      filterGenRef.current += 1;
+      const myGen = filterGenRef.current;
       void (async () => {
         try {
           await invoke("set_filter", { expression: filter });
-          setFilterError(null);
-          // Refresh visible list so previously-buffered messages are
-          // re-evaluated against the new filter.
-          if (connection.status === "connected") {
-            try {
-              const snap = await invoke<KafkaMessage[]>("snapshot");
-              messagesRef.current = snap.slice(-UI_MAX_MESSAGES);
-              setMessages(messagesRef.current);
-            } catch (err) {
-              console.error("snapshot failed", err);
-            }
+          if (myGen !== filterGenRef.current) {
+            return;
           }
+          setFilterError(null);
+          if (connection.status !== "connected") {
+            return;
+          }
+          // Capture any live messages that arrived before snapshot is
+          // requested — they're emitted under the new filter (already set
+          // backend-side) and may be missed if the backend snapshot cut
+          // before they were ring-buffered server-side.
+          const inFlightBefore = messagesRef.current.slice();
+          let snap: KafkaMessage[];
+          try {
+            snap = await invoke<KafkaMessage[]>("snapshot");
+          } catch (err) {
+            console.error("snapshot failed", err);
+            return;
+          }
+          if (myGen !== filterGenRef.current) {
+            return;
+          }
+          // Merge: the snapshot is authoritative for the past; anything
+          // received locally after `inFlightBefore` was captured is
+          // appended (deduplicated by id). This protects against the
+          // narrow race where a live event lands between snapshot read
+          // and snapshot delivery.
+          const arrivedDuring = messagesRef.current.slice(inFlightBefore.length);
+          const seen = new Set(snap.map((m) => m.id));
+          const extras = arrivedDuring.filter((m) => !seen.has(m.id));
+          const merged = snap.concat(extras).slice(-UI_MAX_MESSAGES);
+          messagesRef.current = merged;
+          setMessages(merged);
         } catch (err) {
+          if (myGen !== filterGenRef.current) {
+            return;
+          }
           const message = err instanceof Error ? err.message : String(err);
           setFilterError(message);
         }
@@ -185,7 +216,9 @@ function App(): JSX.Element {
   }, []);
 
   const followKey = useCallback((message: KafkaMessage): void => {
-    if (message.key) {
+    // Empty-string keys are valid in Kafka and meaningfully filterable
+    // (envelope.key == "").
+    if (message.key !== null) {
       setFilter(followKeyExpr(message.key));
     }
   }, []);
