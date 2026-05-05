@@ -1,0 +1,4 @@
+[submodule "vendor/librdkafka"]
+	path = vendor/librdkafka
+	url = https://github.com/sderosiaux/librdkafka.git
+	branch = kapture-proto-hook
