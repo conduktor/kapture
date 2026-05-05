@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+
+set -e
+
+# Frontend: ESLint + Prettier on staged files via lint-staged
+pnpm exec lint-staged
+
+# Frontend: full TypeScript type check (cheap, catches cross-file issues)
+pnpm exec tsc --noEmit
+
+# Backend: rustfmt + clippy on entire crate (no staged-only mode for Cargo)
+cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
