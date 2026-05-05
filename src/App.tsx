@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import "./App.css";
@@ -8,6 +8,7 @@ import { LayerTree } from "./components/LayerTree";
 import { HexDump } from "./components/HexDump";
 import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
 const DEFAULT_BOOTSTRAP = "localhost:19092";
@@ -179,6 +180,16 @@ function App(): JSX.Element {
     setSelectedId(null);
   };
 
+  const applyFilter = useCallback((expression: string): void => {
+    setFilter(expression);
+  }, []);
+
+  const followKey = useCallback((message: KafkaMessage): void => {
+    if (message.key) {
+      setFilter(followKeyExpr(message.key));
+    }
+  }, []);
+
   const showDialog = connection.status === "disconnected" || connection.status === "error";
 
   return (
@@ -198,8 +209,13 @@ function App(): JSX.Element {
       />
       <main className="layout">
         <div className="layout__main">
-          <MessageList messages={messages} selectedId={selectedId} onSelect={setSelectedId} />
-          <LayerTree message={selected} />
+          <MessageList
+            messages={messages}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onFollow={followKey}
+          />
+          <LayerTree message={selected} onApplyFilter={applyFilter} />
           <HexDump message={selected} />
         </div>
         <SidePanel appInfo={appInfo} connection={connection} stats={stats} />
