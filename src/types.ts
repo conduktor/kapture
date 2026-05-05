@@ -60,12 +60,20 @@ export interface CaptureStats {
 
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
 
+export interface TlsArgs {
+  caPath: string | null;
+  certPath: string | null;
+  keyPath: string | null;
+  keyPassword: string | null;
+}
+
 export interface AuthArgs {
   mechanism: SaslMechanism;
   username: string;
   password: string;
   /** `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`. */
   useTls: boolean;
+  tls: TlsArgs | null;
 }
 
 export interface ConnectArgs {
@@ -76,12 +84,21 @@ export interface ConnectArgs {
   auth: AuthArgs | null;
 }
 
+export interface ProfileTlsMetadata {
+  caPath: string | null;
+  certPath: string | null;
+  keyPath: string | null;
+  /** True when a TLS key password is stored in the OS keychain. */
+  hasKeyPassword: boolean;
+}
+
 export interface ProfileAuthMetadata {
   mechanism: SaslMechanism;
   username: string;
   useTls: boolean;
   /** True when a password is stored in the OS keychain for this profile. */
   hasPassword: boolean;
+  tls: ProfileTlsMetadata | null;
 }
 
 export interface ProfileMetadata {
@@ -95,6 +112,15 @@ export interface ProfileMetadata {
 
 export interface LoadedProfile extends ProfileMetadata {
   password: string | null;
+  keyPassword: string | null;
+}
+
+export interface SaveProfileTls {
+  caPath: string | null;
+  certPath: string | null;
+  keyPath: string | null;
+  /** `null` to leave any existing keychain TLS key password untouched. */
+  keyPassword: string | null;
 }
 
 export interface SaveProfileAuth {
@@ -103,6 +129,7 @@ export interface SaveProfileAuth {
   useTls: boolean;
   /** `null` to leave any existing keychain password untouched. */
   password: string | null;
+  tls: SaveProfileTls | null;
 }
 
 export interface SaveProfileArgs {

@@ -106,7 +106,7 @@ impl SaslMechanism {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AuthConfig {
     pub mechanism: SaslMechanism,
     pub username: String,
@@ -114,6 +114,51 @@ pub struct AuthConfig {
     /// True when the broker requires TLS (`SASL_SSL`); false for the
     /// plaintext SASL transport (`SASL_PLAINTEXT`).
     pub use_tls: bool,
+    /// Optional TLS / mTLS material. Only meaningful when `use_tls`
+    /// is true. Any subset of fields can be set:
+    /// `ca_path` overrides the system trust store, the cert+key pair
+    /// enables mutual auth, `key_password` decrypts the key file.
+    pub tls: Option<TlsCreds>,
+}
+
+impl std::fmt::Debug for AuthConfig {
+    /// Custom redaction so `Debug` (e.g. via `{:?}` in error
+    /// contexts or future tracing instrumentation) cannot leak the
+    /// SASL password.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("use_tls", &self.use_tls)
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+/// TLS material used when `use_tls` is on. Each field is forwarded
+/// to librdkafka as `ssl.ca.location` / `ssl.certificate.location`
+/// / `ssl.key.location` / `ssl.key.password`.
+#[derive(Clone)]
+pub struct TlsCreds {
+    pub ca_path: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    pub key_password: Option<String>,
+}
+
+impl std::fmt::Debug for TlsCreds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsCreds")
+            .field("ca_path", &self.ca_path)
+            .field("cert_path", &self.cert_path)
+            .field("key_path", &self.key_path)
+            .field(
+                "key_password",
+                &self.key_password.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl CaptureConfig {
@@ -179,6 +224,20 @@ where
             .set("sasl.mechanism", auth.mechanism.label())
             .set("sasl.username", &auth.username)
             .set("sasl.password", &auth.password);
+        if let Some(tls) = &auth.tls {
+            if let Some(p) = &tls.ca_path {
+                client_config.set("ssl.ca.location", p);
+            }
+            if let Some(p) = &tls.cert_path {
+                client_config.set("ssl.certificate.location", p);
+            }
+            if let Some(p) = &tls.key_path {
+                client_config.set("ssl.key.location", p);
+            }
+            if let Some(secret) = &tls.key_password {
+                client_config.set("ssl.key.password", secret);
+            }
+        }
     }
 
     let consumer: StreamConsumer = client_config.create()?;

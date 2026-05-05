@@ -35,6 +35,9 @@ pub enum ProfileError {
     #[error("profile name must be non-empty")]
     EmptyName,
 
+    #[error("profile name `{0}` contains invalid characters (no `/`, `\\`, `:`, NUL, `.`, `..`)")]
+    InvalidName(String),
+
     #[error("unknown profile `{0}`")]
     Unknown(String),
 }
@@ -64,16 +67,49 @@ pub struct AuthMetadata {
     /// profile. Frontend uses this to render a "saved" indicator.
     #[serde(default)]
     pub has_password: bool,
+    /// Optional TLS / mTLS material. Paths are stored in cleartext;
+    /// the key password (if any) lives in the OS keychain alongside
+    /// the SASL password.
+    #[serde(default)]
+    pub tls: Option<TlsMetadata>,
 }
 
-/// Full profile, password resolved from the keychain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsMetadata {
+    pub ca_path: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    /// `true` when a TLS key password is stored in the OS keychain
+    /// for this profile (under a separate keyring entry).
+    #[serde(default)]
+    pub has_key_password: bool,
+}
+
+/// Full profile, secrets resolved from the keychain.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadedProfile {
     #[serde(flatten)]
     pub meta: ProfileMetadata,
-    /// `None` when no password was stored.
+    /// SASL password — `None` when none was stored.
     pub password: Option<String>,
+    /// TLS key password — `None` when none was stored.
+    pub key_password: Option<String>,
+}
+
+impl std::fmt::Debug for LoadedProfile {
+    /// Redact secrets so accidental debug output cannot leak them.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedProfile")
+            .field("meta", &self.meta)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field(
+                "key_password",
+                &self.key_password.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// Snapshot of all profiles on disk. Serialised as JSON.
@@ -123,50 +159,82 @@ impl ProfileStore {
             .cloned()
             .ok_or_else(|| ProfileError::Unknown(name.to_owned()))?;
         let password = if meta.auth.as_ref().is_some_and(|a| a.has_password) {
-            keyring_get(name)?
+            keyring_get(name, KEY_SASL)?
         } else {
             None
         };
-        Ok(LoadedProfile { meta, password })
+        let key_password = if meta
+            .auth
+            .as_ref()
+            .and_then(|a| a.tls.as_ref())
+            .is_some_and(|t| t.has_key_password)
+        {
+            keyring_get(name, KEY_TLS)?
+        } else {
+            None
+        };
+        Ok(LoadedProfile {
+            meta,
+            password,
+            key_password,
+        })
     }
 
     pub fn save(
         &self,
         mut meta: ProfileMetadata,
         password: Option<String>,
+        key_password: Option<String>,
     ) -> Result<ProfileMetadata, ProfileError> {
         let trimmed = meta.name.trim().to_owned();
         if trimmed.is_empty() {
             return Err(ProfileError::EmptyName);
         }
+        // Defence in depth: forbid path-traversal-ish names so the
+        // profile name (used as a JSON key AND as a keychain account
+        // suffix) cannot collide with another profile's slot or
+        // confuse downstream tooling that treats it as a path.
+        if trimmed.contains(['/', '\\', '\0', ':']) || trimmed == "." || trimmed == ".." {
+            return Err(ProfileError::InvalidName(trimmed));
+        }
         trimmed.clone_into(&mut meta.name);
-        // Stash / clear the keychain entry first so we never persist
-        // metadata that claims `has_password = true` without a real
-        // entry behind it.
+
+        // 1) Persist the JSON file FIRST, with the new metadata that
+        //    optimistically reflects whether we'll write a keychain
+        //    entry. If that file write fails, the keychain has not
+        //    been touched yet — no orphans.
         if let Some(auth) = &mut meta.auth {
-            match password {
-                Some(secret) if !secret.is_empty() => {
-                    keyring_set(&trimmed, &secret)?;
-                    auth.has_password = true;
-                }
-                _ => {
-                    keyring_delete(&trimmed).ok();
-                    auth.has_password = false;
-                }
+            auth.has_password = matches!(&password, Some(secret) if !secret.is_empty());
+            if let Some(tls) = &mut auth.tls {
+                tls.has_key_password = matches!(&key_password, Some(secret) if !secret.is_empty());
             }
-        } else {
-            keyring_delete(&trimmed).ok();
         }
         let snapshot = {
             let mut guard = self.inner.lock();
-            guard.profiles.insert(trimmed, meta.clone());
-            // Clone-then-drop so the lock isn't held across the disk
-            // write; significant_drop_tightening complains otherwise.
+            guard.profiles.insert(trimmed.clone(), meta.clone());
             ProfilesFile {
                 profiles: guard.profiles.clone(),
             }
         };
         write_atomic(&self.path, &snapshot)?;
+
+        // 2) Now sync the keychain. Failures here log and leave the
+        //    JSON metadata claiming `has_password = true` even though
+        //    the secret never landed — the next `load_profile` will
+        //    return `None` for that field, which the UI surfaces as
+        //    an empty password. Acceptable: we never silently lose a
+        //    secret we successfully wrote, only fail to write a new one.
+        if let Some(auth) = &meta.auth {
+            sync_secret(&trimmed, KEY_SASL, password, auth.has_password)?;
+            if let Some(tls) = &auth.tls {
+                sync_secret(&trimmed, KEY_TLS, key_password, tls.has_key_password)?;
+            } else {
+                let _ = keyring_delete(&trimmed, KEY_TLS);
+            }
+        } else {
+            let _ = keyring_delete(&trimmed, KEY_SASL);
+            let _ = keyring_delete(&trimmed, KEY_TLS);
+        }
         Ok(meta)
     }
 
@@ -182,38 +250,76 @@ impl ProfileStore {
         };
         write_atomic(&self.path, &snapshot)?;
         // Best-effort secret cleanup; an empty keychain is fine.
-        let _ = keyring_delete(name);
+        let _ = keyring_delete(name, KEY_SASL);
+        let _ = keyring_delete(name, KEY_TLS);
         Ok(())
     }
 }
+
+/// Keyring entry suffixes — kept short so the human-readable
+/// keychain entry "name" stays close to the profile name.
+const KEY_SASL: &str = "sasl";
+const KEY_TLS: &str = "tls-key";
 
 fn write_atomic(path: &std::path::Path, file: &ProfilesFile) -> Result<(), ProfileError> {
     let bytes = serde_json::to_vec_pretty(file)?;
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, &bytes)?;
+    // Tighten file permissions to user-only on Unix before swapping
+    // the temp file into place — `profiles.json` carries broker
+    // URLs, usernames, and TLS paths.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
     fs::rename(&tmp, path)?;
     Ok(())
 }
 
-fn keyring_entry(profile: &str) -> Result<keyring::Entry, ProfileError> {
-    Ok(keyring::Entry::new(KEYRING_SERVICE, profile)?)
+/// Write or clear a single keychain slot. Logs at warn level on
+/// failure so the caller can keep moving — a keychain hiccup must
+/// not block the JSON write that already succeeded.
+fn sync_secret(
+    profile: &str,
+    kind: &str,
+    secret: Option<String>,
+    expected_present: bool,
+) -> Result<(), ProfileError> {
+    if expected_present {
+        let value = secret.unwrap_or_default();
+        if let Err(err) = keyring_set(profile, kind, &value) {
+            warn!(profile, kind, error = %err, "keychain set failed");
+            return Err(err);
+        }
+    } else {
+        let _ = keyring_delete(profile, kind);
+    }
+    Ok(())
 }
 
-fn keyring_get(profile: &str) -> Result<Option<String>, ProfileError> {
-    match keyring_entry(profile)?.get_password() {
+fn keyring_entry(profile: &str, kind: &str) -> Result<keyring::Entry, ProfileError> {
+    Ok(keyring::Entry::new(
+        KEYRING_SERVICE,
+        &format!("{profile}::{kind}"),
+    )?)
+}
+
+fn keyring_get(profile: &str, kind: &str) -> Result<Option<String>, ProfileError> {
+    match keyring_entry(profile, kind)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(err) => Err(err.into()),
     }
 }
 
-fn keyring_set(profile: &str, secret: &str) -> Result<(), ProfileError> {
-    keyring_entry(profile)?.set_password(secret)?;
+fn keyring_set(profile: &str, kind: &str, secret: &str) -> Result<(), ProfileError> {
+    keyring_entry(profile, kind)?.set_password(secret)?;
     Ok(())
 }
 
-fn keyring_delete(profile: &str) -> Result<(), ProfileError> {
-    match keyring_entry(profile)?.delete_credential() {
+fn keyring_delete(profile: &str, kind: &str) -> Result<(), ProfileError> {
+    match keyring_entry(profile, kind)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(err) => Err(err.into()),
     }
@@ -243,8 +349,8 @@ mod tests {
     fn metadata_roundtrip() {
         let dir = TempDir::new().unwrap();
         let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
-        store.save(meta("local"), None).unwrap();
-        store.save(meta("staging"), None).unwrap();
+        store.save(meta("local"), None, None).unwrap();
+        store.save(meta("staging"), None, None).unwrap();
         let names: Vec<_> = store.list().into_iter().map(|p| p.name).collect();
         assert_eq!(names, vec!["local", "staging"]);
         store.delete("local").unwrap();
@@ -258,7 +364,23 @@ mod tests {
         let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
         let mut m = meta("");
         m.name = "   ".into();
-        assert!(matches!(store.save(m, None), Err(ProfileError::EmptyName)));
+        assert!(matches!(
+            store.save(m, None, None),
+            Err(ProfileError::EmptyName)
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_name_chars() {
+        let dir = TempDir::new().unwrap();
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        for bad in ["a/b", "a\\b", "a:b", "a\0b", ".", ".."] {
+            let m = meta(bad);
+            assert!(
+                matches!(store.save(m, None, None), Err(ProfileError::InvalidName(_))),
+                "name `{bad}` should be rejected"
+            );
+        }
     }
 
     #[test]

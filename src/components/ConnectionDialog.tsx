@@ -7,6 +7,8 @@ import type {
   SaslMechanism,
   SaveProfileArgs,
   SaveProfileAuth,
+  SaveProfileTls,
+  TlsArgs,
 } from "../types";
 
 type AuthMethod = "none" | SaslMechanism;
@@ -60,6 +62,10 @@ export function ConnectionDialog({
   const [username, setUsername] = useState(initial?.username ?? "");
   const [password, setPassword] = useState("");
   const [useTls, setUseTls] = useState(initial?.useTls ?? false);
+  const [caPath, setCaPath] = useState("");
+  const [certPath, setCertPath] = useState("");
+  const [keyPath, setKeyPath] = useState("");
+  const [keyPassword, setKeyPassword] = useState("");
 
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
@@ -97,11 +103,19 @@ export function ConnectionDialog({
         setUsername(profile.auth.username);
         setUseTls(profile.auth.useTls);
         setPassword(profile.password ?? "");
+        setCaPath(profile.auth.tls?.caPath ?? "");
+        setCertPath(profile.auth.tls?.certPath ?? "");
+        setKeyPath(profile.auth.tls?.keyPath ?? "");
+        setKeyPassword(profile.keyPassword ?? "");
       } else {
         setAuthMethod("none");
         setUsername("");
         setUseTls(false);
         setPassword("");
+        setCaPath("");
+        setCertPath("");
+        setKeyPath("");
+        setKeyPassword("");
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -129,7 +143,16 @@ export function ConnectionDialog({
       bootstrapServers: bootstrap.trim(),
       topics: list,
       schemaRegistryUrl: registry.trim() === "" ? null : registry.trim(),
-      auth: buildSaveAuth(authMethod, username, password, useTls),
+      auth: buildSaveAuth(
+        authMethod,
+        username,
+        password,
+        useTls,
+        caPath,
+        certPath,
+        keyPath,
+        keyPassword,
+      ),
       fromBeginning,
     };
     setProfileBusy(true);
@@ -175,7 +198,15 @@ export function ConnectionDialog({
     }
     const registryUrl = registry.trim();
     const auth: AuthArgs | null =
-      authMethod === "none" ? null : { mechanism: authMethod, username, password, useTls };
+      authMethod === "none"
+        ? null
+        : {
+            mechanism: authMethod,
+            username,
+            password,
+            useTls,
+            tls: useTls ? buildTlsArgs(caPath, certPath, keyPath, keyPassword) : null,
+          };
     onConnect(bootstrap.trim(), list, fromBeginning, registryUrl === "" ? null : registryUrl, auth);
   };
 
@@ -318,6 +349,61 @@ export function ConnectionDialog({
               />
               <span>TLS (SASL_SSL)</span>
             </label>
+            {useTls ? (
+              <>
+                <label className="dialog__field">
+                  <span className="dialog__label">CA certificate path (optional)</span>
+                  <input
+                    className="dialog__input"
+                    value={caPath}
+                    onChange={(e) => {
+                      setCaPath(e.target.value);
+                    }}
+                    placeholder="/path/to/ca.pem"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="dialog__field">
+                  <span className="dialog__label">Client certificate path (mTLS)</span>
+                  <input
+                    className="dialog__input"
+                    value={certPath}
+                    onChange={(e) => {
+                      setCertPath(e.target.value);
+                    }}
+                    placeholder="/path/to/client.crt"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="dialog__field">
+                  <span className="dialog__label">Client private key path (mTLS)</span>
+                  <input
+                    className="dialog__input"
+                    value={keyPath}
+                    onChange={(e) => {
+                      setKeyPath(e.target.value);
+                    }}
+                    placeholder="/path/to/client.key"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="dialog__field">
+                  <span className="dialog__label">Key password (optional, encrypted keys)</span>
+                  <input
+                    type="password"
+                    className="dialog__input"
+                    value={keyPassword}
+                    onChange={(e) => {
+                      setKeyPassword(e.target.value);
+                    }}
+                    autoComplete="off"
+                  />
+                </label>
+              </>
+            ) : null}
           </>
         ) : null}
         <label className="dialog__check">
@@ -361,6 +447,10 @@ function buildSaveAuth(
   username: string,
   password: string,
   useTls: boolean,
+  ca: string,
+  cert: string,
+  key: string,
+  keyPassword: string,
 ): SaveProfileAuth | null {
   if (method === "none") {
     return null;
@@ -370,5 +460,45 @@ function buildSaveAuth(
     username,
     useTls,
     password: password === "" ? null : password,
+    tls: useTls ? buildSaveTls(ca, cert, key, keyPassword) : null,
   };
+}
+
+function nullIfBlank(s: string): string | null {
+  const trimmed = s.trim();
+  return trimmed === "" ? null : trimmed;
+}
+
+function buildTlsArgs(ca: string, cert: string, key: string, keyPassword: string): TlsArgs | null {
+  const args: TlsArgs = {
+    caPath: nullIfBlank(ca),
+    certPath: nullIfBlank(cert),
+    keyPath: nullIfBlank(key),
+    keyPassword: keyPassword === "" ? null : keyPassword,
+  };
+  if (
+    args.caPath === null &&
+    args.certPath === null &&
+    args.keyPath === null &&
+    args.keyPassword === null
+  ) {
+    return null;
+  }
+  return args;
+}
+
+function buildSaveTls(
+  ca: string,
+  cert: string,
+  key: string,
+  keyPassword: string,
+): SaveProfileTls | null {
+  const ca2 = nullIfBlank(ca);
+  const cert2 = nullIfBlank(cert);
+  const key2 = nullIfBlank(key);
+  const keyPw = keyPassword === "" ? null : keyPassword;
+  if (ca2 === null && cert2 === null && key2 === null && keyPw === null) {
+    return null;
+  }
+  return { caPath: ca2, certPath: cert2, keyPath: key2, keyPassword: keyPw };
 }

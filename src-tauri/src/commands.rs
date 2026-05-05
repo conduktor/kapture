@@ -7,12 +7,12 @@ use tracing::info;
 
 use serde::Deserialize;
 
-use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism};
+use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
 use crate::correlator::ProtoCorrelator;
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
-use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata};
+use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata};
 use crate::ring_buffer::CaptureStats;
 use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
@@ -40,7 +40,7 @@ pub struct ConnectResponse {
     pub bootstrap_servers: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthArgs {
     /// "PLAIN" / "SCRAM-SHA-256" / "SCRAM-SHA-512"
@@ -50,6 +50,72 @@ pub struct AuthArgs {
     /// `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`.
     #[serde(default)]
     pub use_tls: bool,
+    /// Optional TLS material. Ignored unless `use_tls` is true.
+    #[serde(default)]
+    pub tls: Option<TlsArgs>,
+}
+
+impl std::fmt::Debug for AuthArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthArgs")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("use_tls", &self.use_tls)
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsArgs {
+    pub ca_path: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    pub key_password: Option<String>,
+}
+
+impl std::fmt::Debug for TlsArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsArgs")
+            .field("ca_path", &self.ca_path)
+            .field("cert_path", &self.cert_path)
+            .field("key_path", &self.key_path)
+            .field(
+                "key_password",
+                &self.key_password.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
+impl TlsArgs {
+    fn into_creds(self) -> Option<TlsCreds> {
+        let Self {
+            ca_path,
+            cert_path,
+            key_path,
+            key_password,
+        } = self;
+        let any = ca_path.is_some()
+            || cert_path.is_some()
+            || key_path.is_some()
+            || key_password.is_some();
+        if !any {
+            return None;
+        }
+        Some(TlsCreds {
+            ca_path: empty_to_none(ca_path),
+            cert_path: empty_to_none(cert_path),
+            key_path: empty_to_none(key_path),
+            key_password: empty_to_none(key_password),
+        })
+    }
+}
+
+fn empty_to_none(value: Option<String>) -> Option<String> {
+    value.and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
 }
 
 impl AuthArgs {
@@ -69,11 +135,44 @@ impl AuthArgs {
                 "SASL username and password must be non-empty".to_owned(),
             ));
         }
+        let tls = if self.use_tls {
+            let creds = self.tls.unwrap_or_default().into_creds();
+            // Reject misleading combinations early so users see a
+            // clear error instead of librdkafka silently ignoring
+            // the misconfiguration.
+            if let Some(t) = &creds {
+                if t.key_password.is_some() && t.key_path.is_none() {
+                    return Err(KaptureError::Config(
+                        "tls.keyPassword set without tls.keyPath — \
+                         librdkafka would ignore the password"
+                            .to_owned(),
+                    ));
+                }
+                if t.cert_path.is_some() && t.key_path.is_none() {
+                    return Err(KaptureError::Config(
+                        "tls.certPath set without tls.keyPath — \
+                         mutual TLS needs both"
+                            .to_owned(),
+                    ));
+                }
+                if t.key_path.is_some() && t.cert_path.is_none() {
+                    return Err(KaptureError::Config(
+                        "tls.keyPath set without tls.certPath — \
+                         mutual TLS needs both"
+                            .to_owned(),
+                    ));
+                }
+            }
+            creds
+        } else {
+            None
+        };
         Ok(AuthConfig {
             mechanism,
             username: self.username,
             password: self.password,
             use_tls: self.use_tls,
+            tls,
         })
     }
 }
@@ -207,16 +306,55 @@ pub struct SaveProfileArgs {
     pub from_beginning: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveProfileAuth {
     pub mechanism: String,
     pub username: String,
     pub use_tls: bool,
-    /// `Some(...)` to set or replace the keychain password,
-    /// `None` to leave any existing password untouched, `Some("")`
+    /// `Some(...)` to set or replace the SASL keychain password,
+    /// `None` to leave any existing entry untouched, `Some("")`
     /// to clear it.
     pub password: Option<String>,
+    /// Optional TLS metadata + key password.
+    #[serde(default)]
+    pub tls: Option<SaveProfileTls>,
+}
+
+impl std::fmt::Debug for SaveProfileAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveProfileAuth")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("use_tls", &self.use_tls)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("tls", &self.tls)
+            .finish()
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileTls {
+    pub ca_path: Option<String>,
+    pub cert_path: Option<String>,
+    pub key_path: Option<String>,
+    /// Same `Some/None/Some("")` semantics as `password`.
+    pub key_password: Option<String>,
+}
+
+impl std::fmt::Debug for SaveProfileTls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveProfileTls")
+            .field("ca_path", &self.ca_path)
+            .field("cert_path", &self.cert_path)
+            .field("key_path", &self.key_path)
+            .field(
+                "key_password",
+                &self.key_password.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 #[tauri::command]
@@ -237,11 +375,22 @@ pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<()> {
 
 #[tauri::command]
 pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result<ProfileMetadata> {
-    let auth = args.auth.as_ref().map(|a| AuthMetadata {
-        mechanism: a.mechanism.clone(),
-        username: a.username.clone(),
-        use_tls: a.use_tls,
-        has_password: false, // overwritten by ProfileStore::save
+    let auth = args.auth.as_ref().map(|a| {
+        let tls = a.tls.as_ref().map(|t| TlsMetadata {
+            ca_path: empty_to_none(t.ca_path.clone()),
+            cert_path: empty_to_none(t.cert_path.clone()),
+            key_path: empty_to_none(t.key_path.clone()),
+            // overwritten by ProfileStore::save
+            has_key_password: false,
+        });
+        AuthMetadata {
+            mechanism: a.mechanism.clone(),
+            username: a.username.clone(),
+            use_tls: a.use_tls,
+            // overwritten by ProfileStore::save
+            has_password: false,
+            tls,
+        }
     });
     let meta = ProfileMetadata {
         name: args.name,
@@ -251,8 +400,15 @@ pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result
         auth,
         from_beginning: args.from_beginning,
     };
-    let password = args.auth.and_then(|a| a.password);
-    Ok(state.profiles.save(meta, password)?)
+    let mut sasl_password: Option<String> = None;
+    let mut key_password: Option<String> = None;
+    if let Some(a) = args.auth {
+        sasl_password = a.password;
+        if let Some(t) = a.tls {
+            key_password = t.key_password;
+        }
+    }
+    Ok(state.profiles.save(meta, sasl_password, key_password)?)
 }
 
 fn spawn_stats_emitter(app: &AppHandle) {
