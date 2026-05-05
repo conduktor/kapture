@@ -1,0 +1,52 @@
+// Kapture filter DSL — Wireshark-style.
+//
+// Grammar entry point: `filter`. Whitespace between tokens is implicit.
+// Identifiers are dotted paths into the captured message:
+//
+//     topic
+//     envelope.partition | envelope.offset | envelope.timestamp
+//     envelope.key       | envelope.size
+//     headers.<name>
+//     schema.name        | schema.id
+//     payload.<...>      (any nested JSON path; numeric segments index arrays)
+//
+// Operators (in precedence, low → high):
+//
+//     ||           logical OR
+//     &&           logical AND
+//     !            logical NOT (unary)
+//     == !=        equality
+//     =~           regex match (right operand must be a string)
+//     <  <=  >  >= numeric / string ordering
+//     in           membership in a literal list
+//
+// Literals: "double-quoted strings", numbers (-1.5, 42), `true` / `false`,
+// and parenthesised lists for `in`, e.g. (1, 2, "x").
+//
+// Bare identifiers are evaluated as truthy (booleans, non-empty objects/arrays).
+// The bare tokens `true` and `false` are constants, not identifiers.
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+
+filter     =  { SOI ~ or_expr ~ EOI }
+or_expr    =  { and_expr ~ ("||" ~ and_expr)* }
+and_expr   =  { not_expr ~ ("&&" ~ not_expr)* }
+not_expr   =  { "!"? ~ comparison }
+
+comparison =  { primary ~ (op ~ literal)? }
+primary    = _{ "(" ~ or_expr ~ ")" | identifier }
+
+identifier = ${ name ~ ("." ~ name)* }
+name       = @{
+                ( ASCII_ALPHA ~ (ASCII_ALPHANUMERIC | "_" | "-")* )
+              | ASCII_DIGIT+
+            }
+
+op         =  { "==" | "!=" | "=~" | "<=" | ">=" | "<" | ">" | "in" }
+
+literal    = _{ string | number | boolean | list }
+string     = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ ( "\\" ~ ANY | !("\"" | "\\") ~ ANY )* }
+number     = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+boolean    =  { "true" | "false" }
+list       =  { "(" ~ literal ~ ("," ~ literal)* ~ ")" }

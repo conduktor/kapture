@@ -7,6 +7,7 @@ use tracing::info;
 
 use crate::capture::{self, CaptureConfig};
 use crate::error::{KaptureError, Result};
+use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::ring_buffer::CaptureStats;
 use crate::state::AppState;
@@ -49,10 +50,14 @@ pub fn connect(
 
     let config = CaptureConfig::new(bootstrap_servers.clone(), topics.clone(), from_beginning);
     let buffer = Arc::clone(&state.buffer);
+    let filter = Arc::clone(&state.filter);
     let app_for_messages = app.clone();
     let handle = capture::start(config, move |message| {
         buffer.push(message.clone());
-        let _ = app_for_messages.emit("kapture:message", &message);
+        let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
+        if pass {
+            let _ = app_for_messages.emit("kapture:message", &message);
+        }
     })?;
 
     state.install(handle);
@@ -81,7 +86,12 @@ pub async fn disconnect(state: State<'_, AppState>) -> Result<()> {
 
 #[tauri::command]
 pub fn snapshot(state: State<'_, AppState>) -> Vec<CapturedMessage> {
-    state.buffer.snapshot()
+    let snap = state.buffer.snapshot();
+    let guard = state.filter.read();
+    match guard.as_ref() {
+        Some(filter) => snap.into_iter().filter(|m| filter.matches(m)).collect(),
+        None => snap,
+    }
 }
 
 #[tauri::command]
@@ -99,6 +109,20 @@ pub fn stats(state: State<'_, AppState>) -> CaptureStats {
 #[tauri::command]
 pub fn clear_buffer(state: State<'_, AppState>) {
     state.buffer.clear();
+}
+
+#[tauri::command]
+pub fn set_filter(state: State<'_, AppState>, expression: String) -> Result<()> {
+    let trimmed = expression.trim();
+    if trimmed.is_empty() {
+        *state.filter.write() = None;
+        info!("filter cleared");
+        return Ok(());
+    }
+    let compiled = CompiledFilter::compile(trimmed).map_err(KaptureError::Filter)?;
+    *state.filter.write() = Some(compiled);
+    info!(expr = trimmed, "filter installed");
+    Ok(())
 }
 
 fn spawn_stats_emitter(app: &AppHandle) {

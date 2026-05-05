@@ -13,6 +13,7 @@ import type { AppInfo, CaptureStats, ConnectionState, KafkaMessage } from "./typ
 const DEFAULT_BOOTSTRAP = "localhost:19092";
 const DEFAULT_TOPICS = "orders.raw, orders.enriched, users.events";
 const UI_MAX_MESSAGES = 5_000;
+const FILTER_DEBOUNCE_MS = 250;
 
 const INITIAL_STATS: CaptureStats = {
   totalReceived: 0,
@@ -31,6 +32,7 @@ const INITIAL_CONNECTION: ConnectionState = {
 
 function App(): JSX.Element {
   const [filter, setFilter] = useState("");
+  const [filterError, setFilterError] = useState<string | null>(null);
   const [messages, setMessages] = useState<KafkaMessage[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -85,6 +87,35 @@ function App(): JSX.Element {
       }
     };
   }, [connection.status]);
+
+  // Debounced filter sync to backend.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      void (async () => {
+        try {
+          await invoke("set_filter", { expression: filter });
+          setFilterError(null);
+          // Refresh visible list so previously-buffered messages are
+          // re-evaluated against the new filter.
+          if (connection.status === "connected") {
+            try {
+              const snap = await invoke<KafkaMessage[]>("snapshot");
+              messagesRef.current = snap.slice(-UI_MAX_MESSAGES);
+              setMessages(messagesRef.current);
+            } catch (err) {
+              console.error("snapshot failed", err);
+            }
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setFilterError(message);
+        }
+      })();
+    }, FILTER_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(handle);
+    };
+  }, [filter, connection.status]);
 
   const selected = useMemo(
     () => messages.find((m) => m.id === selectedId) ?? null,
@@ -148,24 +179,6 @@ function App(): JSX.Element {
     setSelectedId(null);
   };
 
-  const filtered = useMemo(() => {
-    if (!filter.trim()) {
-      return messages;
-    }
-    const needle = filter.toLowerCase();
-    return messages.filter((m) => {
-      if (m.topic.toLowerCase().includes(needle)) {
-        return true;
-      }
-      if (m.key?.toLowerCase().includes(needle) === true) {
-        return true;
-      }
-      return m.headers.some(
-        (h) => h.key.toLowerCase().includes(needle) || h.value.toLowerCase().includes(needle),
-      );
-    });
-  }, [messages, filter]);
-
   const showDialog = connection.status === "disconnected" || connection.status === "error";
 
   return (
@@ -173,6 +186,7 @@ function App(): JSX.Element {
       <TopBar
         filter={filter}
         onFilterChange={setFilter}
+        filterError={filterError}
         capturing={connection.status === "connected"}
         onToggleCapture={() => {
           if (connection.status === "connected") {
@@ -184,7 +198,7 @@ function App(): JSX.Element {
       />
       <main className="layout">
         <div className="layout__main">
-          <MessageList messages={filtered} selectedId={selectedId} onSelect={setSelectedId} />
+          <MessageList messages={messages} selectedId={selectedId} onSelect={setSelectedId} />
           <LayerTree message={selected} />
           <HexDump message={selected} />
         </div>

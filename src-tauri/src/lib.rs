@@ -2,6 +2,7 @@ mod capture;
 mod commands;
 mod decode;
 mod error;
+mod filter;
 mod message;
 mod ring_buffer;
 mod state;
@@ -31,6 +32,7 @@ pub fn run() {
             commands::snapshot,
             commands::stats,
             commands::clear_buffer,
+            commands::set_filter,
         ])
         .run(tauri::generate_context!());
 

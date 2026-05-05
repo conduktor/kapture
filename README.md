@@ -8,11 +8,10 @@
 
 Kafka tooling is saturated with topic browsers (Conduktor, Redpanda Console, AKHQ, Kafdrop). None of them help you _understand what's flowing right now_. Kapture is the missing layer: see messages live, decode them through schema layers, follow a single key across topics, and write filters that actually express intent.
 
-## The vision (3 pillars)
+## The vision (2 pillars)
 
 1. **Inspector** — Wireshark-style live capture with decoded layers, filter DSL, follow-by-key. **MVP.**
 2. **Debugger** — Time-travel debugger for Kafka Streams / Flink consumers (breakpoints by predicate, step messages, inspect state stores).
-3. **Notebook** — Reactive workspace for sketching topologies, sharing repros, onboarding.
 
 The full design lives in [`docs/spec.md`](./docs/spec.md).
 

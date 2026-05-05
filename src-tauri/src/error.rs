@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::filter::FilterError;
+
 #[derive(Debug, Error)]
 pub enum KaptureError {
     #[error("kafka client error: {0}")]
@@ -13,6 +15,9 @@ pub enum KaptureError {
 
     #[error("not capturing")]
     NotCapturing,
+
+    #[error("filter: {0}")]
+    Filter(#[from] FilterError),
 }
 
 pub type Result<T> = std::result::Result<T, KaptureError>;

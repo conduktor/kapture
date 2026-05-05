@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::capture::CaptureHandle;
+use crate::filter::CompiledFilter;
 use crate::ring_buffer::RingBuffer;
 
 /// Default ring buffer capacity.
@@ -13,6 +14,7 @@ pub const DEFAULT_RING_CAPACITY: usize = 100_000;
 #[derive(Debug)]
 pub struct AppState {
     pub buffer: Arc<RingBuffer>,
+    pub filter: Arc<RwLock<Option<CompiledFilter>>>,
     inner: Mutex<Inner>,
 }
 
@@ -27,6 +29,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             buffer: Arc::new(RingBuffer::new(DEFAULT_RING_CAPACITY)),
+            filter: Arc::new(RwLock::new(None)),
             inner: Mutex::new(Inner::default()),
         }
     }

@@ -8,13 +8,14 @@ Chrome DevTools for streaming pipelines. Not a cluster manager, not a topic brow
 
 The market is saturated with UIs that browse what is _stored_ in Kafka. Kapture is for what is _moving_.
 
-## Three pillars (sequential delivery)
+## Two pillars (sequential delivery)
 
 1. **Inspector** — Wireshark-like capture and dissection of live Kafka traffic. **MVP.**
 2. **Debugger** — Time-travel debugger for Kafka Streams / Flink / consumer applications. Breakpoints by predicate, step through messages, inspect state stores at each step. Post-MVP.
-3. **Notebook** — Reactive workspace for stream exploration, repro sharing, onboarding. Post-MVP.
 
-Each pillar is shippable independently. The Inspector alone is a complete product.
+Both pillars share the same mental model — observe and reason about runtime behaviour in a streaming pipeline — and the same data model (live messages, decoded layers, expressive filters). The Inspector alone is a complete product; the Debugger extends it once the foundation is solid.
+
+A previous draft included a third pillar (a reactive notebook for exploration and sharing). It was dropped because its mental model (data-science synthesis) does not cohere with runtime debugging. If a notebook-style workflow is ever needed, it belongs in a separate product.
 
 ## MVP scope (Inspector)
 
@@ -27,7 +28,7 @@ Each pillar is shippable independently. The Inspector alone is a complete produc
 - Connections: PLAINTEXT, SASL/PLAIN, SASL/SCRAM, mTLS, OAuth/OIDC, AWS IAM (MSK)
 - Wire-compatible with Apache Kafka, Redpanda, MSK, Confluent Cloud, Aiven, WarpStream
 
-Out of scope at v1: persistence and `.kcap` files, debugger, notebook, cluster management (configs, ACLs, brokers), produce UI, internationalisation, mobile.
+Out of scope at v1: persistence and `.kcap` files, debugger, cluster management (configs, ACLs, brokers), produce UI, internationalisation, mobile.
 
 ## Audience
 
