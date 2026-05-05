@@ -1,12 +1,32 @@
 //! Persisted connection profiles.
 //!
 //! Profile metadata (name, bootstrap, topics, SR URL, auth mechanism,
-//! username, TLS flag) lives in a JSON file under Tauri's
-//! `app_data_dir`. Secrets (currently the SASL password) are stored
-//! in the OS keychain via the `keyring` crate, keyed by
-//! `(SERVICE, profile_name)`. This way the JSON file can be checked
-//! into a snapshot or copied between machines without leaking
-//! credentials.
+//! username, TLS flag, cert paths) lives in a JSON file under Tauri's
+//! `app_config_dir`. Secrets (SASL password and TLS key password) are
+//! stored in the OS keychain via the `keyring` crate, keyed by
+//! `(SERVICE, "{profile_name}::{kind}")` where `kind ∈ {sasl, tls-key}`.
+//!
+//! ### Threat model and known gaps
+//!
+//! In scope: prevent accidental on-disk credential leakage (no secrets
+//! in the JSON), prevent path traversal via profile names, redact
+//! secrets from `Debug`, fail-safe on partial writes.
+//!
+//! Out of scope (deferred — single-user desktop app):
+//!
+//!  * **Cross-process race on `profiles.json`.** Two Kapture instances
+//!    writing concurrently can lose a save. We do not take an OS-level
+//!    file lock; that needs a fs2 / file-lock dependency and proper
+//!    teardown. The Tauri identity guard usually prevents two app
+//!    instances anyway.
+//!  * **Per-profile keychain service isolation.** All entries share
+//!    `service = "io.kapture.app"`; an in-process attacker who already
+//!    owns the app can read every secret. Per-profile services would
+//!    not actually mitigate that — the same attacker can also read
+//!    `profiles.json` to enumerate names.
+//!  * **Tauri capability scoping per command.** All profile commands
+//!    are exposed via the default capability. Useful only when we
+//!    introduce additional webviews / plugins.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,6 +40,10 @@ use tracing::warn;
 
 const KEYRING_SERVICE: &str = "io.kapture.app";
 const PROFILES_FILE: &str = "profiles.json";
+/// Cap the profile name length so a pathological JSON or keychain
+/// entry name can't be produced. 128 chars is generous for
+/// human-friendly labels.
+const MAX_NAME_LEN: usize = 128;
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
@@ -197,6 +221,11 @@ impl ProfileStore {
         if trimmed.contains(['/', '\\', '\0', ':']) || trimmed == "." || trimmed == ".." {
             return Err(ProfileError::InvalidName(trimmed));
         }
+        if trimmed.chars().count() > MAX_NAME_LEN {
+            return Err(ProfileError::InvalidName(format!(
+                "{trimmed} (max {MAX_NAME_LEN} chars)"
+            )));
+        }
         trimmed.clone_into(&mut meta.name);
 
         // 1) Persist the JSON file FIRST, with the new metadata that
@@ -261,17 +290,37 @@ impl ProfileStore {
 const KEY_SASL: &str = "sasl";
 const KEY_TLS: &str = "tls-key";
 
+/// Atomically replace `path` with `file`'s JSON serialisation.
+///
+/// On Unix, `rename(2)` is atomic on the same filesystem — readers
+/// see either the old file or the new one, never a partial write.
+///
+/// On Windows since Rust 1.81, `std::fs::rename` calls `MoveFileExW`
+/// with `MOVEFILE_REPLACE_EXISTING`, which is also atomic for files
+/// on the same volume; we don't run on older Rusts (MSRV 1.82). The
+/// destination *file* may exist; only existing *directories* would
+/// fail.
+///
+/// We also `chmod 0600` the temp file on Unix before the swap so the
+/// final `profiles.json` is never world-readable, and `fsync` it so
+/// a crash between the rename and the next disk flush still leaves
+/// a fully-written file on disk.
 fn write_atomic(path: &std::path::Path, file: &ProfilesFile) -> Result<(), ProfileError> {
     let bytes = serde_json::to_vec_pretty(file)?;
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &bytes)?;
-    // Tighten file permissions to user-only on Unix before swapping
-    // the temp file into place — `profiles.json` carries broker
-    // URLs, usernames, and TLS paths.
-    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        let mut handle = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        std::io::Write::write_all(&mut handle, &bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            handle.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        handle.sync_all()?;
     }
     fs::rename(&tmp, path)?;
     Ok(())

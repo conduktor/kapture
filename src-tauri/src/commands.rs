@@ -118,6 +118,29 @@ fn empty_to_none(value: Option<String>) -> Option<String> {
     value.and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
 }
 
+/// Canonicalise + assert the path points at a regular file. We refuse
+/// directories, sockets, FIFOs, and symlinks pointing nowhere. This
+/// is defence-in-depth on top of OS file permissions: librdkafka opens
+/// the path with the app's effective uid, so a malicious profile
+/// pointing at `/etc/shadow` would otherwise read whatever the OS
+/// allows. Failing fast also gives the user a clearer error than the
+/// `Unable to open` library log.
+fn check_path(field: &str, path: Option<&str>) -> Result<()> {
+    let Some(p) = path else {
+        return Ok(());
+    };
+    let canonical = std::fs::canonicalize(p)
+        .map_err(|err| KaptureError::Config(format!("{field}: cannot resolve `{p}`: {err}")))?;
+    let meta = std::fs::metadata(&canonical)
+        .map_err(|err| KaptureError::Config(format!("{field}: stat `{p}` failed: {err}")))?;
+    if !meta.is_file() {
+        return Err(KaptureError::Config(format!(
+            "{field}: `{p}` is not a regular file"
+        )));
+    }
+    Ok(())
+}
+
 impl AuthArgs {
     fn parse(self) -> Result<AuthConfig> {
         let mechanism = match self.mechanism.to_uppercase().as_str() {
@@ -137,10 +160,10 @@ impl AuthArgs {
         }
         let tls = if self.use_tls {
             let creds = self.tls.unwrap_or_default().into_creds();
-            // Reject misleading combinations early so users see a
-            // clear error instead of librdkafka silently ignoring
-            // the misconfiguration.
             if let Some(t) = &creds {
+                // Reject misleading combinations early so users see
+                // a clear error instead of librdkafka silently
+                // ignoring the misconfiguration.
                 if t.key_password.is_some() && t.key_path.is_none() {
                     return Err(KaptureError::Config(
                         "tls.keyPassword set without tls.keyPath — \
@@ -162,6 +185,15 @@ impl AuthArgs {
                             .to_owned(),
                     ));
                 }
+                // Validate every cert/key path exists and is a
+                // regular file before passing to librdkafka. This
+                // turns the "/etc/shadow class" defence-in-depth
+                // concern into an explicit failure mode and gives
+                // the user a clearer error than the librdkafka
+                // confused-state log.
+                check_path("tls.caPath", t.ca_path.as_deref())?;
+                check_path("tls.certPath", t.cert_path.as_deref())?;
+                check_path("tls.keyPath", t.key_path.as_deref())?;
             }
             creds
         } else {
