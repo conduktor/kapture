@@ -30,9 +30,12 @@ export interface AppInfo {
   status: string;
 }
 
+export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
+
 export interface ConnectionState {
-  status: "disconnected" | "connecting" | "connected" | "error";
+  status: ConnectionStatus;
   cluster: string | null;
+  topics: string[];
   error: string | null;
 }
 
@@ -42,4 +45,10 @@ export interface CaptureStats {
   bufferCapacity: number;
   drops: number;
   throughputPerSec: number;
+}
+
+export interface ConnectArgs {
+  bootstrapServers: string;
+  topics: string[];
+  fromBeginning: boolean;
 }

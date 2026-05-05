@@ -27,11 +27,32 @@ Wire-compatible with Apache Kafka and any derivative (Redpanda, MSK, Confluent C
 
 ## Quick start
 
-Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.78.
+Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.78, Docker (for the local Kafka), `librdkafka` (`brew install librdkafka` on macOS).
 
 ```bash
+# 1. Install JS dependencies
 pnpm install
+
+# 2. Boot a local Redpanda (Kafka API + Schema Registry, single node)
+pnpm stack:up
+
+# 3. Inject some test data (loop produces ~10 msg/s indefinitely)
+pnpm seed          # one-shot: 100 messages
+pnpm seed:loop     # continuous: ~10 msg/s
+
+# 4. Smoke-test the Rust capture pipeline against the live cluster
+pnpm rust:smoke
+
+# 5. Launch the desktop app
 pnpm tauri dev
+```
+
+The Connection dialog defaults to `localhost:19092` and the three seeded topics. The optional Redpanda Console (web UI at <http://localhost:18888>) is included for cross-checking what the cluster sees.
+
+When you're done:
+
+```bash
+pnpm stack:down
 ```
 
 ## Quality gates

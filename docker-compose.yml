@@ -1,0 +1,50 @@
+name: kapture-dev
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.3.5
+    container_name: kapture-redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --default-log-level=warn
+    ports:
+      - "19092:19092" # Kafka API (external)
+      - "18081:18081" # Schema Registry (external)
+      - "18082:18082" # HTTP Pandaproxy (external)
+      - "9644:9644" # Admin API
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - kapture
+
+  console:
+    image: redpandadata/console:v2.8.5
+    container_name: kapture-console
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+    ports:
+      - "18888:8080"
+    networks:
+      - kapture
+
+networks:
+  kapture:
+    name: kapture-dev

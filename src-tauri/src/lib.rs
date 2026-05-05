@@ -1,28 +1,40 @@
-use serde::Serialize;
+mod capture;
+mod commands;
+mod decode;
+mod error;
+mod message;
+mod ring_buffer;
+mod state;
 
-#[derive(Serialize)]
-struct AppInfo {
-    name: &'static str,
-    version: &'static str,
-    status: &'static str,
-}
-
-#[tauri::command]
-const fn app_info() -> AppInfo {
-    AppInfo {
-        name: env!("CARGO_PKG_NAME"),
-        version: env!("CARGO_PKG_VERSION"),
-        status: "ok",
-    }
-}
+use tauri::Manager;
+use tracing_subscriber::EnvFilter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if let Err(error) = tauri::Builder::default()
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(false)
+        .try_init();
+
+    let result = tauri::Builder::default()
+        .setup(|app| {
+            app.manage(state::AppState::new());
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![app_info])
-        .run(tauri::generate_context!())
-    {
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info,
+            commands::connect,
+            commands::disconnect,
+            commands::snapshot,
+            commands::stats,
+            commands::clear_buffer,
+        ])
+        .run(tauri::generate_context!());
+
+    if let Err(error) = result {
         eprintln!("fatal: tauri runtime error: {error}");
         std::process::exit(1);
     }

@@ -67,15 +67,22 @@ export default tseslint.config(
       "no-console": ["warn", { allow: ["warn", "error"] }],
     },
   },
-  // Vite/build config files run in Node — give them node globals.
+  // Vite/build config files and tooling scripts run in Node.
   {
-    files: ["vite.config.ts", "**/*.config.{js,ts,mjs}"],
+    files: ["vite.config.ts", "**/*.config.{js,ts,mjs}", "tools/**/*.{js,mjs,ts}"],
     languageOptions: {
       globals: {
         process: "readonly",
         __dirname: "readonly",
         module: "readonly",
         require: "readonly",
+        console: "readonly",
+        setTimeout: "readonly",
+        clearTimeout: "readonly",
+        setInterval: "readonly",
+        clearInterval: "readonly",
+        Promise: "readonly",
+        Buffer: "readonly",
       },
     },
   },
