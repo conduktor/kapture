@@ -8,12 +8,14 @@ use rdkafka::message::Headers;
 use rdkafka::Message;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::decode::{decode_payload, render_hex};
+use crate::avro;
+use crate::decode::{decode_payload, render_hex, DecodedValue};
 use crate::error::{KaptureError, Result};
 use crate::message::{CapturedMessage, KafkaHeader};
+use crate::schema_registry::{ConfluentEnvelope, ResolvedSchema, SchemaKind, SchemaRegistryClient};
 
 /// Default poll interval. Kafka consumers naturally batch via librdkafka.
 const POLL_TIMEOUT: Duration = Duration::from_millis(500);
@@ -54,8 +56,13 @@ impl CaptureConfig {
     }
 }
 
-/// Spawn a capture task. Each delivered message is passed to `on_message`.
-pub fn start<F>(config: CaptureConfig, on_message: F) -> Result<CaptureHandle>
+/// Spawn a capture task. Each delivered message is decoded (with optional
+/// schema-registry resolution) and then handed to `on_message`.
+pub fn start<F>(
+    config: CaptureConfig,
+    sr_client: Option<Arc<SchemaRegistryClient>>,
+    on_message: F,
+) -> Result<CaptureHandle>
 where
     F: Fn(CapturedMessage) + Send + Sync + 'static,
 {
@@ -93,6 +100,7 @@ where
         info!(
             topics = ?config.topics,
             bootstrap = %config.bootstrap_servers,
+            sr = sr_client.is_some(),
             "capture task started"
         );
         loop {
@@ -106,7 +114,7 @@ where
                 received = tokio::time::timeout(POLL_TIMEOUT, consumer.recv()) => {
                     match received {
                         Ok(Ok(msg)) => {
-                            let captured = to_captured(&msg);
+                            let captured = to_captured(&msg, sr_client.as_deref()).await;
                             on_message(captured);
                         }
                         Ok(Err(err)) => {
@@ -127,7 +135,10 @@ where
     })
 }
 
-fn to_captured<M: Message>(msg: &M) -> CapturedMessage {
+async fn to_captured<M: Message + Sync>(
+    msg: &M,
+    sr_client: Option<&SchemaRegistryClient>,
+) -> CapturedMessage {
     let payload = msg.payload();
     let key = msg
         .key()
@@ -159,6 +170,12 @@ fn to_captured<M: Message>(msg: &M) -> CapturedMessage {
         out
     });
 
+    let DecodedPayload {
+        value: decoded,
+        schema_name,
+        schema_id,
+    } = decode_with_registry(payload, sr_client).await;
+
     CapturedMessage {
         id: Uuid::new_v4().to_string(),
         timestamp,
@@ -166,11 +183,109 @@ fn to_captured<M: Message>(msg: &M) -> CapturedMessage {
         partition: msg.partition(),
         offset: msg.offset(),
         key,
-        schema_name: None,
-        schema_id: None,
+        schema_name,
+        schema_id,
         size_bytes,
         headers,
-        payload: decode_payload(payload),
+        payload: decoded,
         raw_hex,
+    }
+}
+
+struct DecodedPayload {
+    value: DecodedValue,
+    schema_name: Option<String>,
+    schema_id: Option<u32>,
+}
+
+/// Decode payload bytes. When a schema-registry client is configured and
+/// the payload starts with the Confluent magic byte, we resolve the schema
+/// and decode by kind (Avro, JSON Schema). On any registry / decode failure,
+/// we degrade gracefully to the raw `decode_payload` heuristic so capture
+/// never blocks on registry availability.
+async fn decode_with_registry(
+    payload: Option<&[u8]>,
+    sr_client: Option<&SchemaRegistryClient>,
+) -> DecodedPayload {
+    let Some(bytes) = payload else {
+        return DecodedPayload {
+            value: decode_payload(None),
+            schema_name: None,
+            schema_id: None,
+        };
+    };
+    let Some(client) = sr_client else {
+        return DecodedPayload {
+            value: decode_payload(Some(bytes)),
+            schema_name: None,
+            schema_id: None,
+        };
+    };
+    let Some(envelope) = ConfluentEnvelope::try_parse(bytes) else {
+        return DecodedPayload {
+            value: decode_payload(Some(bytes)),
+            schema_name: None,
+            schema_id: None,
+        };
+    };
+    match client.fetch(envelope.schema_id).await {
+        Ok(schema) => DecodedPayload {
+            value: decode_with_schema(&schema, envelope.payload),
+            schema_name: Some(friendly_schema_name(&schema)),
+            schema_id: Some(envelope.schema_id),
+        },
+        Err(err) => {
+            warn!(id = envelope.schema_id, error = %err, "schema registry lookup failed");
+            DecodedPayload {
+                value: decode_payload(Some(bytes)),
+                schema_name: None,
+                schema_id: Some(envelope.schema_id),
+            }
+        }
+    }
+}
+
+fn friendly_schema_name(schema: &ResolvedSchema) -> String {
+    schema.subject.as_ref().map_or_else(
+        || schema.kind.label().to_owned(),
+        |subject| format!("{subject} ({})", schema.kind.label()),
+    )
+}
+
+fn decode_with_schema(schema: &ResolvedSchema, payload: &[u8]) -> DecodedValue {
+    match schema.kind {
+        SchemaKind::Avro => decode_avro(&schema.raw, payload),
+        SchemaKind::JsonSchema => decode_payload(Some(payload)),
+        SchemaKind::Protobuf => {
+            // Protobuf decoding requires the FileDescriptor; deferred to a
+            // later milestone. Keep the raw bytes visible.
+            debug!("protobuf decode not implemented; falling back to bytes");
+            DecodedValue::Bytes {
+                hex: render_hex(payload),
+                length: payload.len(),
+            }
+        }
+    }
+}
+
+fn decode_avro(schema_text: &str, payload: &[u8]) -> DecodedValue {
+    match avro::parse_schema(schema_text) {
+        Ok(schema) => match avro::decode(&schema, payload) {
+            Ok(decoded) => decoded,
+            Err(err) => {
+                warn!(error = %err, "avro decode failed; falling back to bytes");
+                DecodedValue::Bytes {
+                    hex: render_hex(payload),
+                    length: payload.len(),
+                }
+            }
+        },
+        Err(err) => {
+            warn!(error = %err, "avro schema parse failed");
+            DecodedValue::Bytes {
+                hex: render_hex(payload),
+                length: payload.len(),
+            }
+        }
     }
 }

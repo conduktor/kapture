@@ -10,6 +10,7 @@ use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::ring_buffer::CaptureStats;
+use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -42,17 +43,27 @@ pub fn connect(
     bootstrap_servers: String,
     topics: Vec<String>,
     from_beginning: bool,
+    schema_registry_url: Option<String>,
 ) -> Result<ConnectResponse> {
     if state.is_capturing() {
         return Err(KaptureError::AlreadyCapturing);
     }
     state.buffer.clear();
 
+    let sr_client = schema_registry_url.as_ref().and_then(|url| {
+        let trimmed = url.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(Arc::new(SchemaRegistryClient::new(trimmed.to_owned())))
+        }
+    });
+
     let config = CaptureConfig::new(bootstrap_servers.clone(), topics.clone(), from_beginning);
     let buffer = Arc::clone(&state.buffer);
     let filter = Arc::clone(&state.filter);
     let app_for_messages = app.clone();
-    let handle = capture::start(config, move |message| {
+    let handle = capture::start(config, sr_client.clone(), move |message| {
         buffer.push(message.clone());
         let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
         if pass {
@@ -60,12 +71,13 @@ pub fn connect(
         }
     })?;
 
-    state.install(handle);
+    state.install(handle, sr_client);
     spawn_stats_emitter(&app);
 
     info!(
         bootstrap = %bootstrap_servers,
         topics = ?topics,
+        sr = schema_registry_url.as_deref().unwrap_or("none"),
         "capture started"
     );
     Ok(ConnectResponse {

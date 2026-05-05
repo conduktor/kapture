@@ -20,6 +20,7 @@
     "rust:lint": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
     "rust:smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example smoke",
+    "rust:sr-smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example sr_smoke",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm rust:fmt && pnpm rust:lint && pnpm rust:test",
     "stack:up": "docker compose up -d",
     "stack:down": "docker compose down",
@@ -50,6 +51,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9",
+    "@kafkajs/confluent-schema-registry": "^4.0.8",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

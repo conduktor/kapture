@@ -3,7 +3,13 @@ import { useState, type JSX } from "react";
 interface Props {
   defaultBootstrap: string;
   defaultTopics: string;
-  onConnect: (bootstrap: string, topics: string[], fromBeginning: boolean) => void;
+  defaultRegistry: string;
+  onConnect: (
+    bootstrap: string,
+    topics: string[],
+    fromBeginning: boolean,
+    schemaRegistryUrl: string | null,
+  ) => void;
   pending: boolean;
   error: string | null;
 }
@@ -11,12 +17,14 @@ interface Props {
 export function ConnectionDialog({
   defaultBootstrap,
   defaultTopics,
+  defaultRegistry,
   onConnect,
   pending,
   error,
 }: Props): JSX.Element {
   const [bootstrap, setBootstrap] = useState(defaultBootstrap);
   const [topics, setTopics] = useState(defaultTopics);
+  const [registry, setRegistry] = useState(defaultRegistry);
   const [fromBeginning, setFromBeginning] = useState(true);
 
   const submit = (): void => {
@@ -27,7 +35,8 @@ export function ConnectionDialog({
     if (list.length === 0) {
       return;
     }
-    onConnect(bootstrap.trim(), list, fromBeginning);
+    const registryUrl = registry.trim();
+    onConnect(bootstrap.trim(), list, fromBeginning, registryUrl === "" ? null : registryUrl);
   };
 
   return (
@@ -70,6 +79,19 @@ export function ConnectionDialog({
             spellCheck={false}
             autoComplete="off"
             required
+          />
+        </label>
+        <label className="dialog__field">
+          <span className="dialog__label">Schema Registry URL (optional)</span>
+          <input
+            className="dialog__input"
+            value={registry}
+            onChange={(e) => {
+              setRegistry(e.target.value);
+            }}
+            placeholder="http://localhost:18081"
+            spellCheck={false}
+            autoComplete="off"
           />
         </label>
         <label className="dialog__check">

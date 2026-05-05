@@ -1,3 +1,4 @@
+mod avro;
 mod capture;
 mod commands;
 mod decode;
@@ -5,6 +6,7 @@ mod error;
 mod filter;
 mod message;
 mod ring_buffer;
+mod schema_registry;
 mod state;
 
 use tauri::Manager;

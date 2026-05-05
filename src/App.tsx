@@ -12,7 +12,8 @@ import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
 const DEFAULT_BOOTSTRAP = "localhost:19092";
-const DEFAULT_TOPICS = "orders.raw, orders.enriched, users.events";
+const DEFAULT_TOPICS = "orders.raw, orders.enriched, users.events, orders.avro, orders.jsonschema";
+const DEFAULT_REGISTRY = "http://localhost:18081";
 const UI_MAX_MESSAGES = 5_000;
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -154,7 +155,12 @@ function App(): JSX.Element {
     [messages, selectedId],
   );
 
-  const handleConnect = (bootstrap: string, topicList: string[], fromBeginning: boolean): void => {
+  const handleConnect = (
+    bootstrap: string,
+    topicList: string[],
+    fromBeginning: boolean,
+    schemaRegistryUrl: string | null,
+  ): void => {
     setConnection({
       status: "connecting",
       cluster: bootstrap,
@@ -167,6 +173,7 @@ function App(): JSX.Element {
           bootstrapServers: bootstrap,
           topics: topicList,
           fromBeginning,
+          schemaRegistryUrl,
         });
         messagesRef.current = [];
         setMessages([]);
@@ -257,6 +264,7 @@ function App(): JSX.Element {
         <ConnectionDialog
           defaultBootstrap={DEFAULT_BOOTSTRAP}
           defaultTopics={DEFAULT_TOPICS}
+          defaultRegistry={DEFAULT_REGISTRY}
           onConnect={handleConnect}
           pending={connection.status === "connecting"}
           error={connection.error}

@@ -6,6 +6,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::capture::CaptureHandle;
 use crate::filter::CompiledFilter;
 use crate::ring_buffer::RingBuffer;
+use crate::schema_registry::SchemaRegistryClient;
 
 /// Default ring buffer capacity.
 pub const DEFAULT_RING_CAPACITY: usize = 100_000;
@@ -21,6 +22,7 @@ pub struct AppState {
 #[derive(Debug, Default)]
 struct Inner {
     capture: Option<CaptureHandle>,
+    sr_client: Option<Arc<SchemaRegistryClient>>,
     started_at: Option<Instant>,
 }
 
@@ -34,15 +36,17 @@ impl AppState {
         }
     }
 
-    pub fn install(&self, handle: CaptureHandle) {
+    pub fn install(&self, handle: CaptureHandle, sr_client: Option<Arc<SchemaRegistryClient>>) {
         let mut guard = self.inner.lock();
         guard.capture = Some(handle);
+        guard.sr_client = sr_client;
         guard.started_at = Some(Instant::now());
     }
 
     pub fn take_capture(&self) -> Option<CaptureHandle> {
         let mut guard = self.inner.lock();
         guard.started_at = None;
+        guard.sr_client = None;
         guard.capture.take()
     }
 
