@@ -23,11 +23,14 @@
     "rust:sr-smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example sr_smoke",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm rust:fmt && pnpm rust:lint && pnpm rust:test",
     "stack:up": "docker compose up -d",
+    "stack:up:redpanda": "docker compose --profile redpanda up -d",
+    "stack:up:kafka": "docker compose --profile kafka up -d",
     "stack:down": "docker compose down",
     "stack:logs": "docker compose logs -f",
-    "stack:console": "open http://localhost:18888",
     "seed": "node tools/seed.mjs",
+    "seed:kafka": "node tools/seed.mjs --broker localhost:29092 --registry http://localhost:28081",
     "seed:loop": "node tools/seed.mjs --loop --rate 10",
+    "seed:loop:kafka": "node tools/seed.mjs --broker localhost:29092 --registry http://localhost:28081 --loop --rate 10",
     "prepare": "husky"
   },
   "lint-staged": {

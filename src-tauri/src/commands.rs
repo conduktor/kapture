@@ -5,7 +5,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::info;
 
-use crate::capture::{self, CaptureConfig};
+use serde::Deserialize;
+
+use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism};
 use crate::correlator::ProtoCorrelator;
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
@@ -37,6 +39,44 @@ pub struct ConnectResponse {
     pub bootstrap_servers: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthArgs {
+    /// "PLAIN" / "SCRAM-SHA-256" / "SCRAM-SHA-512"
+    pub mechanism: String,
+    pub username: String,
+    pub password: String,
+    /// `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`.
+    #[serde(default)]
+    pub use_tls: bool,
+}
+
+impl AuthArgs {
+    fn parse(self) -> Result<AuthConfig> {
+        let mechanism = match self.mechanism.to_uppercase().as_str() {
+            "PLAIN" => SaslMechanism::Plain,
+            "SCRAM-SHA-256" => SaslMechanism::ScramSha256,
+            "SCRAM-SHA-512" => SaslMechanism::ScramSha512,
+            other => {
+                return Err(KaptureError::Config(format!(
+                    "unsupported SASL mechanism `{other}`"
+                )));
+            }
+        };
+        if self.username.is_empty() || self.password.is_empty() {
+            return Err(KaptureError::Config(
+                "SASL username and password must be non-empty".to_owned(),
+            ));
+        }
+        Ok(AuthConfig {
+            mechanism,
+            username: self.username,
+            password: self.password,
+            use_tls: self.use_tls,
+        })
+    }
+}
+
 #[tauri::command]
 pub fn connect(
     state: State<'_, AppState>,
@@ -45,6 +85,7 @@ pub fn connect(
     topics: Vec<String>,
     from_beginning: bool,
     schema_registry_url: Option<String>,
+    auth: Option<AuthArgs>,
 ) -> Result<ConnectResponse> {
     if state.is_capturing() {
         return Err(KaptureError::AlreadyCapturing);
@@ -60,7 +101,14 @@ pub fn connect(
         }
     });
 
-    let config = CaptureConfig::new(bootstrap_servers.clone(), topics.clone(), from_beginning);
+    let parsed_auth = auth.map(AuthArgs::parse).transpose()?;
+    let auth_label = parsed_auth.as_ref().map(|a| a.mechanism.label());
+    let config = CaptureConfig::new(
+        bootstrap_servers.clone(),
+        topics.clone(),
+        from_beginning,
+        parsed_auth,
+    );
     let buffer = Arc::clone(&state.buffer);
     let filter = Arc::clone(&state.filter);
     let app_for_messages = app.clone();
@@ -85,6 +133,7 @@ pub fn connect(
         bootstrap = %bootstrap_servers,
         topics = ?topics,
         sr = schema_registry_url.as_deref().unwrap_or("none"),
+        auth = auth_label.unwrap_or("none"),
         "capture started"
     );
     Ok(ConnectResponse {

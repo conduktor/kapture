@@ -26,14 +26,33 @@ Wire-compatible with Apache Kafka and any derivative (Redpanda, MSK, Confluent C
 
 ## Quick start
 
-Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82, Docker (for the local Kafka), `librdkafka` (`brew install librdkafka` on macOS).
+Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82, Docker, `cyrus-sasl` (`brew install cyrus-sasl` on macOS — needed when `librdkafka` is built with SASL).
+
+The dev stack runs **two Kafka clusters side-by-side** so Kapture can be smoke-tested against canonical Apache Kafka and Redpanda in parallel:
+
+| Cluster      | Kafka API         | Schema Registry          |
+| ------------ | ----------------- | ------------------------ |
+| Redpanda     | `localhost:19092` | `http://localhost:18081` |
+| Apache Kafka | `localhost:29092` | `http://localhost:28081` |
 
 ```bash
-# 1. Install JS dependencies
+# 1. Install JS deps and the Kapture-patched librdkafka
 pnpm install
+# librdkafka is vendored under vendor/librdkafka with a patch that
+# adds rd_kafka_set_proto_hook_cb (per-message protocol context).
+# Build it once into vendor/librdkafka/install:
+cd vendor/librdkafka && mkdir -p build && cd build \
+  && cmake .. -DRDKAFKA_BUILD_STATIC=OFF -DRDKAFKA_BUILD_TESTS=OFF \
+              -DRDKAFKA_BUILD_EXAMPLES=OFF -DENABLE_LZ4_EXT=OFF \
+              -DWITH_CURL=OFF \
+              -DCMAKE_INSTALL_PREFIX="$(cd .. && pwd)/install" \
+  && cmake --build . --target install -j
+cd ../../..
 
-# 2. Boot a local Redpanda (Kafka API + Schema Registry, single node)
-pnpm stack:up
+# 2. Boot one (or both) local clusters
+pnpm stack:up:redpanda     # Redpanda only
+pnpm stack:up:kafka        # Apache Kafka + cp-schema-registry only
+pnpm stack:up              # both
 
 # 3. Inject test data — five topics, mixing payload encodings:
 #      orders.raw         JSON (no Schema Registry)
@@ -41,18 +60,22 @@ pnpm stack:up
 #      users.events       JSON (no Schema Registry)
 #      orders.avro        Avro via Confluent Schema Registry
 #      orders.jsonschema  JSON Schema via Confluent Schema Registry
-pnpm seed          # one-shot: 200 messages
-pnpm seed:loop     # continuous: ~10 msg/s
+pnpm seed                  # Redpanda, one-shot 200 msg
+pnpm seed:loop             # Redpanda, continuous ~10 msg/s
+pnpm seed:kafka            # Apache Kafka, one-shot
+pnpm seed:loop:kafka       # Apache Kafka, continuous
 
 # 4. Smoke-test the Rust capture pipeline
-pnpm rust:smoke         # plain JSON path
-pnpm rust:sr-smoke      # Schema Registry path (Avro + JSON Schema decode)
+pnpm rust:smoke            # plain JSON path
+pnpm rust:sr-smoke         # SR + Avro + JSON Schema decode
+cargo run --manifest-path src-tauri/Cargo.toml --example proto_smoke
+                           # proto-hook end-to-end (per-message protocol context)
 
 # 5. Launch the desktop app
 pnpm tauri dev
 ```
 
-The Connection dialog defaults to `localhost:19092`, the seeded topics, and `http://localhost:18081` for Schema Registry. Leave the Schema Registry field empty to capture without schema resolution. Redpanda Console is included for cross-checking the cluster (<http://localhost:18888>).
+The Connection dialog supports PLAINTEXT and **SASL/PLAIN, SASL/SCRAM-SHA-256, SASL/SCRAM-SHA-512** with optional TLS (`SASL_SSL`). Use it directly against managed Kafka offerings (Confluent Cloud, Aiven, MSK, WarpStream) by entering bootstrap, mechanism, username, password, and toggling the TLS box.
 
 When you're done:
 

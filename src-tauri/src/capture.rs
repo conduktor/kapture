@@ -84,15 +84,51 @@ pub struct CaptureConfig {
     pub topics: Vec<String>,
     pub group_id: String,
     pub from_beginning: bool,
+    pub auth: Option<AuthConfig>,
+}
+
+/// Supported SASL mechanisms. Built into librdkafka; no Cyrus SASL
+/// (no GSSAPI/Kerberos) at the moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaslMechanism {
+    Plain,
+    ScramSha256,
+    ScramSha512,
+}
+
+impl SaslMechanism {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "PLAIN",
+            Self::ScramSha256 => "SCRAM-SHA-256",
+            Self::ScramSha512 => "SCRAM-SHA-512",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthConfig {
+    pub mechanism: SaslMechanism,
+    pub username: String,
+    pub password: String,
+    /// True when the broker requires TLS (`SASL_SSL`); false for the
+    /// plaintext SASL transport (`SASL_PLAINTEXT`).
+    pub use_tls: bool,
 }
 
 impl CaptureConfig {
-    pub fn new(bootstrap_servers: String, topics: Vec<String>, from_beginning: bool) -> Self {
+    pub fn new(
+        bootstrap_servers: String,
+        topics: Vec<String>,
+        from_beginning: bool,
+        auth: Option<AuthConfig>,
+    ) -> Self {
         Self {
             bootstrap_servers,
             topics,
             group_id: format!("kapture-{}", Uuid::new_v4().simple()),
             from_beginning,
+            auth,
         }
     }
 }
@@ -131,6 +167,19 @@ where
         .set("session.timeout.ms", "10000")
         .set("fetch.min.bytes", "1")
         .set("client.id", "kapture-inspector");
+
+    if let Some(auth) = &config.auth {
+        let security_protocol = if auth.use_tls {
+            "SASL_SSL"
+        } else {
+            "SASL_PLAINTEXT"
+        };
+        client_config
+            .set("security.protocol", security_protocol)
+            .set("sasl.mechanism", auth.mechanism.label())
+            .set("sasl.username", &auth.username)
+            .set("sasl.password", &auth.password);
+    }
 
     let consumer: StreamConsumer = client_config.create()?;
     let topic_refs: Vec<&str> = config.topics.iter().map(String::as_str).collect();

@@ -1,4 +1,9 @@
 import { useState, type JSX } from "react";
+import type { AuthArgs, SaslMechanism } from "../types";
+
+type AuthMethod = "none" | SaslMechanism;
+
+const SASL_MECHANISMS: SaslMechanism[] = ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"];
 
 interface Props {
   defaultBootstrap: string;
@@ -9,6 +14,7 @@ interface Props {
     topics: string[],
     fromBeginning: boolean,
     schemaRegistryUrl: string | null,
+    auth: AuthArgs | null,
   ) => void;
   pending: boolean;
   error: string | null;
@@ -26,6 +32,10 @@ export function ConnectionDialog({
   const [topics, setTopics] = useState(defaultTopics);
   const [registry, setRegistry] = useState(defaultRegistry);
   const [fromBeginning, setFromBeginning] = useState(true);
+  const [authMethod, setAuthMethod] = useState<AuthMethod>("none");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [useTls, setUseTls] = useState(false);
 
   const submit = (): void => {
     const list = topics
@@ -36,7 +46,9 @@ export function ConnectionDialog({
       return;
     }
     const registryUrl = registry.trim();
-    onConnect(bootstrap.trim(), list, fromBeginning, registryUrl === "" ? null : registryUrl);
+    const auth: AuthArgs | null =
+      authMethod === "none" ? null : { mechanism: authMethod, username, password, useTls };
+    onConnect(bootstrap.trim(), list, fromBeginning, registryUrl === "" ? null : registryUrl, auth);
   };
 
   return (
@@ -50,8 +62,8 @@ export function ConnectionDialog({
       >
         <h2 className="dialog__title">Connect to Kafka</h2>
         <p className="dialog__hint">
-          Local Redpanda from <code>docker compose up -d</code>: bootstrap{" "}
-          <code>localhost:19092</code>.
+          Local dev: Redpanda <code>localhost:19092</code> or Apache Kafka{" "}
+          <code>localhost:29092</code> via <code>docker compose up -d</code>.
         </p>
         <label className="dialog__field">
           <span className="dialog__label">Bootstrap servers</span>
@@ -94,6 +106,63 @@ export function ConnectionDialog({
             autoComplete="off"
           />
         </label>
+        <label className="dialog__field">
+          <span className="dialog__label">Authentication</span>
+          <select
+            className="dialog__input"
+            value={authMethod}
+            onChange={(e) => {
+              setAuthMethod(e.target.value as AuthMethod);
+            }}
+          >
+            <option value="none">None (PLAINTEXT)</option>
+            {SASL_MECHANISMS.map((m) => (
+              <option key={m} value={m}>
+                SASL/{m}
+              </option>
+            ))}
+          </select>
+        </label>
+        {authMethod !== "none" ? (
+          <>
+            <label className="dialog__field">
+              <span className="dialog__label">Username</span>
+              <input
+                className="dialog__input"
+                value={username}
+                onChange={(e) => {
+                  setUsername(e.target.value);
+                }}
+                spellCheck={false}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <label className="dialog__field">
+              <span className="dialog__label">Password</span>
+              <input
+                type="password"
+                className="dialog__input"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                }}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <label className="dialog__check">
+              <input
+                type="checkbox"
+                checked={useTls}
+                onChange={(e) => {
+                  setUseTls(e.target.checked);
+                }}
+              />
+              <span>TLS (SASL_SSL)</span>
+            </label>
+          </>
+        ) : null}
         <label className="dialog__check">
           <input
             type="checkbox"

@@ -1,16 +1,32 @@
 name: kapture-dev
 
+# Two Kafka stacks side-by-side, on disjoint networks and ports, so
+# Kapture can be smoke-tested against both:
+#
+#   Redpanda — fast single-binary KRaft, our default dev cluster
+#     bootstrap : localhost:19092
+#     SR        : http://localhost:18081
+#
+#   Apache Kafka + Confluent Schema Registry — canonical Kafka
+#     bootstrap : localhost:29092
+#     SR        : http://localhost:28081
+#
+# Use docker compose profiles to run only one stack:
+#   docker compose --profile redpanda up -d
+#   docker compose --profile kafka    up -d
+# or `docker compose up -d` to bring up both at once.
+
 services:
+  # ─────────────────────── Redpanda ───────────────────────
   redpanda:
-    image: redpandadata/redpanda:v24.3.5
+    image: redpandadata/redpanda:latest
     container_name: kapture-redpanda
+    profiles: ["", "redpanda", "all"]
     command:
       - redpanda
       - start
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
-      - --pandaproxy-addr internal://0.0.0.0:8082,external://0.0.0.0:18082
-      - --advertise-pandaproxy-addr internal://redpanda:8082,external://localhost:18082
       - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
       - --rpc-addr redpanda:33145
       - --advertise-rpc-addr redpanda:33145
@@ -18,9 +34,8 @@ services:
       - --smp 1
       - --default-log-level=warn
     ports:
-      - "19092:19092" # Kafka API (external)
-      - "18081:18081" # Schema Registry (external)
-      - "18082:18082" # HTTP Pandaproxy (external)
+      - "19092:19092" # Kafka API
+      - "18081:18081" # Schema Registry
       - "9644:9644" # Admin API
     healthcheck:
       test: ["CMD", "rpk", "cluster", "health", "--exit-when-healthy"]
@@ -28,23 +43,58 @@ services:
       timeout: 3s
       retries: 20
     networks:
-      - kapture
+      - redpanda
 
-  console:
-    image: redpandadata/console:v2.8.5
-    container_name: kapture-console
+  # ─────────────────── Apache Kafka (KRaft) ───────────────────
+  kafka:
+    image: apache/kafka:latest
+    container_name: kapture-kafka
+    profiles: ["", "kafka", "all"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "kapture-dev-cluster"
+    ports:
+      - "29092:29092" # Kafka API
+    healthcheck:
+      test:
+        ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - kafka
+
+  kafka-schema-registry:
+    image: confluentinc/cp-schema-registry:latest
+    container_name: kapture-kafka-sr
+    profiles: ["", "kafka", "all"]
     depends_on:
-      redpanda:
+      kafka:
         condition: service_healthy
     environment:
-      KAFKA_BROKERS: redpanda:9092
-      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
-      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+      SCHEMA_REGISTRY_HOST_NAME: kafka-schema-registry
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "PLAINTEXT://kafka:9092"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: "_schemas_kapture"
     ports:
-      - "18888:8080"
+      - "28081:8081"
     networks:
-      - kapture
+      - kafka
 
 networks:
-  kapture:
-    name: kapture-dev
+  redpanda:
+    name: kapture-redpanda
+  kafka:
+    name: kapture-kafka

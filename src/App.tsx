@@ -9,7 +9,7 @@ import { HexDump } from "./components/HexDump";
 import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { followKeyExpr } from "./lib/filterExpr";
-import type { AppInfo, CaptureStats, ConnectionState, KafkaMessage } from "./types";
+import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
 const DEFAULT_BOOTSTRAP = "localhost:19092";
 const DEFAULT_TOPICS = "orders.raw, orders.enriched, users.events, orders.avro, orders.jsonschema";
@@ -160,6 +160,7 @@ function App(): JSX.Element {
     topicList: string[],
     fromBeginning: boolean,
     schemaRegistryUrl: string | null,
+    auth: AuthArgs | null,
   ): void => {
     setConnection({
       status: "connecting",
@@ -174,6 +175,7 @@ function App(): JSX.Element {
           topics: topicList,
           fromBeginning,
           schemaRegistryUrl,
+          auth,
         });
         messagesRef.current = [];
         setMessages([]);

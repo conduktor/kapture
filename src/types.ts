@@ -58,8 +58,20 @@ export interface CaptureStats {
   throughputPerSec: number;
 }
 
+export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
+
+export interface AuthArgs {
+  mechanism: SaslMechanism;
+  username: string;
+  password: string;
+  /** `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`. */
+  useTls: boolean;
+}
+
 export interface ConnectArgs {
   bootstrapServers: string;
   topics: string[];
   fromBeginning: boolean;
+  schemaRegistryUrl: string | null;
+  auth: AuthArgs | null;
 }
