@@ -8,6 +8,7 @@ interface Props {
   onToggleCapture: () => void;
   onClear: () => void;
   cluster: string;
+  onEdit: () => void;
 }
 
 export function TopBar({
@@ -18,13 +19,22 @@ export function TopBar({
   onToggleCapture,
   onClear,
   cluster,
+  onEdit,
 }: Props): JSX.Element {
   return (
     <header className="topbar">
-      <div className="topbar__cluster">
+      <button
+        type="button"
+        className="topbar__cluster"
+        onClick={onEdit}
+        title="Edit connection settings"
+      >
         <span className="topbar__cluster-dot" data-status={capturing ? "live" : "idle"} />
         <span className="topbar__cluster-name">{cluster}</span>
-      </div>
+        <span className="topbar__cluster-edit" aria-hidden="true">
+          ✎
+        </span>
+      </button>
       <div className="topbar__filter-wrap">
         <input
           className={`topbar__filter${filterError ? " topbar__filter--invalid" : ""}`}

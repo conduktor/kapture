@@ -40,6 +40,7 @@ function App(): JSX.Element {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
+  const [editing, setEditing] = useState(false);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
   // generation is allowed to commit set_filter / snapshot results, so a
@@ -168,8 +169,17 @@ function App(): JSX.Element {
       topics: topicList,
       error: null,
     });
+    setEditing(false);
     void (async () => {
       try {
+        // If we're already connected, disconnect first (edit-mode reconnect).
+        if (connection.status === "connected") {
+          try {
+            await invoke("disconnect");
+          } catch (err) {
+            console.error("disconnect during reconnect failed", err);
+          }
+        }
         await invoke("connect", {
           bootstrapServers: bootstrap,
           topics: topicList,
@@ -232,7 +242,15 @@ function App(): JSX.Element {
     }
   }, []);
 
-  const showDialog = connection.status === "disconnected" || connection.status === "error";
+  const showDialog =
+    connection.status === "disconnected" || connection.status === "error" || editing;
+  const isEditing = editing && connection.status === "connected";
+  const initialPrefill = isEditing
+    ? {
+        bootstrap: connection.cluster ?? DEFAULT_BOOTSTRAP,
+        topics: connection.topics.join(", "),
+      }
+    : undefined;
 
   return (
     <div className="app">
@@ -248,6 +266,9 @@ function App(): JSX.Element {
         }}
         onClear={handleClear}
         cluster={connection.cluster ?? "no cluster"}
+        onEdit={() => {
+          setEditing(true);
+        }}
       />
       <main className="layout">
         <div className="layout__main">
@@ -267,7 +288,16 @@ function App(): JSX.Element {
           defaultBootstrap={DEFAULT_BOOTSTRAP}
           defaultTopics={DEFAULT_TOPICS}
           defaultRegistry={DEFAULT_REGISTRY}
+          initial={initialPrefill}
+          isEditing={isEditing}
           onConnect={handleConnect}
+          onCancel={
+            isEditing
+              ? () => {
+                  setEditing(false);
+                }
+              : undefined
+          }
           pending={connection.status === "connecting"}
           error={connection.error}
         />

@@ -6,13 +6,18 @@ mod decode;
 mod error;
 mod filter;
 mod message;
+mod profiles;
 mod proto_hook;
 mod ring_buffer;
 mod schema_registry;
 mod state;
 
+use std::sync::Arc;
+
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
+
+use crate::profiles::ProfileStore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -25,7 +30,16 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .setup(|app| {
-            app.manage(state::AppState::new());
+            // Resolve the per-platform profiles directory through Tauri,
+            // falling back to a process-local directory if Tauri can't
+            // tell us (e.g., during certain test harnesses).
+            let dir = app.path().app_config_dir().unwrap_or_else(|_| {
+                dirs::config_dir()
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("io.kapture.app")
+            });
+            let store = Arc::new(ProfileStore::open(dir)?);
+            app.manage(state::AppState::new(store));
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -37,6 +51,10 @@ pub fn run() {
             commands::stats,
             commands::clear_buffer,
             commands::set_filter,
+            commands::list_profiles,
+            commands::save_profile,
+            commands::delete_profile,
+            commands::load_profile,
         ])
         .run(tauri::generate_context!());
 

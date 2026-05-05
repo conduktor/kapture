@@ -75,3 +75,41 @@ export interface ConnectArgs {
   schemaRegistryUrl: string | null;
   auth: AuthArgs | null;
 }
+
+export interface ProfileAuthMetadata {
+  mechanism: SaslMechanism;
+  username: string;
+  useTls: boolean;
+  /** True when a password is stored in the OS keychain for this profile. */
+  hasPassword: boolean;
+}
+
+export interface ProfileMetadata {
+  name: string;
+  bootstrapServers: string;
+  topics: string[];
+  schemaRegistryUrl: string | null;
+  auth: ProfileAuthMetadata | null;
+  fromBeginning: boolean;
+}
+
+export interface LoadedProfile extends ProfileMetadata {
+  password: string | null;
+}
+
+export interface SaveProfileAuth {
+  mechanism: SaslMechanism;
+  username: string;
+  useTls: boolean;
+  /** `null` to leave any existing keychain password untouched. */
+  password: string | null;
+}
+
+export interface SaveProfileArgs {
+  name: string;
+  bootstrapServers: string;
+  topics: string[];
+  schemaRegistryUrl: string | null;
+  auth: SaveProfileAuth | null;
+  fromBeginning: boolean;
+}

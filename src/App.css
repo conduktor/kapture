@@ -71,6 +71,20 @@ body,
   border-radius: var(--radius);
   font-family: var(--mono);
   font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.topbar__cluster:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.topbar__cluster-edit {
+  margin-left: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 .topbar__cluster-dot {
   width: 8px;
@@ -572,6 +586,14 @@ body,
   font-family: var(--mono);
   font-size: 12px;
   word-break: break-word;
+}
+.dialog__profile-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.dialog__profile-row select {
+  flex: 1;
 }
 .dialog__actions {
   display: flex;

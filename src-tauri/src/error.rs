@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 use crate::filter::FilterError;
+use crate::profiles::ProfileError;
 
 #[derive(Debug, Error)]
 pub enum KaptureError {
@@ -18,6 +19,9 @@ pub enum KaptureError {
 
     #[error("filter: {0}")]
     Filter(#[from] FilterError),
+
+    #[error("profile: {0}")]
+    Profile(#[from] ProfileError),
 }
 
 pub type Result<T> = std::result::Result<T, KaptureError>;

@@ -12,6 +12,7 @@ use crate::correlator::ProtoCorrelator;
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
+use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata};
 use crate::ring_buffer::CaptureStats;
 use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
@@ -191,6 +192,67 @@ pub fn set_filter(state: State<'_, AppState>, expression: String) -> Result<()> 
     *state.filter.write() = Some(compiled);
     info!(expr = trimmed, "filter installed");
     Ok(())
+}
+
+// ─────────────────────── Connection profiles ───────────────────────
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileArgs {
+    pub name: String,
+    pub bootstrap_servers: String,
+    pub topics: Vec<String>,
+    pub schema_registry_url: Option<String>,
+    pub auth: Option<SaveProfileAuth>,
+    pub from_beginning: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileAuth {
+    pub mechanism: String,
+    pub username: String,
+    pub use_tls: bool,
+    /// `Some(...)` to set or replace the keychain password,
+    /// `None` to leave any existing password untouched, `Some("")`
+    /// to clear it.
+    pub password: Option<String>,
+}
+
+#[tauri::command]
+pub fn list_profiles(state: State<'_, AppState>) -> Vec<ProfileMetadata> {
+    state.profiles.list()
+}
+
+#[tauri::command]
+pub fn load_profile(state: State<'_, AppState>, name: String) -> Result<LoadedProfile> {
+    Ok(state.profiles.load(&name)?)
+}
+
+#[tauri::command]
+pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<()> {
+    state.profiles.delete(&name)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result<ProfileMetadata> {
+    let auth = args.auth.as_ref().map(|a| AuthMetadata {
+        mechanism: a.mechanism.clone(),
+        username: a.username.clone(),
+        use_tls: a.use_tls,
+        has_password: false, // overwritten by ProfileStore::save
+    });
+    let meta = ProfileMetadata {
+        name: args.name,
+        bootstrap_servers: args.bootstrap_servers,
+        topics: args.topics,
+        schema_registry_url: args.schema_registry_url,
+        auth,
+        from_beginning: args.from_beginning,
+    };
+    let password = args.auth.and_then(|a| a.password);
+    Ok(state.profiles.save(meta, password)?)
 }
 
 fn spawn_stats_emitter(app: &AppHandle) {

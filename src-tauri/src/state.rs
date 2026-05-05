@@ -6,6 +6,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::capture::CaptureHandle;
 use crate::correlator::ProtoCorrelator;
 use crate::filter::CompiledFilter;
+use crate::profiles::ProfileStore;
 use crate::ring_buffer::RingBuffer;
 use crate::schema_registry::SchemaRegistryClient;
 
@@ -17,6 +18,7 @@ pub const DEFAULT_RING_CAPACITY: usize = 100_000;
 pub struct AppState {
     pub buffer: Arc<RingBuffer>,
     pub filter: Arc<RwLock<Option<CompiledFilter>>>,
+    pub profiles: Arc<ProfileStore>,
     inner: Mutex<Inner>,
 }
 
@@ -30,10 +32,11 @@ struct Inner {
 
 impl AppState {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(profiles: Arc<ProfileStore>) -> Self {
         Self {
             buffer: Arc::new(RingBuffer::new(DEFAULT_RING_CAPACITY)),
             filter: Arc::new(RwLock::new(None)),
+            profiles,
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -68,11 +71,5 @@ impl AppState {
             .lock()
             .started_at
             .map_or(0.0, |started| started.elapsed().as_secs_f64())
-    }
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::new()
     }
 }
