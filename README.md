@@ -13,6 +13,8 @@ Kafka tooling is saturated with topic browsers (Conduktor, Redpanda Console, AKH
 1. **Inspector** — Wireshark-style live capture with decoded layers, filter DSL, follow-by-key. **MVP.**
 2. **Debugger** — Time-travel debugger for Kafka Streams / Flink consumers (breakpoints by predicate, step messages, inspect state stores).
 
+Kapture also exposes an **MCP server** on `http://127.0.0.1:7878/mcp` so AI agents (Claude Desktop, IDE assistants, custom clients) can drive captures directly: list / load profiles, set filters, snapshot recent messages, inspect a single message by id. Secrets stay server-side — agents never see SASL or TLS-key passwords.
+
 The full design lives in [`docs/spec.md`](./docs/spec.md).
 
 ## Tech stack

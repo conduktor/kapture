@@ -5,6 +5,7 @@ mod correlator;
 mod decode;
 mod error;
 mod filter;
+mod mcp;
 mod message;
 mod profiles;
 mod proto_hook;
@@ -40,6 +41,16 @@ pub fn run() {
             });
             let store = Arc::new(ProfileStore::open(dir)?);
             app.manage(state::AppState::new(store));
+
+            // Spawn the MCP server so AI agents can drive Kapture
+            // through the standardised protocol. Bound to localhost
+            // only — see `mcp.rs` for the threat model.
+            let mcp_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = mcp::spawn(mcp_handle, mcp::default_port()).await {
+                    eprintln!("failed to start MCP server: {err}");
+                }
+            });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

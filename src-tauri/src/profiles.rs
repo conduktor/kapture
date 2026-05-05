@@ -34,6 +34,7 @@ use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use parking_lot::Mutex;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
@@ -67,7 +68,7 @@ pub enum ProfileError {
 }
 
 /// Public, password-free shape exposed in lists.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileMetadata {
     pub name: String,
@@ -80,7 +81,7 @@ pub struct ProfileMetadata {
     pub from_beginning: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthMetadata {
     /// "PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512".
@@ -98,7 +99,7 @@ pub struct AuthMetadata {
     pub tls: Option<TlsMetadata>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct TlsMetadata {
     pub ca_path: Option<String>,

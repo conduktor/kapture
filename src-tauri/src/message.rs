@@ -1,15 +1,16 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::correlator::FetchMetadata;
 use crate::decode::DecodedValue;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 pub struct KafkaHeader {
     pub key: String,
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CapturedMessage {
     pub id: String,

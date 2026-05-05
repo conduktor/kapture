@@ -1,7 +1,8 @@
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum DecodedValue {
     Primitive {
@@ -21,7 +22,7 @@ pub enum DecodedValue {
     },
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum PrimitiveType {
     String,
@@ -30,7 +31,7 @@ pub enum PrimitiveType {
     Null,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 pub struct DecodedField {
     pub name: String,
     pub value: DecodedValue,

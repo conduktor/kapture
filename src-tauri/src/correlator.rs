@@ -20,13 +20,14 @@
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
 
 const FETCH_API_KEY: i32 = 1;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct FetchMetadata {
     /// API key — always `1` (Fetch) today, kept for forward-compat.

@@ -1,11 +1,12 @@
 use std::collections::VecDeque;
 
 use parking_lot::RwLock;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::message::CapturedMessage;
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureStats {
     pub total_received: u64,
