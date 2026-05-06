@@ -230,7 +230,7 @@ export function ProtoList({
           className="proto__col proto__col--rtt"
           title="Round-trip time in milliseconds. Only meaningful on Recv frames — the time between the matching Send and this Recv."
         >
-          rtt (ms)
+          rtt
         </span>
       </div>
       <div className="msglist__body">
@@ -548,7 +548,14 @@ function ProtoRow({
         {frame.corrId}
       </FilterableCell>
       <span className="proto__col proto__col--rtt">
-        {frame.direction === "recv" ? frame.rttMs.toFixed(2) : "—"}
+        {frame.direction === "recv" ? (
+          <>
+            {frame.rttMs.toFixed(2)}
+            <span className="proto__rtt-unit"> ms</span>
+          </>
+        ) : (
+          "—"
+        )}
       </span>
     </div>
   );

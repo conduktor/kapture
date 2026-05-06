@@ -393,10 +393,11 @@ section.msglist[aria-label="Protocol frames"] {
   text-overflow: ellipsis;
 }
 .proto__ts-delta,
-.proto__api-ver {
+.proto__api-ver,
+.proto__rtt-unit {
   color: var(--text-faint);
   font-size: 11px;
-  margin-left: 6px;
+  margin-left: 4px;
 }
 /* Match grid template to the columns in ProtoList. The ts column needs
  * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
@@ -439,11 +440,12 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   font-weight: 500;
 }
 .proto__col--rtt,
-.proto__col--size,
-.proto__col--corr,
-.proto__col--broker,
-.proto__col--v {
+.proto__col--size {
   text-align: right;
+}
+.proto__col--corr,
+.proto__col--broker {
+  text-align: center;
 }
 
 /* Hover-revealed ⊕/⊖ filter button on proto list cells. The icon sits
