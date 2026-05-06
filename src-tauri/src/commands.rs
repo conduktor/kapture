@@ -7,15 +7,13 @@ use tracing::info;
 
 use serde::Deserialize;
 
-use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
 use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata};
-use crate::proxy::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
+use crate::proxy_upstream::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
 use crate::ring_buffer::CaptureStats;
-use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -34,287 +32,8 @@ pub const fn app_info() -> AppInfo {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConnectResponse {
-    pub topic_pattern: String,
-    pub bootstrap_servers: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthArgs {
-    /// "PLAIN" / "SCRAM-SHA-256" / "SCRAM-SHA-512"
-    pub mechanism: String,
-    pub username: String,
-    pub password: String,
-    /// `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`.
-    #[serde(default)]
-    pub use_tls: bool,
-    /// Optional TLS material. Ignored unless `use_tls` is true.
-    #[serde(default)]
-    pub tls: Option<TlsArgs>,
-}
-
-impl std::fmt::Debug for AuthArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthArgs")
-            .field("mechanism", &self.mechanism)
-            .field("username", &self.username)
-            .field("password", &"<redacted>")
-            .field("use_tls", &self.use_tls)
-            .field("tls", &self.tls)
-            .finish()
-    }
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TlsArgs {
-    pub ca_path: Option<String>,
-    pub cert_path: Option<String>,
-    pub key_path: Option<String>,
-    pub key_password: Option<String>,
-}
-
-impl std::fmt::Debug for TlsArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsArgs")
-            .field("ca_path", &self.ca_path)
-            .field("cert_path", &self.cert_path)
-            .field("key_path", &self.key_path)
-            .field(
-                "key_password",
-                &self.key_password.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
-
-impl TlsArgs {
-    fn into_creds(self) -> Option<TlsCreds> {
-        let Self {
-            ca_path,
-            cert_path,
-            key_path,
-            key_password,
-        } = self;
-        let any = ca_path.is_some()
-            || cert_path.is_some()
-            || key_path.is_some()
-            || key_password.is_some();
-        if !any {
-            return None;
-        }
-        Some(TlsCreds {
-            ca_path: empty_to_none(ca_path),
-            cert_path: empty_to_none(cert_path),
-            key_path: empty_to_none(key_path),
-            key_password: empty_to_none(key_password),
-        })
-    }
-}
-
 fn empty_to_none(value: Option<String>) -> Option<String> {
     value.and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
-}
-
-impl AuthArgs {
-    fn parse(self) -> Result<AuthConfig> {
-        let mechanism = match self.mechanism.to_uppercase().as_str() {
-            "PLAIN" => SaslMechanism::Plain,
-            "SCRAM-SHA-256" => SaslMechanism::ScramSha256,
-            "SCRAM-SHA-512" => SaslMechanism::ScramSha512,
-            other => {
-                return Err(KaptureError::Config(format!(
-                    "unsupported SASL mechanism `{other}`"
-                )));
-            }
-        };
-        if self.username.is_empty() || self.password.is_empty() {
-            return Err(KaptureError::Config(
-                "SASL username and password must be non-empty".to_owned(),
-            ));
-        }
-        let tls = if self.use_tls {
-            let creds = self.tls.unwrap_or_default().into_creds();
-            if let Some(t) = &creds {
-                t.validate_paths().map_err(KaptureError::Config)?;
-            }
-            creds
-        } else {
-            None
-        };
-        Ok(AuthConfig {
-            mechanism,
-            username: self.username,
-            password: self.password,
-            use_tls: self.use_tls,
-            tls,
-        })
-    }
-}
-
-/// MUST be `async`: the body calls into rdkafka's `tokio` feature which
-/// spawns internal tasks at consumer construction. Tauri's sync commands
-/// run on a blocking thread that has no tokio runtime in scope, so the
-/// rdkafka spawn panics with "there is no reactor running". An `async`
-/// command runs inside Tauri's tokio runtime — the same fix applies to
-/// `test_connection` further down.
-#[tauri::command]
-pub async fn connect(
-    state: State<'_, AppState>,
-    app: AppHandle,
-    bootstrap_servers: String,
-    topic_pattern: Option<String>,
-    from_beginning: bool,
-    schema_registry_url: Option<String>,
-    auth: Option<AuthArgs>,
-) -> Result<ConnectResponse> {
-    // GUI semantics: clicking Connect always means "switch to this".
-    // Stop the previous capture cleanly first, then claim the slot.
-    // The MCP `kafka_connect_profile` path keeps stricter semantics so
-    // an agent can't squash a human-driven capture without consent.
-    if let Some(handle) = state.take_capture() {
-        handle.stop().await;
-    }
-    if !state.try_claim_capture_slot() {
-        // Only reachable if an MCP agent claimed the slot in the narrow
-        // window between take_capture and try_claim_capture_slot.
-        return Err(KaptureError::AlreadyCapturing);
-    }
-    state.buffer.clear();
-
-    let sr_client = schema_registry_url.as_ref().and_then(|url| {
-        let trimmed = url.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(Arc::new(SchemaRegistryClient::new(trimmed.to_owned())))
-        }
-    });
-
-    let parsed_auth = auth.map(AuthArgs::parse).transpose()?;
-    let auth_label = parsed_auth.as_ref().map(|a| a.mechanism.label());
-    let pattern = capture::normalise_topic_pattern(topic_pattern.as_deref());
-    let config = CaptureConfig::new(
-        bootstrap_servers.clone(),
-        pattern.clone(),
-        from_beginning,
-        parsed_auth,
-    );
-    let buffer = Arc::clone(&state.buffer);
-    let filter = Arc::clone(&state.filter);
-    let app_for_messages = app.clone();
-    let correlator = Arc::new(ProtoCorrelator::new());
-    let handle = capture::start(
-        config,
-        sr_client.clone(),
-        Arc::clone(&correlator),
-        move |message| {
-            buffer.push(message.clone());
-            let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
-            if pass {
-                let _ = app_for_messages.emit("kapture:message", &message);
-            }
-        },
-    )?;
-
-    state.install(handle, sr_client, correlator);
-    spawn_stats_emitter(&app);
-
-    info!(
-        bootstrap = %bootstrap_servers,
-        pattern = %pattern,
-        sr = schema_registry_url.as_deref().unwrap_or("none"),
-        auth = auth_label.unwrap_or("none"),
-        "capture started"
-    );
-    Ok(ConnectResponse {
-        topic_pattern: pattern,
-        bootstrap_servers,
-    })
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TestConnectionResponse {
-    pub ok: bool,
-    pub brokers: usize,
-    pub topics: usize,
-    pub message: String,
-}
-
-/// Probe a Kafka cluster without starting a capture. Used by the
-/// "Test connection" button in the GUI. The 5 s timeout is hard-coded:
-/// any healthy broker answers metadata in well under a second; longer
-/// is almost certainly a hung TCP path or a wrong port.
-#[tauri::command]
-pub async fn test_connection(
-    bootstrap_servers: String,
-    schema_registry_url: Option<String>,
-    auth: Option<AuthArgs>,
-) -> Result<TestConnectionResponse> {
-    let parsed_auth = auth.map(AuthArgs::parse).transpose()?;
-    let pattern = capture::normalise_topic_pattern(None);
-    let config = CaptureConfig::new(bootstrap_servers, pattern, true, parsed_auth);
-    // Run the blocking metadata fetch on a worker thread so the IPC
-    // event loop isn't blocked. We must `Handle::current().enter()`
-    // inside the worker so rdkafka's tokio-feature consumer can spawn
-    // its internal tasks (otherwise it panics with
-    // "there is no reactor running").
-    let handle = tokio::runtime::Handle::current();
-    let report = tokio::task::spawn_blocking(move || {
-        let _guard = handle.enter();
-        capture::test_connection(&config, Duration::from_secs(5))
-    })
-    .await
-    .map_err(|e| KaptureError::Config(format!("worker join failed: {e}")))??;
-
-    // Schema Registry is optional and tested separately so a missing /
-    // misconfigured registry doesn't fail the broker probe.
-    if let Some(url) = schema_registry_url
-        .as_ref()
-        .filter(|u| !u.trim().is_empty())
-    {
-        // Tight HTTP GET with a short timeout. SR's /subjects is cheap and
-        // exists on Confluent + Redpanda + Apicurio.
-        let endpoint = format!("{}/subjects", url.trim_end_matches('/'));
-        let sr_ok = match reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .build()
-        {
-            Ok(client) => match client.get(&endpoint).send().await {
-                // 4xx still proves the server exists and answered; only
-                // network-level failures (connect refused, DNS, TLS) count
-                // as "registry unreachable".
-                Ok(resp) => resp.status().is_success() || resp.status().is_client_error(),
-                Err(_) => false,
-            },
-            Err(_) => false,
-        };
-        if !sr_ok {
-            return Ok(TestConnectionResponse {
-                ok: false,
-                brokers: report.brokers,
-                topics: report.topics,
-                message: format!(
-                    "Brokers reachable ({} brokers, {} topics) but Schema Registry at {url} did not respond",
-                    report.brokers, report.topics
-                ),
-            });
-        }
-    }
-
-    Ok(TestConnectionResponse {
-        ok: true,
-        brokers: report.brokers,
-        topics: report.topics,
-        message: format!(
-            "{} brokers, {} topics visible",
-            report.brokers, report.topics
-        ),
-    })
 }
 
 #[derive(Debug, Serialize)]
@@ -376,16 +95,6 @@ pub async fn probe_localhost_brokers() -> ProbeResult {
         schema_registry_url: sr,
         flavour,
     }
-}
-
-#[tauri::command]
-pub async fn disconnect(state: State<'_, AppState>) -> Result<()> {
-    let Some(handle) = state.take_capture() else {
-        return Err(KaptureError::NotCapturing);
-    };
-    handle.stop().await;
-    info!("capture stopped");
-    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -502,29 +211,26 @@ pub async fn start_proxy_impl(
     sasl: Option<UpstreamSaslConfig>,
     mcp_authorized: bool,
 ) -> Result<ProxyStatus> {
-    if let Some(handle) = state.take_capture() {
-        handle.stop().await;
-    }
     if let Some(handle) = state.take_proxy() {
         handle.stop().await;
     }
     // Re-check the MCP gate after the awaits above. A revocation that
-    // lands while we were stopping the previous capture must take
+    // lands while we were stopping the previous proxy must take
     // effect before we open new sockets. No awaits between this check
-    // and `try_claim_capture_slot` below.
+    // and `try_claim_proxy_slot` below.
     if mcp_authorized && !state.mcp_connect_allowed() {
         return Err(KaptureError::Config(
             "MCP-initiated proxy revoked before slot claim".to_owned(),
         ));
     }
-    if !state.try_claim_capture_slot() {
+    if !state.try_claim_proxy_slot() {
         return Err(KaptureError::AlreadyProxying);
     }
     state.buffer.clear();
 
     let trimmed_upstream = upstream.trim().to_owned();
     if trimmed_upstream.is_empty() {
-        state.release_capture_slot();
+        state.release_proxy_slot();
         return Err(KaptureError::Config(
             "upstream must be non-empty".to_owned(),
         ));
@@ -547,7 +253,7 @@ pub async fn start_proxy_impl(
     let handle = match crate::proxy::ProxyHandle::start(cfg, Arc::clone(&correlator), sink).await {
         Ok(h) => h,
         Err(err) => {
-            state.release_capture_slot();
+            state.release_proxy_slot();
             return Err(KaptureError::Proxy(err.to_string()));
         }
     };

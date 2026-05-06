@@ -28,7 +28,7 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
 use crate::correlator::ProtoCorrelator;
-use crate::proto_hook::{ProtoDirection, ProtoEvent};
+use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proxy_handle::RecordSink;
 use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_records::{
@@ -654,7 +654,7 @@ mod tests {
 
         assert!(matches!(
             event.direction,
-            crate::proto_hook::ProtoDirection::Send
+            crate::proto_event::ProtoDirection::Send
         ));
         assert_eq!(event.api_key, 18);
         assert_eq!(event.api_version, 3);
@@ -696,7 +696,7 @@ mod tests {
 
         assert!(matches!(
             event.direction,
-            crate::proto_hook::ProtoDirection::Recv
+            crate::proto_event::ProtoDirection::Recv
         ));
         assert_eq!(event.api_key, 1);
         assert_eq!(event.api_version, 13);

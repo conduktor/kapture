@@ -25,7 +25,7 @@ use uuid::Uuid;
 use crate::correlator::FetchMetadata;
 use crate::decode::{decode_payload, render_hex};
 use crate::message::{CapturedMessage, KafkaHeader};
-use crate::proto_hook::ProtoEvent;
+use crate::proto_event::ProtoEvent;
 use crate::proxy_topic_ids::TopicIdMap;
 
 /// One Kafka record extracted from a Produce request or a Fetch

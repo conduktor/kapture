@@ -74,12 +74,11 @@ export interface KafkaMessage {
   headers: KafkaHeader[];
   payload: DecodedValue;
   rawHex: string;
+  /** Originating Fetch frame for backlinks; null on extraction failure. */
   fetch: FetchMetadata | null;
   /**
-   * Identifier for the protocol channel that carried this record.
-   * In proxy mode it's the per-TCP-connection id; in client (rdkafka)
-   * mode it's the librdkafka broker_id. `null` when neither path
-   * could attribute the record to a connection.
+   * Identifier for the proxy TCP connection that carried this record.
+   * `null` when the record couldn't be attributed to a connection.
    */
   connectionId: number | null;
 }
@@ -91,8 +90,6 @@ export interface AppInfo {
 }
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
-
-export type ConnectionMode = "client" | "proxy";
 
 export interface ProxyConfig {
   upstream: string;
@@ -142,29 +139,11 @@ export interface ProxyStatusSummary {
 
 export interface ConnectionState {
   status: ConnectionStatus;
-  /** "client" = Kapture connects as a consumer; "proxy" = apps point at us. */
-  mode: ConnectionMode;
-  cluster: string | null;
-  /** Topic regex actually in effect on the broker side (default ^[^_].*). */
-  topicPattern: string | null;
+  /** Proxy upstream remembered locally so the edit dialog can prefill. */
+  upstream: string | null;
   error: string | null;
-  // Non-secret connection params remembered locally so the edit dialog
-  // can prefill them. Secrets (auth.password, tls.keyPassword) are NOT
-  // round-tripped — the user re-enters them in edit mode.
-  schemaRegistryUrl: string | null;
-  fromBeginning: boolean;
-  authPrefill: ConnectionAuthPrefill | null;
-  /** Populated only when mode === "proxy" and the listener is up. */
+  /** Populated only when the listener is up. */
   proxyStatus: ProxyStatus | null;
-}
-
-export interface ConnectionAuthPrefill {
-  mechanism: SaslMechanism;
-  username: string;
-  useTls: boolean;
-  caPath: string | null;
-  certPath: string | null;
-  keyPath: string | null;
 }
 
 export interface CaptureStats {
@@ -178,38 +157,6 @@ export interface CaptureStats {
 }
 
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";
-
-export interface TlsArgs {
-  caPath: string | null;
-  certPath: string | null;
-  keyPath: string | null;
-  keyPassword: string | null;
-}
-
-export interface AuthArgs {
-  mechanism: SaslMechanism;
-  username: string;
-  password: string;
-  /** `true` for `SASL_SSL`, `false` for `SASL_PLAINTEXT`. */
-  useTls: boolean;
-  tls: TlsArgs | null;
-}
-
-export interface ConnectArgs {
-  bootstrapServers: string;
-  /** `null` to subscribe to every non-internal topic. */
-  topicPattern: string | null;
-  fromBeginning: boolean;
-  schemaRegistryUrl: string | null;
-  auth: AuthArgs | null;
-}
-
-export interface TestConnectionResponse {
-  ok: boolean;
-  brokers: number;
-  topics: number;
-  message: string;
-}
 
 export interface ProbeResult {
   bootstrapServers: string | null;

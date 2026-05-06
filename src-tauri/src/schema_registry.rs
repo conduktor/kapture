@@ -4,6 +4,12 @@
 //! is `GET /schemas/ids/{id}` returning `{ schema, schemaType?, subject? }`.
 //! Older registries omit `schemaType`; the protocol convention is that a
 //! missing field means AVRO.
+//!
+//! Currently unused at runtime — client (rdkafka) capture mode owned the
+//! only call site. Kept for proxy-mode wiring (the proxy could decode
+//! captured records' Confluent envelopes here once we expose the SR
+//! URL through `start_proxy`).
+#![allow(dead_code)]
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;

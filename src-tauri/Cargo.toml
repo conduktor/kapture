@@ -9,7 +9,11 @@ repository = "https://github.com/sderosiaux/kapture"
 
 [lib]
 name = "kapture_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# Tauri's runtime needs `cdylib` on iOS/Android and `rlib` for the
+# desktop integration that links the same crate from `src/main.rs`.
+# The previous `staticlib` slot existed only for the librdkafka FFI
+# patches and is no longer needed.
+crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -21,7 +25,6 @@ tauri-plugin-opener = "2"
 # Updater + process plugins are desktop-only. See target-specific section below.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rdkafka = { version = "0.36", default-features = false, features = ["tokio", "dynamic-linking", "libz"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
@@ -72,9 +75,9 @@ tempfile = "3"
 rcgen = "0.13"
 
 [lints.rust]
-# Forbid is too strong: the proto_hook module wraps a C FFI from our
-# patched librdkafka and needs `unsafe`. We deny by default and that
-# module locally allows it with #![allow(unsafe_code)].
+# Proxy mode has no FFI surface; deny unsafe outright. (The previous
+# `proto_hook` module wrapped a C FFI from the patched librdkafka and
+# locally allowed `unsafe`; that module is gone with client mode.)
 unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 

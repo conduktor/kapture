@@ -5,17 +5,8 @@ use crate::profiles::ProfileError;
 
 #[derive(Debug, Error)]
 pub enum KaptureError {
-    #[error("kafka client error: {0}")]
-    Kafka(#[from] rdkafka::error::KafkaError),
-
     #[error("invalid configuration: {0}")]
     Config(String),
-
-    #[error("already capturing")]
-    AlreadyCapturing,
-
-    #[error("not capturing")]
-    NotCapturing,
 
     #[error("a proxy listener is already running")]
     AlreadyProxying,

@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import type { ConnectionMode, ProxyStatus } from "../types";
+import type { ProxyStatus } from "../types";
 
 interface Props {
   filter: string;
@@ -9,8 +9,6 @@ interface Props {
   capturing: boolean;
   onToggleCapture: () => void;
   onClear: () => void;
-  cluster: string;
-  mode: ConnectionMode;
   proxyStatus: ProxyStatus | null;
   onEdit: () => void;
 }
@@ -23,27 +21,21 @@ export function TopBar({
   capturing,
   onToggleCapture,
   onClear,
-  cluster,
-  mode,
   proxyStatus,
   onEdit,
 }: Props): JSX.Element {
-  // Cluster pill: in proxy mode show `proxy {listenAddr} → {upstream}` when
-  // the listener is up; fall back to "proxy" while the listener is booting
-  // so the pill never blanks. Client mode keeps the original bootstrap text.
+  // Proxy pill: show `proxy {listenAddr} → {upstream}` when the listener
+  // is up; "no proxy" when nothing's running; "proxy starting…" when the
+  // listener is booting so the pill never blanks.
   const pillLabel =
-    mode === "proxy"
-      ? proxyStatus
-        ? `proxy ${proxyStatus.listenAddr} → ${proxyStatus.upstream}`
-        : "proxy"
-      : cluster;
+    proxyStatus !== null ? `proxy ${proxyStatus.listenAddr} → ${proxyStatus.upstream}` : "no proxy";
   return (
     <header className="topbar">
       <button
         type="button"
         className="topbar__cluster"
         onClick={onEdit}
-        title="Edit connection settings"
+        title="Edit proxy settings"
       >
         <span className="topbar__cluster-dot" data-status={capturing ? "live" : "idle"} />
         <span className="topbar__cluster-name">{pillLabel}</span>
@@ -53,7 +45,7 @@ export function TopBar({
       </button>
       <div className="topbar__filter-wrap">
         <input
-          className={`topbar__filter${filterError ? " topbar__filter--invalid" : ""}`}
+          className={`topbar__filter${filterError !== null ? " topbar__filter--invalid" : ""}`}
           spellCheck={false}
           autoComplete="off"
           placeholder={
@@ -64,10 +56,10 @@ export function TopBar({
           onChange={(event) => {
             onFilterChange(event.target.value);
           }}
-          aria-invalid={filterError ? "true" : "false"}
+          aria-invalid={filterError !== null ? "true" : "false"}
           title={filterError ?? undefined}
         />
-        {filterError ? <span className="topbar__filter-error">{filterError}</span> : null}
+        {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
       </div>
       <div className="topbar__controls">
         <button

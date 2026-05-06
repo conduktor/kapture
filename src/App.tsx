@@ -21,7 +21,6 @@ import {
 } from "./lib/protoFilter";
 import type {
   AppInfo,
-  AuthArgs,
   CaptureStats,
   ConnectionState,
   KafkaMessage,
@@ -35,8 +34,7 @@ interface MenuState {
   position: { x: number; y: number };
 }
 
-const DEFAULT_BOOTSTRAP = "localhost:19092";
-const DEFAULT_REGISTRY = "http://localhost:18081";
+const DEFAULT_UPSTREAM = "localhost:19092";
 const UI_MAX_MESSAGES = 5_000;
 const FILTER_DEBOUNCE_MS = 250;
 
@@ -52,13 +50,8 @@ const INITIAL_STATS: CaptureStats = {
 
 const INITIAL_CONNECTION: ConnectionState = {
   status: "disconnected",
-  mode: "client",
-  cluster: null,
-  topicPattern: null,
+  upstream: null,
   error: null,
-  schemaRegistryUrl: null,
-  fromBeginning: false,
-  authPrefill: null,
   proxyStatus: null,
 };
 
@@ -316,116 +309,47 @@ function App(): JSX.Element {
     [messages, selectedId],
   );
 
-  const handleConnect = (
-    bootstrap: string,
-    topicPattern: string | null,
-    fromBeginning: boolean,
-    schemaRegistryUrl: string | null,
-    auth: AuthArgs | null,
-  ): void => {
-    setConnection({
-      status: "connecting",
-      mode: "client",
-      cluster: bootstrap,
-      topicPattern,
-      error: null,
-      schemaRegistryUrl,
-      fromBeginning,
-      authPrefill: auth
-        ? {
-            mechanism: auth.mechanism,
-            username: auth.username,
-            useTls: auth.useTls,
-            caPath: auth.tls?.caPath ?? null,
-            certPath: auth.tls?.certPath ?? null,
-            keyPath: auth.tls?.keyPath ?? null,
-          }
-        : null,
-      proxyStatus: null,
-    });
-    setEditing(false);
-    void (async () => {
-      try {
-        // The backend connect command stops any previous capture
-        // atomically, so the frontend doesn't disconnect first.
-        await invoke("connect", {
-          bootstrapServers: bootstrap,
-          topicPattern,
-          fromBeginning,
-          schemaRegistryUrl,
-          auth,
-        });
-        messagesRef.current = [];
-        setMessages([]);
-        setSelectedId(null);
-        setStats(INITIAL_STATS);
-        setConnection((prev) => ({
-          ...prev,
-          status: "connected",
-          cluster: bootstrap,
-          topicPattern,
-          error: null,
-        }));
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setConnection((prev) => ({
-          ...prev,
-          status: "error",
-          cluster: bootstrap,
-          topicPattern,
-          error: message,
-        }));
-      }
-    })();
-  };
-
-  // Proxy mode: ConnectionDialog drives the `start_proxy` invoke and pushes
-  // results back via these three callbacks. We mirror the client-mode state
-  // shape (`connecting` → `connected`/`error`) so the rest of the UI doesn't
-  // need to know which mode is active.
+  // Proxy lifecycle: ConnectionDialog drives `start_proxy` and pushes the
+  // result back via these callbacks. The dialog is the only entry point
+  // since client (rdkafka) mode was removed.
   const handleProxyStarting = (): void => {
+    messagesRef.current = [];
+    setMessages([]);
+    setSelectedId(null);
+    setStats(INITIAL_STATS);
     setConnection((prev) => ({
       ...prev,
       status: "connecting",
-      mode: "proxy",
-      cluster: null,
-      topicPattern: null,
       error: null,
-      schemaRegistryUrl: null,
-      fromBeginning: false,
-      authPrefill: null,
       proxyStatus: null,
     }));
     setEditing(false);
   };
 
   const handleProxyStarted = (status: ProxyStatus): void => {
-    setConnection((prev) => ({
-      ...prev,
+    setConnection({
       status: "connected",
-      mode: "proxy",
+      upstream: status.upstream,
       error: null,
       proxyStatus: status,
-    }));
+    });
   };
 
   const handleProxyError = (message: string): void => {
     setConnection((prev) => ({
       ...prev,
       status: "error",
-      mode: "proxy",
       error: message,
       proxyStatus: null,
     }));
   };
 
   const handleDisconnect = (): void => {
-    const wasProxy = connection.mode === "proxy";
     void (async () => {
       try {
-        await invoke(wasProxy ? "stop_proxy" : "disconnect");
+        await invoke("stop_proxy");
       } catch (err) {
-        console.error("disconnect failed", err);
+        console.error("stop_proxy failed", err);
       } finally {
         setConnection(INITIAL_CONNECTION);
       }
@@ -454,15 +378,16 @@ function App(): JSX.Element {
 
   // Always allow the user to escape the dialog. Real-world traps this
   // unblocks:
-  //   1. Connect fails with "AlreadyCapturing" (zombie slot from a previous
-  //      run): cancel fires `disconnect` best-effort to clear the slot,
-  //      then drops the dialog into the disconnected state.
-  //   2. User just changed their mind: cancel returns them to the previous
-  //      workspace (disconnected → empty, connected → still capturing).
+  //   1. start_proxy fails with "AlreadyProxying" (zombie slot from a
+  //      previous run): cancel fires `stop_proxy` best-effort to clear
+  //      the slot, then drops the dialog into the disconnected state.
+  //   2. User just changed their mind: cancel returns them to the
+  //      previous workspace (disconnected → empty, connected → still
+  //      capturing).
   const cancelDialog = (): void => {
     if (connection.status === "error") {
-      void invoke("disconnect").catch(() => {
-        /* best-effort cleanup of zombie capture slot */
+      void invoke("stop_proxy").catch(() => {
+        /* best-effort cleanup of zombie proxy slot */
       });
       setConnection(INITIAL_CONNECTION);
     }
@@ -474,22 +399,7 @@ function App(): JSX.Element {
   const showDialog = editing || connection.status === "connecting" || connection.status === "error";
   const isEditing = editing && connection.status === "connected";
   const initialPrefill = isEditing
-    ? {
-        bootstrap: connection.cluster ?? DEFAULT_BOOTSTRAP,
-        topicPattern: connection.topicPattern ?? "",
-        registry: connection.schemaRegistryUrl ?? "",
-        fromBeginning: connection.fromBeginning,
-        ...(connection.authPrefill
-          ? {
-              authMethod: connection.authPrefill.mechanism,
-              username: connection.authPrefill.username,
-              useTls: connection.authPrefill.useTls,
-              caPath: connection.authPrefill.caPath ?? "",
-              certPath: connection.authPrefill.certPath ?? "",
-              keyPath: connection.authPrefill.keyPath ?? "",
-            }
-          : { authMethod: "none" as const }),
-      }
+    ? { upstream: connection.upstream ?? DEFAULT_UPSTREAM }
     : undefined;
 
   // Filter bar wiring — Messages tab uses the Wireshark-style DSL
@@ -566,8 +476,6 @@ function App(): JSX.Element {
           }
         }}
         onClear={handleClear}
-        cluster={connection.cluster ?? "no cluster"}
-        mode={connection.mode}
         proxyStatus={connection.proxyStatus}
         onEdit={() => {
           setEditing(true);
@@ -665,11 +573,9 @@ function App(): JSX.Element {
       </main>
       {showDialog ? (
         <ConnectionDialog
-          defaultBootstrap={DEFAULT_BOOTSTRAP}
-          defaultRegistry={DEFAULT_REGISTRY}
+          defaultUpstream={DEFAULT_UPSTREAM}
           initial={initialPrefill}
           isEditing={isEditing}
-          onConnect={handleConnect}
           onProxyStarting={handleProxyStarting}
           onProxyStarted={handleProxyStarted}
           onProxyError={handleProxyError}

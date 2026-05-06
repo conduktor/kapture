@@ -26,7 +26,7 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::proto_decode;
-use crate::proto_hook::{ProtoDirection, ProtoEvent};
+use crate::proto_event::{ProtoDirection, ProtoEvent};
 
 const FETCH_API_KEY: i32 = 1;
 /// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
@@ -269,7 +269,7 @@ impl ProtoCorrelator {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::proto_hook::ProtoDirection;
+    use crate::proto_event::ProtoDirection;
 
     fn ev(direction: ProtoDirection, api_key: i32, connection_id: i32, rtt_ms: f64) -> ProtoEvent {
         ProtoEvent {

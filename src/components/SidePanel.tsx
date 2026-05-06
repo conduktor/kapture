@@ -28,15 +28,12 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
     })();
   }, []);
 
-  // Poll proxy status only while we're in proxy mode. The polling
-  // stops automatically when `connection.mode` flips back to client
-  // (the effect re-runs and the cleanup clears the interval). The
-  // "drop stale state" path lives in render: when the mode flips, we
-  // skip rendering the section and `proxy` becomes irrelevant; we
-  // intentionally do NOT call `setProxy(null)` from inside the effect
-  // body (cascading renders, see the React docs `set-state-in-effect`).
+  // Poll proxy status while connected. We intentionally do NOT call
+  // `setProxy(null)` from inside the effect body when the connection
+  // drops (cascading renders, see the React docs `set-state-in-effect`)
+  // — the section is hidden in render when `proxy?.listening` is false.
   useEffect(() => {
-    if (connection.mode !== "proxy") {
+    if (connection.status !== "connected") {
       return undefined;
     }
     let cancelled = false;
@@ -58,7 +55,7 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [connection.mode]);
+  }, [connection.status]);
 
   const toggleMcp = (next: boolean): void => {
     setMcpAllowed(next);
@@ -74,9 +71,9 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
         <dl className="side__kv">
           <dt>status</dt>
           <dd data-status={connection.status}>{connection.status}</dd>
-          <dt>cluster</dt>
-          <dd>{connection.cluster ?? "—"}</dd>
-          {connection.error ? (
+          <dt>upstream</dt>
+          <dd>{connection.upstream ?? "—"}</dd>
+          {connection.error !== null ? (
             <>
               <dt>error</dt>
               <dd className="side__error">{connection.error}</dd>
@@ -84,7 +81,7 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
           ) : null}
         </dl>
       </section>
-      {connection.mode === "proxy" && proxy?.listening ? (
+      {proxy?.listening === true ? (
         <section className="side__section">
           <h2 className="side__title">Proxy</h2>
           <p className="side__note">
@@ -159,7 +156,7 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
               toggleMcp(e.target.checked);
             }}
           />
-          <span>Allow MCP-initiated connect (kafka_connect_profile)</span>
+          <span>Allow MCP-initiated proxy start (kapture_set_proxy_target)</span>
         </label>
       </section>
       <section className="side__section side__section--meta">

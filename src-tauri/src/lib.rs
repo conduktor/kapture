@@ -1,5 +1,4 @@
 mod avro;
-mod capture;
 mod commands;
 mod correlator;
 mod decode;
@@ -9,7 +8,7 @@ mod mcp;
 mod message;
 mod profiles;
 mod proto_decode;
-mod proto_hook;
+mod proto_event;
 mod proxy;
 mod proxy_broker_map;
 mod proxy_handle;
@@ -32,7 +31,7 @@ mod state;
 pub mod example_api {
     pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
     pub use crate::message::CapturedMessage;
-    pub use crate::proto_hook::ProtoDirection;
+    pub use crate::proto_event::ProtoDirection;
     pub use crate::proxy::ProxyConfig;
     pub use crate::proxy_handle::{ProxyHandle, RecordSink};
     pub use crate::proxy_topic_ids::TopicIdMap;
@@ -94,10 +93,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
-            commands::connect,
-            commands::test_connection,
             commands::probe_localhost_brokers,
-            commands::disconnect,
             commands::start_proxy,
             commands::stop_proxy,
             commands::proxy_status,

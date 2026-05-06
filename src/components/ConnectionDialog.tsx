@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AuthArgs,
-  ConnectionMode,
   LoadedProfile,
   ProbeResult,
   ProfileMetadata,
@@ -11,43 +9,18 @@ import type {
   ProxyTlsArgs,
   SaslMechanism,
   SaveProfileArgs,
-  SaveProfileAuth,
-  SaveProfileTls,
-  TestConnectionResponse,
-  TlsArgs,
 } from "../types";
 
-type AuthMethod = "none" | SaslMechanism;
-
-const SASL_MECHANISMS: SaslMechanism[] = ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"];
+const DEFAULT_LISTEN_PORT = 9092;
 
 interface Initial {
-  bootstrap: string;
-  topicPattern: string;
-  registry: string;
-  authMethod: AuthMethod;
-  username: string;
-  useTls: boolean;
-  fromBeginning: boolean;
-  // TLS paths prefill in edit mode. Passwords intentionally excluded:
-  // they live only in the OS keychain and the user must re-enter them.
-  caPath: string;
-  certPath: string;
-  keyPath: string;
+  upstream: string;
 }
 
 interface Props {
-  defaultBootstrap: string;
-  defaultRegistry: string;
+  defaultUpstream: string;
   initial?: Partial<Initial> | undefined;
   isEditing: boolean;
-  onConnect: (
-    bootstrap: string,
-    topicPattern: string | null,
-    fromBeginning: boolean,
-    schemaRegistryUrl: string | null,
-    auth: AuthArgs | null,
-  ) => void;
   /**
    * Called when the user starts the proxy listener. The parent stores the
    * resulting `ProxyStatus` so the cluster pill can show
@@ -63,12 +36,20 @@ interface Props {
   error: string | null;
 }
 
+/**
+ * Connection dialog — proxy-only.
+ *
+ * Client (rdkafka) mode was removed. The dialog binds a proxy listener
+ * on `127.0.0.1:listenPort`, optionally with upstream TLS / SASL.
+ * Profiles still apply: a saved profile's `bootstrapServers` field
+ * pre-fills the upstream broker. Per-profile SASL credentials are
+ * NOT auto-applied to the proxy form — proxy mode lets the user
+ * configure upstream auth explicitly per session.
+ */
 export function ConnectionDialog({
-  defaultBootstrap,
-  defaultRegistry,
+  defaultUpstream,
   initial,
   isEditing,
-  onConnect,
   onProxyStarted,
   onProxyError,
   onProxyStarting,
@@ -76,53 +57,28 @@ export function ConnectionDialog({
   pending,
   error,
 }: Props): JSX.Element {
-  const [mode, setMode] = useState<ConnectionMode>("client");
-  const [proxyUpstream, setProxyUpstream] = useState("localhost:9092");
-  const [proxyListenPort, setProxyListenPort] = useState(9092);
-  // Upstream TLS (proxy mode). Defence in depth: secrets never round-trip
-  // through localStorage / profiles, so these always start blank on edit.
-  const [proxyUseTls, setProxyUseTls] = useState(false);
-  const [proxyTlsCaPath, setProxyTlsCaPath] = useState("");
-  const [proxyTlsSkipHostname, setProxyTlsSkipHostname] = useState(false);
-  // Upstream SASL (proxy mode). Backend accepts PLAIN only for now.
-  const [proxyUseSasl, setProxyUseSasl] = useState(false);
-  const [proxySaslMechanism, setProxySaslMechanism] = useState<SaslMechanism>("PLAIN");
-  const [proxySaslUsername, setProxySaslUsername] = useState("");
-  const [proxySaslPassword, setProxySaslPassword] = useState("");
-  const [proxyValidationError, setProxyValidationError] = useState<string | null>(null);
-  const [bootstrap, setBootstrap] = useState(initial?.bootstrap ?? defaultBootstrap);
-  const [topicPattern, setTopicPattern] = useState(initial?.topicPattern ?? "");
-  const [showAdvanced, setShowAdvanced] = useState((initial?.topicPattern ?? "").trim() !== "");
-  const [registry, setRegistry] = useState(initial?.registry ?? defaultRegistry);
-  // Default off: Wireshark captures from "now" — reading from the start of
-  // every topic on a busy cluster is the volume cliff users least expect.
-  const [fromBeginning, setFromBeginning] = useState(initial?.fromBeginning ?? false);
-  const [authMethod, setAuthMethod] = useState<AuthMethod>(initial?.authMethod ?? "none");
-  const [username, setUsername] = useState(initial?.username ?? "");
-  const [password, setPassword] = useState("");
-  const [useTls, setUseTls] = useState(initial?.useTls ?? false);
-  const [caPath, setCaPath] = useState(initial?.caPath ?? "");
-  const [certPath, setCertPath] = useState(initial?.certPath ?? "");
-  const [keyPath, setKeyPath] = useState(initial?.keyPath ?? "");
-  const [keyPassword, setKeyPassword] = useState("");
+  const [upstream, setUpstream] = useState(initial?.upstream ?? defaultUpstream);
+  const [listenPort, setListenPort] = useState(DEFAULT_LISTEN_PORT);
+  // Upstream TLS. Defence in depth: secrets never round-trip through
+  // localStorage / profiles, so these always start blank on edit.
+  const [useTls, setUseTls] = useState(false);
+  const [tlsCaPath, setTlsCaPath] = useState("");
+  const [tlsSkipHostname, setTlsSkipHostname] = useState(false);
+  // Upstream SASL. Backend supports PLAIN + SCRAM-SHA-{256,512}.
+  const [useSasl, setUseSasl] = useState(false);
+  const [saslMechanism, setSaslMechanism] = useState<SaslMechanism>("PLAIN");
+  const [saslUsername, setSaslUsername] = useState("");
+  const [saslPassword, setSaslPassword] = useState("");
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
 
-  // Test connection state. `null` = not tested yet; otherwise carries the
-  // backend's verdict so the UI can show ✓ green / ✗ red.
-  type TestState =
-    | { phase: "idle" }
-    | { phase: "testing" }
-    | { phase: "ok"; message: string }
-    | { phase: "fail"; message: string };
-  const [testState, setTestState] = useState<TestState>({ phase: "idle" });
-
-  // Auto-detect: probe localhost on mount only when the user is starting from
-  // the blank "New connection" state. We don't overwrite any field the user
-  // has already typed. Fires once.
+  // Auto-detect: probe localhost on mount only when the user is starting
+  // from the blank state. We don't overwrite any field the user has
+  // already typed. Fires once.
   const detectedRef = useRef(false);
   useEffect(() => {
     if (detectedRef.current || isEditing || initial !== undefined) {
@@ -132,17 +88,10 @@ export function ConnectionDialog({
     void (async () => {
       try {
         const probe = await invoke<ProbeResult>("probe_localhost_brokers");
-        if (probe.bootstrapServers) {
-          setBootstrap((current) =>
-            current.trim() === defaultBootstrap || current.trim() === ""
+        if (probe.bootstrapServers !== null) {
+          setUpstream((current) =>
+            current.trim() === defaultUpstream || current.trim() === ""
               ? (probe.bootstrapServers ?? current)
-              : current,
-          );
-        }
-        if (probe.schemaRegistryUrl) {
-          setRegistry((current) =>
-            current.trim() === defaultRegistry || current.trim() === ""
-              ? (probe.schemaRegistryUrl ?? current)
               : current,
           );
         }
@@ -177,30 +126,7 @@ export function ConnectionDialog({
     setProfileError(null);
     try {
       const profile = await invoke<LoadedProfile>("load_profile", { name });
-      setBootstrap(profile.bootstrapServers);
-      setTopicPattern(profile.topicPattern ?? "");
-      setShowAdvanced((profile.topicPattern ?? "").trim() !== "");
-      setRegistry(profile.schemaRegistryUrl ?? "");
-      setFromBeginning(profile.fromBeginning);
-      if (profile.auth) {
-        setAuthMethod(profile.auth.mechanism);
-        setUsername(profile.auth.username);
-        setUseTls(profile.auth.useTls);
-        setPassword(profile.password ?? "");
-        setCaPath(profile.auth.tls?.caPath ?? "");
-        setCertPath(profile.auth.tls?.certPath ?? "");
-        setKeyPath(profile.auth.tls?.keyPath ?? "");
-        setKeyPassword(profile.keyPassword ?? "");
-      } else {
-        setAuthMethod("none");
-        setUsername("");
-        setUseTls(false);
-        setPassword("");
-        setCaPath("");
-        setCertPath("");
-        setKeyPath("");
-        setKeyPassword("");
-      }
+      setUpstream(profile.bootstrapServers);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setProfileError(message);
@@ -210,27 +136,20 @@ export function ConnectionDialog({
   }
 
   async function saveAsProfile(): Promise<void> {
-    const name = window.prompt("Profile name", selectedProfile || bootstrap);
-    if (!name) {
+    const name = window.prompt("Profile name", selectedProfile || upstream);
+    if (name === null || name === "") {
       return;
     }
-    const trimmedPattern = topicPattern.trim();
+    // Profiles store bootstrap-only metadata in proxy mode. SASL/TLS
+    // forms in the dialog are intentionally session-local; the user
+    // re-enters them per session.
     const args: SaveProfileArgs = {
       name,
-      bootstrapServers: bootstrap.trim(),
-      topicPattern: trimmedPattern === "" ? null : trimmedPattern,
-      schemaRegistryUrl: registry.trim() === "" ? null : registry.trim(),
-      auth: buildSaveAuth(
-        authMethod,
-        username,
-        password,
-        useTls,
-        caPath,
-        certPath,
-        keyPath,
-        keyPassword,
-      ),
-      fromBeginning,
+      bootstrapServers: upstream.trim(),
+      topicPattern: null,
+      schemaRegistryUrl: null,
+      auth: null,
+      fromBeginning: false,
     };
     setProfileBusy(true);
     setProfileError(null);
@@ -265,97 +184,43 @@ export function ConnectionDialog({
     }
   }
 
-  async function runTest(): Promise<void> {
-    setTestState({ phase: "testing" });
-    const registryUrl = registry.trim();
-    const auth: AuthArgs | null =
-      authMethod === "none"
-        ? null
-        : {
-            mechanism: authMethod,
-            username,
-            password,
-            useTls,
-            tls: useTls ? buildTlsArgs(caPath, certPath, keyPath, keyPassword) : null,
-          };
-    try {
-      const result = await invoke<TestConnectionResponse>("test_connection", {
-        bootstrapServers: bootstrap.trim(),
-        schemaRegistryUrl: registryUrl === "" ? null : registryUrl,
-        auth,
-      });
-      setTestState(
-        result.ok
-          ? { phase: "ok", message: result.message }
-          : { phase: "fail", message: result.message },
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setTestState({ phase: "fail", message });
-    }
-  }
-
   const submit = (): void => {
-    if (mode === "proxy") {
-      const upstream = proxyUpstream.trim();
-      if (proxyUseSasl) {
-        if (proxySaslUsername.trim() === "" || proxySaslPassword === "") {
-          setProxyValidationError("Upstream SASL requires both username and password.");
-          return;
-        }
-      }
-      setProxyValidationError(null);
-      const upstreamTls: ProxyTlsArgs | null = proxyUseTls
-        ? {
-            // Empty string lets the backend derive SNI from the bootstrap host.
-            serverName: "",
-            caPath: proxyTlsCaPath.trim() === "" ? null : proxyTlsCaPath.trim(),
-            skipHostnameVerification: proxyTlsSkipHostname,
-          }
-        : null;
-      const upstreamSasl: ProxySaslArgs | null = proxyUseSasl
-        ? {
-            mechanism: proxySaslMechanism,
-            username: proxySaslUsername,
-            password: proxySaslPassword,
-          }
-        : null;
-      onProxyStarting();
-      void (async () => {
-        try {
-          const status = await invoke<ProxyStatus>("start_proxy", {
-            upstream,
-            listenPort: proxyListenPort,
-            upstreamTls,
-            upstreamSasl,
-          });
-          onProxyStarted(status);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          onProxyError(message);
-        }
-      })();
+    const trimmedUpstream = upstream.trim();
+    if (useSasl && (saslUsername.trim() === "" || saslPassword === "")) {
+      setValidationError("Upstream SASL requires both username and password.");
       return;
     }
-    const registryUrl = registry.trim();
-    const trimmedPattern = topicPattern.trim();
-    const auth: AuthArgs | null =
-      authMethod === "none"
-        ? null
-        : {
-            mechanism: authMethod,
-            username,
-            password,
-            useTls,
-            tls: useTls ? buildTlsArgs(caPath, certPath, keyPath, keyPassword) : null,
-          };
-    onConnect(
-      bootstrap.trim(),
-      trimmedPattern === "" ? null : trimmedPattern,
-      fromBeginning,
-      registryUrl === "" ? null : registryUrl,
-      auth,
-    );
+    setValidationError(null);
+    const upstreamTls: ProxyTlsArgs | null = useTls
+      ? {
+          // Empty string lets the backend derive SNI from the bootstrap host.
+          serverName: "",
+          caPath: tlsCaPath.trim() === "" ? null : tlsCaPath.trim(),
+          skipHostnameVerification: tlsSkipHostname,
+        }
+      : null;
+    const upstreamSasl: ProxySaslArgs | null = useSasl
+      ? {
+          mechanism: saslMechanism,
+          username: saslUsername,
+          password: saslPassword,
+        }
+      : null;
+    onProxyStarting();
+    void (async () => {
+      try {
+        const status = await invoke<ProxyStatus>("start_proxy", {
+          upstream: trimmedUpstream,
+          listenPort,
+          upstreamTls,
+          upstreamSasl,
+        });
+        onProxyStarted(status);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        onProxyError(message);
+      }
+    })();
   };
 
   return (
@@ -367,509 +232,187 @@ export function ConnectionDialog({
           submit();
         }}
       >
-        <h2 className="dialog__title">{isEditing ? "Edit connection" : "Connect to Kafka"}</h2>
-        <fieldset className="dialog__mode">
-          <legend className="dialog__label">Mode</legend>
-          <label className="dialog__check">
-            <input
-              type="radio"
-              name="mode"
-              value="client"
-              checked={mode === "client"}
-              onChange={() => {
-                setMode("client");
-              }}
-            />
-            <span>Client — Kapture connects as a consumer</span>
-          </label>
-          <label className="dialog__check">
-            <input
-              type="radio"
-              name="mode"
-              value="proxy"
-              checked={mode === "proxy"}
-              onChange={() => {
-                setMode("proxy");
-              }}
-            />
-            <span>Proxy — point your apps at Kapture</span>
-          </label>
-        </fieldset>
-        {mode === "proxy" ? (
-          <>
-            <label className="dialog__field">
-              <span className="dialog__label">Upstream broker</span>
-              <input
-                className="dialog__input"
-                value={proxyUpstream}
-                onChange={(e) => {
-                  setProxyUpstream(e.target.value);
-                }}
-                placeholder="kafka.example.com:9092"
-                spellCheck={false}
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="dialog__field">
-              <span className="dialog__label">Listen port (127.0.0.1)</span>
-              <input
-                className="dialog__input"
-                type="number"
-                value={proxyListenPort}
-                onChange={(e) => {
-                  setProxyListenPort(Number(e.target.value));
-                }}
-                min={1}
-                max={65535}
-                required
-              />
-            </label>
-            <label className="dialog__check">
-              <input
-                type="checkbox"
-                checked={proxyUseTls}
-                onChange={(e) => {
-                  setProxyUseTls(e.target.checked);
-                }}
-              />
-              <span>Upstream uses TLS</span>
-            </label>
-            {proxyUseTls ? (
-              <>
-                <label className="dialog__field">
-                  <span className="dialog__label">
-                    CA certificate path (optional)
-                    <span className="dialog__hint-inline">empty = system roots</span>
-                  </span>
-                  <input
-                    className="dialog__input"
-                    value={proxyTlsCaPath}
-                    onChange={(e) => {
-                      setProxyTlsCaPath(e.target.value);
-                    }}
-                    placeholder="/path/to/ca.pem"
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </label>
-                <label className="dialog__check">
-                  <input
-                    type="checkbox"
-                    checked={proxyTlsSkipHostname}
-                    onChange={(e) => {
-                      setProxyTlsSkipHostname(e.target.checked);
-                    }}
-                  />
-                  <span>Skip hostname verification (UNSAFE)</span>
-                </label>
-                {proxyTlsSkipHostname ? (
-                  <p className="dialog__warn" role="alert">
-                    WARNING: only enable for self-signed clusters with no hostname match. Defeats
-                    cert chain validation.
-                  </p>
-                ) : null}
-              </>
-            ) : null}
-            <label className="dialog__check">
-              <input
-                type="checkbox"
-                checked={proxyUseSasl}
-                onChange={(e) => {
-                  setProxyUseSasl(e.target.checked);
-                }}
-              />
-              <span>Upstream requires SASL</span>
-            </label>
-            {proxyUseSasl ? (
-              <>
-                <label className="dialog__field">
-                  <span className="dialog__label">Mechanism</span>
-                  <select
-                    className="dialog__input"
-                    value={proxySaslMechanism}
-                    onChange={(e) => {
-                      setProxySaslMechanism(e.target.value as SaslMechanism);
-                    }}
-                  >
-                    <option value="PLAIN">SASL/PLAIN</option>
-                    <option value="SCRAM-SHA-256">SASL/SCRAM-SHA-256</option>
-                    <option value="SCRAM-SHA-512">SASL/SCRAM-SHA-512</option>
-                  </select>
-                </label>
-                <label className="dialog__field">
-                  <span className="dialog__label">Username</span>
-                  <input
-                    className="dialog__input"
-                    value={proxySaslUsername}
-                    onChange={(e) => {
-                      setProxySaslUsername(e.target.value);
-                    }}
-                    spellCheck={false}
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-                <label className="dialog__field">
-                  <span className="dialog__label">Password</span>
-                  <input
-                    type="password"
-                    className="dialog__input"
-                    value={proxySaslPassword}
-                    onChange={(e) => {
-                      setProxySaslPassword(e.target.value);
-                    }}
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-              </>
-            ) : null}
-            {proxyValidationError ? <p className="dialog__error">{proxyValidationError}</p> : null}
-          </>
-        ) : (
-          <>
-            <div className="dialog__profile-row">
-              <select
-                className="dialog__input"
-                value={selectedProfile}
-                onChange={(e) => {
-                  void applyProfile(e.target.value);
-                }}
-                disabled={profileBusy}
-              >
-                <option value="">— New connection —</option>
-                {profiles.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name} ({p.bootstrapServers})
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  void deleteSelectedProfile();
-                }}
-                disabled={profileBusy || selectedProfile === ""}
-                title="Delete this profile"
-              >
-                Delete
-              </button>
-            </div>
-            {profileError ? <p className="dialog__error">{profileError}</p> : null}
-            <label className="dialog__field">
-              <span className="dialog__label">Bootstrap servers</span>
-              <input
-                className="dialog__input"
-                value={bootstrap}
-                onChange={(e) => {
-                  setBootstrap(e.target.value);
-                }}
-                placeholder="host:port,host:port"
-                spellCheck={false}
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="dialog__field">
-              <span className="dialog__label">Schema Registry URL (optional)</span>
-              <input
-                className="dialog__input"
-                value={registry}
-                onChange={(e) => {
-                  setRegistry(e.target.value);
-                }}
-                placeholder="http://localhost:18081"
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </label>
-            <button
-              type="button"
-              className="dialog__disclosure"
-              onClick={() => {
-                setShowAdvanced((s) => !s);
-              }}
-              aria-expanded={showAdvanced}
-            >
-              {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
-            </button>
-            {showAdvanced ? (
-              <label className="dialog__field">
-                <span className="dialog__label">
-                  Topic pattern (regex, optional)
-                  <span className="dialog__hint-inline">
-                    {" "}
-                    e.g. <code>^orders\..*</code> — narrows broker-side subscription
-                  </span>
-                </span>
-                <input
-                  className="dialog__input"
-                  value={topicPattern}
-                  onChange={(e) => {
-                    setTopicPattern(e.target.value);
-                  }}
-                  placeholder="^[^_].*"
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-              </label>
-            ) : null}
-            <label className="dialog__field">
-              <span className="dialog__label">Authentication</span>
-              <select
-                className="dialog__input"
-                value={authMethod}
-                onChange={(e) => {
-                  setAuthMethod(e.target.value as AuthMethod);
-                }}
-              >
-                <option value="none">None (PLAINTEXT)</option>
-                {SASL_MECHANISMS.map((m) => (
-                  <option key={m} value={m}>
-                    SASL/{m}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {authMethod !== "none" ? (
-              <>
-                <label className="dialog__field">
-                  <span className="dialog__label">Username</span>
-                  <input
-                    className="dialog__input"
-                    value={username}
-                    onChange={(e) => {
-                      setUsername(e.target.value);
-                    }}
-                    spellCheck={false}
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-                <label className="dialog__field">
-                  <span className="dialog__label">
-                    Password
-                    {isEditing && initial?.authMethod && initial.authMethod !== "none" ? (
-                      <span className="dialog__hint-inline"> (re-enter; not stored in UI)</span>
-                    ) : null}
-                  </span>
-                  <input
-                    type="password"
-                    className="dialog__input"
-                    value={password}
-                    onChange={(e) => {
-                      setPassword(e.target.value);
-                    }}
-                    autoComplete="off"
-                    required
-                  />
-                </label>
-                <label className="dialog__check">
-                  <input
-                    type="checkbox"
-                    checked={useTls}
-                    onChange={(e) => {
-                      setUseTls(e.target.checked);
-                    }}
-                  />
-                  <span>TLS (SASL_SSL)</span>
-                </label>
-                {useTls ? (
-                  <>
-                    <label className="dialog__field">
-                      <span className="dialog__label">CA certificate path (optional)</span>
-                      <input
-                        className="dialog__input"
-                        value={caPath}
-                        onChange={(e) => {
-                          setCaPath(e.target.value);
-                        }}
-                        placeholder="/path/to/ca.pem"
-                        spellCheck={false}
-                        autoComplete="off"
-                      />
-                    </label>
-                    <label className="dialog__field">
-                      <span className="dialog__label">Client certificate path (mTLS)</span>
-                      <input
-                        className="dialog__input"
-                        value={certPath}
-                        onChange={(e) => {
-                          setCertPath(e.target.value);
-                        }}
-                        placeholder="/path/to/client.crt"
-                        spellCheck={false}
-                        autoComplete="off"
-                      />
-                    </label>
-                    <label className="dialog__field">
-                      <span className="dialog__label">Client private key path (mTLS)</span>
-                      <input
-                        className="dialog__input"
-                        value={keyPath}
-                        onChange={(e) => {
-                          setKeyPath(e.target.value);
-                        }}
-                        placeholder="/path/to/client.key"
-                        spellCheck={false}
-                        autoComplete="off"
-                      />
-                    </label>
-                    <label className="dialog__field">
-                      <span className="dialog__label">Key password (optional, encrypted keys)</span>
-                      <input
-                        type="password"
-                        className="dialog__input"
-                        value={keyPassword}
-                        onChange={(e) => {
-                          setKeyPassword(e.target.value);
-                        }}
-                        autoComplete="off"
-                      />
-                    </label>
-                  </>
-                ) : null}
-              </>
-            ) : null}
-            <label className="dialog__check">
-              <input
-                type="checkbox"
-                checked={fromBeginning}
-                onChange={(e) => {
-                  setFromBeginning(e.target.checked);
-                }}
-              />
-              <span>Read from beginning</span>
-            </label>
-          </>
-        )}
-        {error ? <p className="dialog__error">{error}</p> : null}
-        {mode === "client" && testState.phase !== "idle" ? (
-          <p
-            className={
-              testState.phase === "ok"
-                ? "dialog__test dialog__test--ok"
-                : testState.phase === "fail"
-                  ? "dialog__test dialog__test--fail"
-                  : "dialog__test dialog__test--pending"
-            }
-            role="status"
-            aria-live="polite"
+        <h2 className="dialog__title">{isEditing ? "Edit proxy" : "Start proxy"}</h2>
+        <div className="dialog__profile-row">
+          <select
+            className="dialog__input"
+            value={selectedProfile}
+            onChange={(e) => {
+              void applyProfile(e.target.value);
+            }}
+            disabled={profileBusy}
           >
-            {testState.phase === "testing"
-              ? "Testing…"
-              : testState.phase === "ok"
-                ? `✓ ${testState.message}`
-                : `✗ ${testState.message}`}
-          </p>
+            <option value="">— New proxy —</option>
+            {profiles.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name} ({p.bootstrapServers})
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void deleteSelectedProfile();
+            }}
+            disabled={profileBusy || selectedProfile === ""}
+            title="Delete this profile"
+          >
+            Delete
+          </button>
+        </div>
+        {profileError !== null ? <p className="dialog__error">{profileError}</p> : null}
+        <label className="dialog__field">
+          <span className="dialog__label">Upstream broker</span>
+          <input
+            className="dialog__input"
+            value={upstream}
+            onChange={(e) => {
+              setUpstream(e.target.value);
+            }}
+            placeholder="kafka.example.com:9092"
+            spellCheck={false}
+            autoComplete="off"
+            required
+          />
+        </label>
+        <label className="dialog__field">
+          <span className="dialog__label">Listen port (127.0.0.1)</span>
+          <input
+            className="dialog__input"
+            type="number"
+            value={listenPort}
+            onChange={(e) => {
+              setListenPort(Number(e.target.value));
+            }}
+            min={1}
+            max={65535}
+            required
+          />
+        </label>
+        <label className="dialog__check">
+          <input
+            type="checkbox"
+            checked={useTls}
+            onChange={(e) => {
+              setUseTls(e.target.checked);
+            }}
+          />
+          <span>Upstream uses TLS</span>
+        </label>
+        {useTls ? (
+          <>
+            <label className="dialog__field">
+              <span className="dialog__label">
+                CA certificate path (optional)
+                <span className="dialog__hint-inline">empty = system roots</span>
+              </span>
+              <input
+                className="dialog__input"
+                value={tlsCaPath}
+                onChange={(e) => {
+                  setTlsCaPath(e.target.value);
+                }}
+                placeholder="/path/to/ca.pem"
+                spellCheck={false}
+                autoComplete="off"
+              />
+            </label>
+            <label className="dialog__check">
+              <input
+                type="checkbox"
+                checked={tlsSkipHostname}
+                onChange={(e) => {
+                  setTlsSkipHostname(e.target.checked);
+                }}
+              />
+              <span>Skip hostname verification (UNSAFE)</span>
+            </label>
+            {tlsSkipHostname ? (
+              <p className="dialog__warn" role="alert">
+                WARNING: only enable for self-signed clusters with no hostname match. Defeats cert
+                chain validation.
+              </p>
+            ) : null}
+          </>
         ) : null}
+        <label className="dialog__check">
+          <input
+            type="checkbox"
+            checked={useSasl}
+            onChange={(e) => {
+              setUseSasl(e.target.checked);
+            }}
+          />
+          <span>Upstream requires SASL</span>
+        </label>
+        {useSasl ? (
+          <>
+            <label className="dialog__field">
+              <span className="dialog__label">Mechanism</span>
+              <select
+                className="dialog__input"
+                value={saslMechanism}
+                onChange={(e) => {
+                  setSaslMechanism(e.target.value as SaslMechanism);
+                }}
+              >
+                <option value="PLAIN">SASL/PLAIN</option>
+                <option value="SCRAM-SHA-256">SASL/SCRAM-SHA-256</option>
+                <option value="SCRAM-SHA-512">SASL/SCRAM-SHA-512</option>
+              </select>
+            </label>
+            <label className="dialog__field">
+              <span className="dialog__label">Username</span>
+              <input
+                className="dialog__input"
+                value={saslUsername}
+                onChange={(e) => {
+                  setSaslUsername(e.target.value);
+                }}
+                spellCheck={false}
+                autoComplete="off"
+                required
+              />
+            </label>
+            <label className="dialog__field">
+              <span className="dialog__label">Password</span>
+              <input
+                type="password"
+                className="dialog__input"
+                value={saslPassword}
+                onChange={(e) => {
+                  setSaslPassword(e.target.value);
+                }}
+                autoComplete="off"
+                required
+              />
+            </label>
+          </>
+        ) : null}
+        {validationError !== null ? <p className="dialog__error">{validationError}</p> : null}
+        {error !== null ? <p className="dialog__error">{error}</p> : null}
         <div className="dialog__actions">
-          {mode === "client" ? (
-            <>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  void runTest();
-                }}
-                disabled={testState.phase === "testing"}
-                title="Probe broker + Schema Registry without starting a capture"
-              >
-                {testState.phase === "testing" ? "Testing…" : "Test"}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  void saveAsProfile();
-                }}
-                disabled={profileBusy}
-              >
-                Save profile…
-              </button>
-            </>
-          ) : null}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void saveAsProfile();
+            }}
+            disabled={profileBusy}
+          >
+            Save profile…
+          </button>
           {onCancel ? (
             <button type="button" className="btn" onClick={onCancel}>
               Cancel
             </button>
           ) : null}
           <button type="submit" className="btn btn--primary" disabled={pending}>
-            {mode === "proxy"
-              ? pending
-                ? "Starting…"
-                : "Start proxy"
-              : pending
-                ? "Connecting…"
-                : isEditing
-                  ? "Reconnect"
-                  : "Connect"}
+            {pending ? "Starting…" : isEditing ? "Restart proxy" : "Start proxy"}
           </button>
         </div>
       </form>
     </div>
   );
-}
-
-function buildSaveAuth(
-  method: AuthMethod,
-  username: string,
-  password: string,
-  useTls: boolean,
-  ca: string,
-  cert: string,
-  key: string,
-  keyPassword: string,
-): SaveProfileAuth | null {
-  if (method === "none") {
-    return null;
-  }
-  return {
-    mechanism: method,
-    username,
-    useTls,
-    password: password === "" ? null : password,
-    tls: useTls ? buildSaveTls(ca, cert, key, keyPassword) : null,
-  };
-}
-
-function nullIfBlank(s: string): string | null {
-  const trimmed = s.trim();
-  return trimmed === "" ? null : trimmed;
-}
-
-function buildTlsArgs(ca: string, cert: string, key: string, keyPassword: string): TlsArgs | null {
-  const args: TlsArgs = {
-    caPath: nullIfBlank(ca),
-    certPath: nullIfBlank(cert),
-    keyPath: nullIfBlank(key),
-    keyPassword: keyPassword === "" ? null : keyPassword,
-  };
-  if (
-    args.caPath === null &&
-    args.certPath === null &&
-    args.keyPath === null &&
-    args.keyPassword === null
-  ) {
-    return null;
-  }
-  return args;
-}
-
-function buildSaveTls(
-  ca: string,
-  cert: string,
-  key: string,
-  keyPassword: string,
-): SaveProfileTls | null {
-  const ca2 = nullIfBlank(ca);
-  const cert2 = nullIfBlank(cert);
-  const key2 = nullIfBlank(key);
-  const keyPw = keyPassword === "" ? null : keyPassword;
-  if (ca2 === null && cert2 === null && key2 === null && keyPw === null) {
-    return null;
-  }
-  return { caPath: ca2, certPath: cert2, keyPath: key2, keyPassword: keyPw };
 }

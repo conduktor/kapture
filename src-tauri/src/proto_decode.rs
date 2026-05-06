@@ -22,7 +22,7 @@ use bytes::{Buf, Bytes};
 use kafka_protocol::messages::*;
 use kafka_protocol::protocol::Decodable;
 
-use crate::proto_hook::ProtoDirection;
+use crate::proto_event::ProtoDirection;
 
 /// Decode the captured wire bytes (size prefix + header + body) of a
 /// single Kafka protocol frame. Returns `None` when the api isn't yet

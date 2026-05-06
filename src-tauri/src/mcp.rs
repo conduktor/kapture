@@ -81,18 +81,16 @@ use rmcp::{tool, tool_handler, tool_router, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
-use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
+use crate::correlator::{ProtoFrame, ProtoFrameSummary};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
-use crate::profiles::{LoadedProfile, ProfileMetadata};
+use crate::profiles::ProfileMetadata;
 use crate::ring_buffer::CaptureStats;
-use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
 
 const DEFAULT_PORT: u16 = 7878;
@@ -139,13 +137,6 @@ struct InspectParams {
 struct SetFilterParams {
     /// Wireshark-style filter expression (see Kapture's filter DSL).
     expression: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
-struct ConnectProfileParams {
-    /// Name of a saved profile (see `kafka_list_profiles`). Secrets are
-    /// resolved from the OS keychain server-side and never returned.
-    name: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -462,76 +453,7 @@ impl KaptureMcp {
     }
 
     #[tool(
-        description = "Open a capture using a saved profile. Requires the user to have armed MCP connect from the GUI. Secrets are loaded from the OS keychain and never crossed back through MCP."
-    )]
-    async fn kafka_connect_profile(
-        &self,
-        Parameters(ConnectProfileParams { name }): Parameters<ConnectProfileParams>,
-    ) -> Result<Json<AckResponse>, ErrorData> {
-        // Atomic [check `mcp_connect_allowed` and is_capturing] +
-        // claim-the-slot pattern, so two concurrent agent calls or
-        // an agent-vs-GUI race cannot start two captures.
-        let profile = {
-            let state = self.state()?;
-            if !state.mcp_connect_allowed() {
-                return Err(ErrorData::invalid_request(
-                    "MCP-initiated connect is not allowed; arm it from the GUI first",
-                    None,
-                ));
-            }
-            if !state.try_claim_capture_slot() {
-                return Err(ErrorData::invalid_request(
-                    "already capturing — call kafka_disconnect first",
-                    None,
-                ));
-            }
-            state
-                .profiles
-                .load(&name)
-                .map_err(|err| ErrorData::invalid_params(err.to_string(), None))?
-        };
-        let result = start_capture_from_profile(&self.app_handle, profile);
-        if result.is_err() {
-            // Release the slot so a future connect can succeed.
-            if let Ok(state) = self.state() {
-                state.release_capture_slot();
-            }
-        }
-        result.map_err(|err| ErrorData::internal_error(err, None))?;
-        Ok(Json(AckResponse {
-            ok: true,
-            detail: format!("connected via profile {name}"),
-        }))
-    }
-
-    #[tool(
-        description = "Stop the active capture. Idempotent — succeeds when no capture is running."
-    )]
-    async fn kafka_disconnect(
-        &self,
-        _: Parameters<EmptyParams>,
-    ) -> Result<Json<AckResponse>, ErrorData> {
-        let handle = {
-            let state = self.state()?;
-            state.take_capture()
-        };
-        match handle {
-            Some(h) => {
-                h.stop().await;
-                Ok(Json(AckResponse {
-                    ok: true,
-                    detail: "capture stopped".into(),
-                }))
-            }
-            None => Ok(Json(AckResponse {
-                ok: true,
-                detail: "no active capture".into(),
-            })),
-        }
-    }
-
-    #[tool(
-        description = "Start the TCP proxy targeting `upstream` (host:port) on `listen_port` (0 for an ephemeral port). Stops any previous capture/proxy first. Requires the user to have armed MCP connect from the GUI — proxy mode opens listening sockets, so the same explicit-consent gate as kafka_connect_profile applies."
+        description = "Start the TCP proxy targeting `upstream` (host:port) on `listen_port` (0 for an ephemeral port). Stops any previous proxy first. Requires the user to have armed MCP connect from the GUI — proxy mode opens listening sockets, so an explicit-consent gate applies."
     )]
     async fn kapture_set_proxy_target(
         &self,
@@ -797,86 +719,6 @@ fn redact_frame_for_mcp(mut f: ProtoFrame) -> ProtoFrame {
         }
     }
     f
-}
-
-fn start_capture_from_profile(
-    app_handle: &tauri::AppHandle,
-    profile: LoadedProfile,
-) -> Result<(), String> {
-    let state = app_handle
-        .try_state::<AppState>()
-        .ok_or_else(|| "AppState not initialised".to_owned())?;
-    state.buffer.clear();
-
-    let sr_client = profile
-        .meta
-        .schema_registry_url
-        .as_ref()
-        .map(|url| Arc::new(SchemaRegistryClient::new(url.clone())));
-
-    let auth = match profile.meta.auth.as_ref() {
-        None => None,
-        Some(auth_meta) => {
-            let mechanism = match auth_meta.mechanism.to_uppercase().as_str() {
-                "PLAIN" => SaslMechanism::Plain,
-                "SCRAM-SHA-256" => SaslMechanism::ScramSha256,
-                "SCRAM-SHA-512" => SaslMechanism::ScramSha512,
-                other => {
-                    return Err(format!("unsupported SASL mechanism `{other}`"));
-                }
-            };
-            let password = profile
-                .password
-                .clone()
-                .ok_or_else(|| "no SASL password stored for this profile".to_owned())?;
-            let tls = match (&auth_meta.use_tls, &auth_meta.tls) {
-                (true, Some(t)) => {
-                    let creds = TlsCreds {
-                        ca_path: t.ca_path.clone(),
-                        cert_path: t.cert_path.clone(),
-                        key_path: t.key_path.clone(),
-                        key_password: profile.key_password.clone(),
-                    };
-                    creds.validate_paths()?;
-                    Some(creds)
-                }
-                _ => None,
-            };
-            Some(AuthConfig {
-                mechanism,
-                username: auth_meta.username.clone(),
-                password,
-                use_tls: auth_meta.use_tls,
-                tls,
-            })
-        }
-    };
-
-    let config = CaptureConfig::new(
-        profile.meta.bootstrap_servers,
-        capture::normalise_topic_pattern(profile.meta.topic_pattern.as_deref()),
-        profile.meta.from_beginning,
-        auth,
-    );
-    let buffer = Arc::clone(&state.buffer);
-    let filter = Arc::clone(&state.filter);
-    let app_for_messages = app_handle.clone();
-    let correlator = Arc::new(ProtoCorrelator::new());
-    let handle = capture::start(
-        config,
-        sr_client.clone(),
-        Arc::clone(&correlator),
-        move |message| {
-            buffer.push(message.clone());
-            let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
-            if pass {
-                let _ = app_for_messages.emit("kapture:message", &message);
-            }
-        },
-    )
-    .map_err(|err| format!("capture start: {err}"))?;
-    state.install(handle, sr_client, correlator);
-    Ok(())
 }
 
 // ─────────────────────────── auth + bootstrap ───────────────────────────
