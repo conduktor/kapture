@@ -8,9 +8,13 @@
 //! Phase 1: single broker, plain TCP, no SASL, no TLS.
 
 use std::collections::HashMap;
+use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use bytes::Bytes;
+use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
@@ -147,10 +151,83 @@ impl CorrelationMap {
     }
 }
 
+/// Monotonic, never-zero connection identifier. Used as the pairing
+/// key for `(corr_id, connection_id)` in the inspector — replaces
+/// the `broker_id` semantics from the rdkafka-client mode.
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ConnectionId(pub u64);
+
+/// Direction of a tapped frame, from the proxy's point of view.
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyDirection {
+    /// Frame came in from the connecting Kafka client → going to upstream.
+    ClientToUpstream,
+    /// Frame came back from upstream → going to the connecting client.
+    UpstreamToClient,
+}
+
+/// Atomic monotonic generator for `ConnectionId`. One global counter
+/// is fine — these are session-scoped and never persisted.
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[must_use]
+pub fn next_connection_id() -> ConnectionId {
+    ConnectionId(NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Drive both directions of one client/upstream pair. Returns when
+/// either side closes its half. Errors short-circuit and propagate to
+/// the caller — the spawn site logs and drops the pump.
+///
+/// `tap` is invoked synchronously per frame, *before* forwarding, so
+/// the inspector observes frames in arrival order. The callback must
+/// not block: in production it just pushes into the correlator's
+/// ring-buffer mutex (~µs).
+#[allow(dead_code)] // see note on `ProxyConfig`
+pub async fn run_pump<F>(
+    conn_id: ConnectionId,
+    client: TcpStream,
+    upstream: TcpStream,
+    tap: F,
+) -> io::Result<()>
+where
+    F: Fn(ProxyDirection, ConnectionId, &Bytes) + Send + Sync + 'static,
+{
+    let mut client_framed = framed_kafka(client);
+    let mut upstream_framed = framed_kafka(upstream);
+
+    loop {
+        tokio::select! {
+            // Client → upstream
+            frame = client_framed.next() => {
+                let Some(frame) = frame else { break; };
+                let frame = frame?;
+                let bytes = frame.freeze();
+                tap(ProxyDirection::ClientToUpstream, conn_id, &bytes);
+                upstream_framed.send(bytes).await?;
+            }
+            // Upstream → client
+            frame = upstream_framed.next() => {
+                let Some(frame) = frame else { break; };
+                let frame = frame?;
+                let bytes = frame.freeze();
+                tap(ProxyDirection::UpstreamToClient, conn_id, &bytes);
+                client_framed.send(bytes).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex as PMutex;
+    use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 
@@ -163,8 +240,6 @@ mod tests {
 
     #[tokio::test]
     async fn frame_codec_decodes_length_prefixed_payloads() {
-        use futures::StreamExt;
-
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -233,5 +308,73 @@ mod tests {
     fn correlation_map_returns_none_for_unknown_corr_id() {
         let map = CorrelationMap::default();
         assert!(map.take_response(999).is_none());
+    }
+
+    /// End-to-end: spin up a fake upstream broker that echoes each
+    /// frame with its bytes reversed, run the per-connection pump
+    /// against it, send a frame from the "client" side, and assert
+    /// (a) the client gets the reversed echo and (b) the inspector
+    /// tap saw both frames with the right direction.
+    #[tokio::test]
+    async fn per_connection_pump_taps_both_directions() {
+        type Tap = Arc<PMutex<Vec<(ProxyDirection, Vec<u8>)>>>;
+
+        // Fake upstream — accepts one connection, reads one frame,
+        // writes back the reversed bytes (still as a length-prefixed
+        // frame), then closes.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (sock, _) = upstream.accept().await.unwrap();
+            let mut framed = framed_kafka(sock);
+            let frame = framed.next().await.unwrap().unwrap();
+            let mut reply = frame.to_vec();
+            reply.reverse();
+            framed.send(reply.into()).await.unwrap();
+        });
+
+        // Tap collector.
+        let tap: Tap = Arc::new(PMutex::new(Vec::new()));
+        let tap_for_pump = Arc::clone(&tap);
+
+        // Client side of the pump: a paired in-memory socket would be
+        // ideal but we use a real loopback TCP for simplicity.
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        let upstream_target = upstream_addr.to_string();
+        let pump_task = tokio::spawn(async move {
+            let (client_sock, _) = client_listener.accept().await.unwrap();
+            let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
+            run_pump(
+                ConnectionId(1),
+                client_sock,
+                upstream_sock,
+                move |dir, conn, payload| {
+                    assert_eq!(conn, ConnectionId(1));
+                    tap_for_pump.lock().push((dir, payload.to_vec()));
+                },
+            )
+            .await
+            .unwrap();
+        });
+
+        // Drive the client.
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        client.write_all(&8u32.to_be_bytes()).await.unwrap();
+        client.write_all(b"helloKKK").await.unwrap();
+        // Read the echoed reply.
+        let mut framed_client = framed_kafka(client);
+        let reply = framed_client.next().await.unwrap().unwrap();
+        assert_eq!(reply.as_ref(), b"KKKolleh");
+
+        upstream_task.await.unwrap();
+        pump_task.await.unwrap();
+
+        let captured = tap.lock().clone();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].0, ProxyDirection::ClientToUpstream);
+        assert_eq!(captured[0].1, b"helloKKK");
+        assert_eq!(captured[1].0, ProxyDirection::UpstreamToClient);
+        assert_eq!(captured[1].1, b"KKKolleh");
     }
 }
