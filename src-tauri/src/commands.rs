@@ -8,7 +8,7 @@ use tracing::info;
 use serde::Deserialize;
 
 use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
-use crate::correlator::{ProtoCorrelator, ProtoFrame};
+use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
@@ -387,16 +387,26 @@ pub async fn disconnect(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
-/// Snapshot of recent observed Kafka protocol frames. Returns up to
-/// `limit` (cap 2000) entries, oldest first. Empty when no capture is
-/// running.
+/// Snapshot of recent observed Kafka protocol frames as **summaries**
+/// (no payload bytes, no decoded body — those are megabyte-scale on
+/// busy clusters and don't belong in the 1 Hz polling path). Returns
+/// up to `limit` (cap 2000) entries, oldest first. Empty when no
+/// capture is running.
 #[tauri::command]
-pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<ProtoFrame> {
+pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<ProtoFrameSummary> {
     let cap = limit.map_or(2000_usize, |n| (n as usize).min(2000));
     state
         .correlator()
-        .map(|c| c.frames(cap))
+        .map(|c| c.summaries(cap))
         .unwrap_or_default()
+}
+
+/// Full frame (summary + captured bytes + decoded body) for one id.
+/// Used by the UI when the user selects a row in the Protocol list —
+/// avoids paying for the heavy fields on every poll.
+#[tauri::command]
+pub fn proto_frame_detail(state: State<'_, AppState>, id: String) -> Option<ProtoFrame> {
+    state.correlator().and_then(|c| c.frame_detail(&id))
 }
 
 #[tauri::command]

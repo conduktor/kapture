@@ -48,6 +48,44 @@ pub struct FetchMetadata {
     pub rtt_ms: f64,
 }
 
+/// Lightweight projection of `ProtoFrame` — everything needed to draw
+/// the Protocol list row. Excludes `payload_hex` and `decoded` so the
+/// 1 Hz poll doesn't ship MB of data to the renderer when the ring
+/// buffer is full of large Fetch responses.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtoFrameSummary {
+    pub id: String,
+    pub timestamp: String,
+    pub direction: ProtoDirection,
+    pub api_key: i32,
+    pub api_name: &'static str,
+    pub api_version: i32,
+    pub broker_id: i32,
+    pub corr_id: i32,
+    pub size: usize,
+    pub captured: usize,
+    pub rtt_ms: f64,
+}
+
+impl From<&ProtoFrame> for ProtoFrameSummary {
+    fn from(f: &ProtoFrame) -> Self {
+        Self {
+            id: f.id.clone(),
+            timestamp: f.timestamp.clone(),
+            direction: f.direction,
+            api_key: f.api_key,
+            api_name: f.api_name,
+            api_version: f.api_version,
+            broker_id: f.broker_id,
+            corr_id: f.corr_id,
+            size: f.size,
+            captured: f.captured,
+            rtt_ms: f.rtt_ms,
+        }
+    }
+}
+
 /// One observed Kafka protocol frame. Either a request (Send) or a
 /// response (Recv); pairing happens at view time on the frontend
 /// (group by `corrId`+`brokerId`). RTT is broker-side measurement,
@@ -177,14 +215,26 @@ impl ProtoCorrelator {
     }
 
     /// Snapshot of the most recent `limit` frames (clamped to the
-    /// buffer cap), oldest first. Cheap clone of timestamped Strings.
+    /// buffer cap), oldest first, projected to summaries (no payload
+    /// bytes, no decoded body — they're heavy and the list view doesn't
+    /// need them). Use `frame_detail` for the full frame on selection.
     #[must_use]
-    pub fn frames(&self, limit: usize) -> Vec<ProtoFrame> {
+    pub fn summaries(&self, limit: usize) -> Vec<ProtoFrameSummary> {
         let frames = self.frames.lock();
         let n = limit.min(frames.len());
-        // skip the oldest if we have more than `limit` so the result is
-        // the latest window in chronological order.
-        frames.iter().skip(frames.len() - n).cloned().collect()
+        frames
+            .iter()
+            .skip(frames.len() - n)
+            .map(ProtoFrameSummary::from)
+            .collect()
+    }
+
+    /// Full `ProtoFrame` by id — including the captured bytes and
+    /// decoded debug string. Returns `None` if the frame has aged out
+    /// of the ring buffer or never existed.
+    #[must_use]
+    pub fn frame_detail(&self, id: &str) -> Option<ProtoFrame> {
+        self.frames.lock().iter().find(|f| f.id == id).cloned()
     }
 
     /// Total number of frames currently in the ring buffer.

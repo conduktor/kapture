@@ -75,6 +75,7 @@ pub fn run() {
             commands::disconnect,
             commands::snapshot,
             commands::proto_frames,
+            commands::proto_frame_detail,
             commands::stats,
             commands::clear_buffer,
             commands::set_filter,

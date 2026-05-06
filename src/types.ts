@@ -21,7 +21,12 @@ export interface FetchMetadata {
 
 export type ProtoDirection = "send" | "recv";
 
-/** One observed Kafka protocol frame (request or response). */
+/**
+ * Lightweight projection of a protocol frame — everything the list
+ * row needs and nothing more. The 1 Hz proto_frames poll returns
+ * these to keep the IPC payload small even when the ring buffer is
+ * full of large Fetch responses.
+ */
 export interface ProtoFrame {
   id: string;
   timestamp: string;
@@ -37,11 +42,19 @@ export interface ProtoFrame {
   captured: number;
   /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
   rttMs: number;
+}
+
+/**
+ * Full frame including the captured bytes (lowercase hex) and the
+ * decoded body. Fetched on demand via `proto_frame_detail(id)` only
+ * when the user selects a row.
+ */
+export interface ProtoFrameDetail extends ProtoFrame {
   /** Lowercase hex of the captured prefix. Empty when capture was 0 bytes. */
   payloadHex: string;
   /**
    * Pretty-printed Debug of the decoded request/response body via the
-   * `kafka-protocol` crate, when the api_key is in our supported set.
+   * `kafka-protocol` crate, when the apiKey is in our supported set.
    * `null` for APIs we don't decode yet — the UI then falls back to
    * the raw hex view.
    */

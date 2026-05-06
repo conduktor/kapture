@@ -20,6 +20,7 @@ import type {
   ConnectionState,
   KafkaMessage,
   ProtoFrame,
+  ProtoFrameDetail,
 } from "./types";
 
 interface MenuState {
@@ -68,6 +69,7 @@ function App(): JSX.Element {
   const [tab, setTab] = useState<"messages" | "protocol">("messages");
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
   // Substring filter for the protocol tab. Matches case-insensitively
   // against api name / direction / broker. Kept separate from the
   // Wireshark-style DSL filter applied to messages.
@@ -169,6 +171,37 @@ function App(): JSX.Element {
       window.clearInterval(interval);
     };
   }, [connection.status]);
+
+  // Fetch the selected frame's full payload (hex + decoded body) lazily.
+  // The list poll above only carries summaries to keep IPC small; the
+  // heavy fields land here, scoped to one frame at a time.
+  // useRef-based cancellation flag — strict TS would otherwise narrow a
+  // closed-over `let cancelled = false` to always-false inside the
+  // async closure.
+  const detailCancelRef = useRef(false);
+  useEffect(() => {
+    if (selectedFrameId === null) {
+      return;
+    }
+    detailCancelRef.current = false;
+    const id = selectedFrameId;
+    void (async () => {
+      try {
+        const detail = await invoke<ProtoFrameDetail | null>("proto_frame_detail", { id });
+        if (!detailCancelRef.current) {
+          setSelectedFrameDetail(detail);
+        }
+      } catch (err) {
+        if (!detailCancelRef.current) {
+          console.warn("proto_frame_detail failed", err);
+          setSelectedFrameDetail(null);
+        }
+      }
+    })();
+    return () => {
+      detailCancelRef.current = true;
+    };
+  }, [selectedFrameId]);
 
   // Debounced filter sync to backend, with a generation guard so concurrent
   // filter edits cannot let a stale snapshot overwrite a fresher view.
@@ -497,7 +530,12 @@ function App(): JSX.Element {
                 }}
               />
               <ProtoDetail
-                frame={visibleProtoFrames.find((f) => f.id === selectedFrameId) ?? null}
+                frame={
+                  // Only show the detail when it matches the current
+                  // selection — avoids flashing a stale frame's bytes
+                  // during the brief window before the new fetch lands.
+                  selectedFrameDetail?.id === selectedFrameId ? selectedFrameDetail : null
+                }
               />
             </div>
           )}

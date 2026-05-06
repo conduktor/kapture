@@ -1,9 +1,9 @@
 import { type JSX } from "react";
-import type { ProtoFrame } from "../types";
+import type { ProtoFrameDetail } from "../types";
 import { parseDebug, type DebugNode } from "../lib/debugTree";
 
 interface Props {
-  frame: ProtoFrame | null;
+  frame: ProtoFrameDetail | null;
 }
 
 export function ProtoDetail({ frame }: Props): JSX.Element {
