@@ -209,6 +209,12 @@ export function ProtoList({
           api
         </span>
         <span
+          className="proto__col proto__col--size"
+          title="Wire size of the frame in bytes (4-byte length prefix + body)."
+        >
+          size
+        </span>
+        <span
           className="proto__col proto__col--broker"
           title="Connection ID — unique per TCP connection accepted by the proxy. Group rows with the same conn to see one client session."
         >
@@ -219,12 +225,6 @@ export function ProtoList({
           title="Correlation ID — pairs a request with its response on the same connection."
         >
           corr
-        </span>
-        <span
-          className="proto__col proto__col--size"
-          title="Wire size of the frame in bytes (4-byte length prefix + body)."
-        >
-          size
         </span>
         <span
           className="proto__col proto__col--rtt"
@@ -533,6 +533,7 @@ function ProtoRow({
         {frame.apiName}
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
       </FilterableCell>
+      <span className="proto__col proto__col--size">{frame.size}b</span>
       <FilterableCell
         className="proto__col proto__col--broker"
         kind="connectionId"
@@ -549,7 +550,6 @@ function ProtoRow({
       >
         {frame.corrId}
       </FilterableCell>
-      <span className="proto__col proto__col--size">{frame.size}b</span>
       <span className="proto__col proto__col--rtt">
         {frame.direction === "recv" ? frame.rttMs.toFixed(2) : "—"}
       </span>

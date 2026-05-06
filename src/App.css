@@ -306,18 +306,18 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__row,
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
-      minmax(0, 30px) minmax(0, 260px) minmax(180px, 1fr)
-      minmax(0, 60px) minmax(0, 90px) minmax(0, 70px);
+      minmax(0, 30px) 260px minmax(180px, 1fr) minmax(0, 70px)
+      minmax(0, 60px) minmax(0, 90px);
   }
 }
-@container (max-width: 600px) {
+@container (max-width: 620px) {
   section.msglist[aria-label="Protocol frames"] .proto__col--size {
     display: none;
   }
   section.msglist[aria-label="Protocol frames"] .msglist__row,
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
-      minmax(0, 30px) minmax(0, 260px) minmax(180px, 1fr)
+      minmax(0, 30px) 260px minmax(180px, 1fr)
       minmax(0, 60px) minmax(0, 90px);
   }
 }
@@ -409,9 +409,14 @@ section.msglist[aria-label="Protocol frames"] {
  * pane edge and overlap the detail panel header. */
 section.msglist[aria-label="Protocol frames"] .msglist__head,
 section.msglist[aria-label="Protocol frames"] .msglist__row {
+  /* Order: dir(30) | ts(FIXED 260) | api(flex) | size | conn | corr | rtt.
+   * The Timestamp column is fixed-width — never shrinks — because the
+   * full µs timestamp + the dim '+Δ' suffix must always be readable.
+   * size sits right after api so byte-magnitude tracks the verb that
+   * carried it. */
   grid-template-columns:
-    minmax(0, 30px) minmax(0, 260px) minmax(180px, 1fr)
-    minmax(0, 60px) minmax(0, 90px) minmax(0, 70px) minmax(0, 70px);
+    minmax(0, 30px) 260px minmax(180px, 1fr) minmax(0, 70px)
+    minmax(0, 60px) minmax(0, 90px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
  * `proto__col` already declares `overflow: hidden` (ellipsis), but the
