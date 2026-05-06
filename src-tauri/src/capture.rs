@@ -238,7 +238,14 @@ fn build_client_config(config: &CaptureConfig) -> ClientConfig {
     client_config
         .set("bootstrap.servers", &config.bootstrap_servers)
         .set("group.id", &config.group_id)
-        .set("enable.auto.commit", "false")
+        // Auto-commit is intentionally ENABLED so the consumer
+        // periodically sends OffsetCommit frames the proto-hook
+        // observes. The group_id is a UUID minted per capture session
+        // (`kapture-<uuid>`), so there's no real-world side effect —
+        // Kafka GCs the ephemeral group after retention. Without
+        // auto-commit the Protocol tab would only show Fetch +
+        // Heartbeat, which is much less interesting.
+        .set("enable.auto.commit", "true")
         .set(
             "auto.offset.reset",
             if config.from_beginning {

@@ -414,6 +414,14 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
   border-left: 1px dashed var(--border);
 }
 
+/* Wider name column inside the decoded tree — kafka-protocol field
+ * names are routinely ~30+ chars (e.g. include_cluster_authorized_-
+ * operations) and overflow the .field default 160 px column.  */
+.proto-decoded-tree .field,
+.proto-decoded-tree .tree-node__summary {
+  grid-template-columns: 280px 1fr;
+}
+
 /* Pretty-printed Debug output of the decoded frame body (kafka-protocol). */
 .proto-decoded {
   display: block;

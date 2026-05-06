@@ -87,11 +87,26 @@ function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string })
       </details>
     );
   }
+  // Top-level kafka-protocol message root is always a struct; inline
+  // its fields under the layer title rather than render a degenerate
+  // empty-name row carrying just "MetadataRequest" — the layer title
+  // already names the API.
   return (
     <details className="layer" open>
-      <summary className="layer__title">decoded ({apiName})</summary>
-      <div className="layer__body">
-        <DebugNodeView node={tree} />
+      <summary className="layer__title">
+        decoded ({apiName}
+        {tree.kind === "struct" && tree.name !== "" ? ` → ${tree.name}` : ""})
+      </summary>
+      <div className="layer__body proto-decoded-tree">
+        {tree.kind === "struct" ? (
+          tree.fields.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            tree.fields.map((f, i) => <DebugNodeView key={i} node={f.value} name={f.name} />)
+          )
+        ) : (
+          <DebugNodeView node={tree} />
+        )}
       </div>
     </details>
   );
