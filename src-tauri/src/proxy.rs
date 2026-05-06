@@ -14,9 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -234,6 +234,101 @@ where
     Ok(())
 }
 
+/// Per-frame pump variant that records every event in the
+/// `ProtoCorrelator` AND rewrites response payloads carrying broker /
+/// coordinator addresses (`Metadata`, `FindCoordinator`,
+/// `DescribeCluster`) so the client's follow-up connections come back
+/// through Kapture's local listeners instead of bypassing us.
+///
+/// The correlator records the **original** bytes (Wireshark-style:
+/// "show me what was on the wire") — only the bytes forwarded to the
+/// client are rewritten.
+///
+/// On rewrite failure the original frame is forwarded verbatim and
+/// the error is logged at `warn!` — we never silently drop frames.
+///
+/// # Errors
+/// Bubbles up `io::Error` from the underlying TCP read/write.
+#[allow(dead_code)] // wired into ProxyHandle::start in Task 16
+pub async fn run_pump_with_rewrite(
+    conn_id: ConnectionId,
+    client: TcpStream,
+    upstream: TcpStream,
+    correlator: Arc<ProtoCorrelator>,
+    corr_map: Arc<CorrelationMap>,
+    broker_map: Arc<BrokerMap>,
+) -> io::Result<()> {
+    let mut client_framed = framed_kafka(client);
+    let mut upstream_framed = framed_kafka(upstream);
+
+    loop {
+        tokio::select! {
+            // Client → upstream
+            frame = client_framed.next() => {
+                let Some(frame) = frame else { break; };
+                let frame = frame?;
+                let bytes = frame.freeze();
+                let event = build_proto_event(
+                    ProxyDirection::ClientToUpstream,
+                    conn_id,
+                    &bytes,
+                    &corr_map,
+                );
+                correlator.record_event(&event);
+                upstream_framed.send(bytes).await?;
+            }
+            // Upstream → client (with rewrite)
+            frame = upstream_framed.next() => {
+                let Some(frame) = frame else { break; };
+                let frame = frame?;
+                let bytes = frame.freeze();
+                let event = build_proto_event(
+                    ProxyDirection::UpstreamToClient,
+                    conn_id,
+                    &bytes,
+                    &corr_map,
+                );
+                let api_key = i16::try_from(event.api_key).unwrap_or(-1);
+                let api_version = i16::try_from(event.api_version).unwrap_or(-1);
+                correlator.record_event(&event);
+
+                let forward = if api_key >= 0 {
+                    match crate::proxy_rewrite::rewrite_response(
+                        api_key,
+                        api_version,
+                        &bytes,
+                        &broker_map,
+                    )
+                    .await
+                    {
+                        Ok(Some(rewritten)) => {
+                            // Splice the original correlation_id back in.
+                            // The rewriter encoded a fresh ResponseHeader
+                            // with corr_id=0; replace the first 4 bytes.
+                            if rewritten.len() >= 4 && bytes.len() >= 4 {
+                                let mut buf = BytesMut::from(rewritten.as_ref());
+                                buf[0..4].copy_from_slice(&bytes[0..4]);
+                                buf.freeze()
+                            } else {
+                                bytes.clone()
+                            }
+                        }
+                        Ok(None) => bytes.clone(),
+                        Err(err) => {
+                            warn!(error = %err, "rewrite failed; forwarding verbatim");
+                            bytes.clone()
+                        }
+                    }
+                } else {
+                    bytes.clone()
+                };
+                client_framed.send(forward).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Build the `ProtoEvent` for one tapped frame. On the request path,
 /// peek the header and stash it in `corr_map`. On the response path,
 /// look up the matching request to recover `(api_key, api_version)`
@@ -426,97 +521,43 @@ impl Drop for ProxyHandle {
     }
 }
 
-/// Map between upstream Kafka brokers `(host, port)` and the local
-/// loopback ports we've bound for them. The first entry is the
-/// bootstrap broker the user configured; subsequent entries are
-/// lazily added as Metadata / `FindCoordinator` / `DescribeCluster`
-/// responses reveal new brokers.
-///
-/// Bidirectional: `ensure_listener(host, port)` allocates (or returns
-/// the cached) local port. `upstream_for_local(local)` is used by
-/// the per-listener pump to know where to forward bytes to.
-#[allow(dead_code)]
-#[derive(Debug, Default)]
-pub struct BrokerMap {
-    inner: RwLock<BrokerMapInner>,
-}
-
-#[derive(Debug, Default)]
-struct BrokerMapInner {
-    by_upstream: HashMap<(String, u16), u16>,
-    by_local: HashMap<u16, (String, u16)>,
-}
-
-#[allow(dead_code)]
-impl BrokerMap {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Ensure we have a local listener for the given upstream broker;
-    /// returns the local port. If one exists already, return it; if
-    /// not, bind a new ephemeral listener on `127.0.0.1` and stash it.
-    ///
-    /// NOTE: this only allocates the *port* (via `TcpListener::bind`
-    /// followed by an immediate drop and rebind). The actual accept
-    /// loop is spawned by `ProxyHandle::ensure_listener_running`.
-    ///
-    /// # Errors
-    /// Bubbles up the `io::Error` if the bind fails.
-    pub async fn ensure_listener(&self, host: &str, port: u16) -> io::Result<u16> {
-        {
-            let inner = self.inner.read();
-            if let Some(&local) = inner.by_upstream.get(&(host.to_owned(), port)) {
-                return Ok(local);
-            }
-        }
-        // Bind ephemeral, read the assigned port, drop the listener.
-        // The caller spawns the real accept loop separately.
-        let temp = TcpListener::bind("127.0.0.1:0").await?;
-        let local_port = temp.local_addr()?.port();
-        drop(temp);
-        {
-            let mut inner = self.inner.write();
-            inner
-                .by_upstream
-                .insert((host.to_owned(), port), local_port);
-            inner.by_local.insert(local_port, (host.to_owned(), port));
-        }
-        Ok(local_port)
-    }
-
-    /// Reserve a specific local port for an upstream — used to seed the
-    /// map with the bootstrap broker when the user configures a fixed
-    /// listen port.
-    pub fn reserve(&self, host: String, port: u16, local_port: u16) {
-        let mut inner = self.inner.write();
-        inner.by_upstream.insert((host.clone(), port), local_port);
-        inner.by_local.insert(local_port, (host, port));
-    }
-
-    #[must_use]
-    pub fn upstream_for_local(&self, local: u16) -> Option<(String, u16)> {
-        self.inner.read().by_local.get(&local).cloned()
-    }
-
-    #[must_use]
-    pub fn snapshot(&self) -> Vec<((String, u16), u16)> {
-        self.inner
-            .read()
-            .by_upstream
-            .iter()
-            .map(|(k, v)| (k.clone(), *v))
-            .collect()
-    }
-}
+pub use crate::proxy_broker_map::BrokerMap;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
+    use kafka_protocol::messages::metadata_response::MetadataResponseBroker;
+    use kafka_protocol::messages::{ApiKey, BrokerId, MetadataResponse, ResponseHeader};
+    use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
     use parking_lot::Mutex as PMutex;
     use tokio::io::AsyncWriteExt;
+
+    /// Local copy of the `proxy_rewrite::tests` helper. Duplicated
+    /// rather than re-exported so production code stays free of test
+    /// fixtures.
+    fn build_metadata_response_bytes(version: i16, brokers: Vec<(i32, &str, i32)>) -> Vec<u8> {
+        let mut resp = MetadataResponse::default();
+        resp.brokers = brokers
+            .into_iter()
+            .map(|(node_id, host, port)| {
+                let mut b = MetadataResponseBroker::default();
+                b.node_id = BrokerId(node_id);
+                b.host = StrBytes::from_string(host.to_owned());
+                b.port = port;
+                b
+            })
+            .collect();
+
+        let header_version = ApiKey::Metadata.response_header_version(version);
+        let mut out = BytesMut::new();
+        ResponseHeader::default()
+            .encode(&mut out, header_version)
+            .unwrap();
+        resp.encode(&mut out, version).unwrap();
+        out.to_vec()
+    }
 
     #[test]
     fn proxy_config_normalises_listen_addr() {
@@ -799,23 +840,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn broker_map_returns_same_local_port_for_same_upstream() {
-        let map = BrokerMap::new();
-        let p1 = map.ensure_listener("kafka-mb-2", 39093).await.unwrap();
-        let p2 = map.ensure_listener("kafka-mb-2", 39093).await.unwrap();
-        assert_eq!(p1, p2);
-        let p3 = map.ensure_listener("kafka-mb-3", 39094).await.unwrap();
-        assert_ne!(p1, p3);
-    }
+    async fn pump_rewrites_metadata_response_brokers_to_local() {
+        // Fake upstream: when a client sends ANY frame, reply with a
+        // pre-built Metadata response that advertises 2 distant brokers.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
 
-    #[tokio::test]
-    async fn broker_map_lookup_returns_upstream_for_local_port() {
-        let map = BrokerMap::new();
-        let local = map
-            .ensure_listener("upstream.example.com", 9092)
+        let upstream_task = tokio::spawn(async move {
+            let (sock, _) = upstream.accept().await.unwrap();
+            let mut framed = framed_kafka(sock);
+            // Read one request frame from the client.
+            let _req = framed.next().await.unwrap().unwrap();
+            // Send a Metadata v12 response.
+            let body = build_metadata_response_bytes(
+                12,
+                vec![(1, "kafka-mb-1", 39092), (2, "kafka-mb-2", 39093)],
+            );
+            // Splice the corr_id=42 from the (fake) request.
+            let mut buf = BytesMut::from(&body[..]);
+            buf[0..4].copy_from_slice(&42i32.to_be_bytes());
+            framed.send(buf.freeze()).await.unwrap();
+        });
+
+        // Client side: connect through our pump.
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        let upstream_target = upstream_addr.to_string();
+        let correlator = Arc::new(crate::correlator::ProtoCorrelator::new());
+        let corr_map = Arc::new(CorrelationMap::default());
+        let broker_map = Arc::new(BrokerMap::new());
+        let correlator_for_test = Arc::clone(&correlator);
+        let broker_map_for_test = Arc::clone(&broker_map);
+
+        let pump_task = tokio::spawn(async move {
+            let (client_sock, _) = client_listener.accept().await.unwrap();
+            let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
+            run_pump_with_rewrite(
+                ConnectionId(1),
+                client_sock,
+                upstream_sock,
+                correlator,
+                corr_map,
+                broker_map,
+            )
             .await
             .unwrap();
-        let upstream = map.upstream_for_local(local).unwrap();
-        assert_eq!(upstream, ("upstream.example.com".to_owned(), 9092));
+        });
+
+        // Drive the client. Send a Metadata v12 request (api_key=3,
+        // api_ver=12, corr_id=42, then dummy header tail).
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        let mut req = Vec::new();
+        req.extend_from_slice(&3i16.to_be_bytes());
+        req.extend_from_slice(&12i16.to_be_bytes());
+        req.extend_from_slice(&42i32.to_be_bytes());
+        // client_id (nullable string, length=-1) + tagged fields=0
+        req.extend_from_slice(&(-1i16).to_be_bytes());
+        req.push(0); // tagged fields count = 0
+                     // Empty MetadataRequest body (topics array null + tagged fields).
+        req.push(0xFF); // null array marker for v12 flexible
+        req.push(0); // tagged fields
+        let len = u32::try_from(req.len()).unwrap();
+        client.write_all(&len.to_be_bytes()).await.unwrap();
+        client.write_all(&req).await.unwrap();
+
+        // Read the rewritten response.
+        let mut framed_client = framed_kafka(client);
+        let resp = framed_client.next().await.unwrap().unwrap();
+        let mut buf = resp.freeze();
+        // First 4 bytes should be corr_id=42.
+        let corr_id = i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        assert_eq!(corr_id, 42);
+        // Decode and verify brokers were rewritten.
+        let header_version = ApiKey::Metadata.response_header_version(12);
+        let _hdr = ResponseHeader::decode(&mut buf, header_version).unwrap();
+        let decoded = MetadataResponse::decode(&mut buf, 12).unwrap();
+        for b in &decoded.brokers {
+            assert_eq!(b.host.to_string(), "127.0.0.1");
+            assert!(b.port > 0 && b.port < 65536);
+        }
+        // BrokerMap should now hold both upstream entries.
+        assert_eq!(broker_map_for_test.snapshot().len(), 2);
+        // Correlator should have recorded request + response.
+        assert!(correlator_for_test.summaries(10).len() >= 2);
+
+        upstream_task.await.unwrap();
+        pump_task.abort();
     }
 }
