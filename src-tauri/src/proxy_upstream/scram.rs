@@ -221,6 +221,11 @@ impl<H: ScramHash> ScramClient<H> {
         if let Some(err) = parse_field(server_first_message, 'e') {
             return Err(ScramError::ServerError(err.to_owned()));
         }
+        if parse_field(server_first_message, 'm').is_some() {
+            return Err(ScramError::MalformedMessage(
+                "server-first contains unsupported mandatory extension m=".to_owned(),
+            ));
+        }
 
         let combined_nonce = parse_field(server_first_message, 'r')
             .ok_or_else(|| ScramError::MalformedMessage("server-first missing r=".to_owned()))?;
@@ -475,6 +480,22 @@ mod tests {
                 iterations: 10_000_000,
             }) => {}
             other => panic!("expected InvalidIterations(10_000_000), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_first_with_mandatory_extension_rejected() {
+        let mut c = ScramClient::<Sha256Hash>::with_nonce(
+            "user".to_owned(),
+            "pencil".to_owned(),
+            RFC7677_CNONCE.to_owned(),
+        );
+        let m = "m=reserved,r=rOprNGfwEbeRWgbNEkqOX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
+        match c.server_first(m) {
+            Err(ScramError::MalformedMessage(msg)) => {
+                assert!(msg.contains("mandatory extension"), "msg = {msg}")
+            }
+            other => panic!("expected MalformedMessage, got {other:?}"),
         }
     }
 
