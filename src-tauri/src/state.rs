@@ -36,6 +36,7 @@ pub struct AppState {
 #[derive(Debug, Default)]
 struct Inner {
     capture: Option<CaptureHandle>,
+    proxy: Option<crate::proxy::ProxyHandle>,
     sr_client: Option<Arc<SchemaRegistryClient>>,
     correlator: Option<Arc<ProtoCorrelator>>,
     started_at: Option<Instant>,
@@ -85,9 +86,45 @@ impl AppState {
         taken
     }
 
+    // Wired into Tauri commands in Task 8 of the proxy-mode plan.
+    #[allow(dead_code)]
+    pub fn install_proxy(
+        &self,
+        handle: crate::proxy::ProxyHandle,
+        correlator: Arc<ProtoCorrelator>,
+    ) {
+        {
+            let mut guard = self.inner.lock();
+            guard.proxy = Some(handle);
+            guard.correlator = Some(correlator);
+            guard.started_at = Some(Instant::now());
+        }
+        self.capture_pending.store(false, Ordering::Release);
+    }
+
+    #[allow(dead_code)] // see note on `install_proxy`
+    pub fn take_proxy(&self) -> Option<crate::proxy::ProxyHandle> {
+        let taken = {
+            let mut guard = self.inner.lock();
+            guard.started_at = None;
+            guard.correlator = None;
+            guard.proxy.take()
+        };
+        self.capture_pending.store(false, Ordering::Release);
+        taken
+    }
+
+    #[allow(dead_code)] // see note on `install_proxy`
+    pub fn is_proxying(&self) -> bool {
+        self.inner.lock().proxy.is_some()
+    }
+
     pub fn is_capturing(&self) -> bool {
-        let has_handle = self.inner.lock().capture.is_some();
-        has_handle || self.capture_pending.load(Ordering::Acquire)
+        let (has_capture, has_proxy) = {
+            let guard = self.inner.lock();
+            (guard.capture.is_some(), guard.proxy.is_some())
+        };
+        has_capture || has_proxy || self.capture_pending.load(Ordering::Acquire)
     }
 
     /// Atomically reserve the capture slot. Returns `true` if no
@@ -95,7 +132,10 @@ impl AppState {
     /// the slot. The reservation MUST be cleared by `install()` on
     /// success or `release_capture_slot()` on failure.
     pub fn try_claim_capture_slot(&self) -> bool {
-        let already_running = self.inner.lock().capture.is_some();
+        let already_running = {
+            let guard = self.inner.lock();
+            guard.capture.is_some() || guard.proxy.is_some()
+        };
         if already_running {
             return false;
         }

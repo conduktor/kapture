@@ -301,7 +301,6 @@ pub fn build_proto_event(
 }
 
 /// A running proxy listener. Drop / `stop()` to tear down.
-#[allow(dead_code)] // wired into AppState in Task 7.
 pub struct ProxyHandle {
     stop_tx: watch::Sender<bool>,
     accept_task: Option<JoinHandle<()>>,
@@ -319,7 +318,7 @@ impl std::fmt::Debug for ProxyHandle {
     }
 }
 
-#[allow(dead_code)] // wired into AppState in Task 7.
+#[allow(dead_code)] // start/stop/etc. wired from commands.rs in Task 8.
 impl ProxyHandle {
     /// Bind the listener and spawn the accept loop.
     ///
