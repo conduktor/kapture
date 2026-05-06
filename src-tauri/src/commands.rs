@@ -154,8 +154,14 @@ impl AuthArgs {
     }
 }
 
+/// MUST be `async`: the body calls into rdkafka's `tokio` feature which
+/// spawns internal tasks at consumer construction. Tauri's sync commands
+/// run on a blocking thread that has no tokio runtime in scope, so the
+/// rdkafka spawn panics with "there is no reactor running". An `async`
+/// command runs inside Tauri's tokio runtime — the same fix applies to
+/// `test_connection` further down.
 #[tauri::command]
-pub fn connect(
+pub async fn connect(
     state: State<'_, AppState>,
     app: AppHandle,
     bootstrap_servers: String,
@@ -245,9 +251,13 @@ pub async fn test_connection(
     let pattern = capture::normalise_topic_pattern(None);
     let config = CaptureConfig::new(bootstrap_servers, pattern, true, parsed_auth);
     // Run the blocking metadata fetch on a worker thread so the IPC
-    // event loop isn't blocked. spawn_blocking is enough — fetch_metadata
-    // is a synchronous librdkafka call that returns within `timeout`.
+    // event loop isn't blocked. We must `Handle::current().enter()`
+    // inside the worker so rdkafka's tokio-feature consumer can spawn
+    // its internal tasks (otherwise it panics with
+    // "there is no reactor running").
+    let handle = tokio::runtime::Handle::current();
     let report = tokio::task::spawn_blocking(move || {
+        let _guard = handle.enter();
         capture::test_connection(&config, Duration::from_secs(5))
     })
     .await
