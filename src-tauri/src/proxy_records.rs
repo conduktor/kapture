@@ -189,7 +189,7 @@ fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec
 /// tab can group records by which proxy TCP connection carried them.
 /// The id is a fresh v4 UUID.
 #[must_use]
-pub fn extracted_to_captured(rec: ExtractedRecord, _conn_id: u64) -> CapturedMessage {
+pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMessage {
     let value_bytes: Option<&[u8]> = rec.value.as_deref();
     let key = rec
         .key
@@ -220,6 +220,11 @@ pub fn extracted_to_captured(rec: ExtractedRecord, _conn_id: u64) -> CapturedMes
         })
         .collect();
 
+    // Truncate u64 → i32 the same way `build_proto_event` does so the
+    // `connection_id` on the ProtoFrame and on the CapturedMessage
+    // line up for the same TCP connection.
+    let connection_id = i32::try_from(conn_id & 0x7FFF_FFFF).unwrap_or(i32::MAX);
+
     CapturedMessage {
         id: Uuid::new_v4().to_string(),
         timestamp,
@@ -234,6 +239,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, _conn_id: u64) -> CapturedMes
         payload: decode_payload(value_bytes),
         raw_hex,
         fetch: None,
+        connection_id: Some(connection_id),
     }
 }
 

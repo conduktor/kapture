@@ -464,6 +464,7 @@ async fn to_captured<M: Message + Sync>(
     } = decode_with_registry(payload, sr_client).await;
 
     let fetch = correlator.lookup(msg.topic(), msg.partition());
+    let connection_id = fetch.as_ref().map(|f| f.connection_id);
 
     CapturedMessage {
         id: Uuid::new_v4().to_string(),
@@ -479,6 +480,7 @@ async fn to_captured<M: Message + Sync>(
         payload: decoded,
         raw_hex,
         fetch,
+        connection_id,
     }
 }
 

@@ -651,6 +651,7 @@ mod tests {
                 response_size: 5_711,
                 rtt_ms: 1.7,
             }),
+            connection_id: Some(0),
         }
     }
 

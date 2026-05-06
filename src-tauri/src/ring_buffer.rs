@@ -166,6 +166,7 @@ mod tests {
             },
             raw_hex: String::new(),
             fetch: None,
+            connection_id: None,
         }
     }
 

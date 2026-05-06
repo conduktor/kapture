@@ -75,6 +75,13 @@ export interface KafkaMessage {
   payload: DecodedValue;
   rawHex: string;
   fetch: FetchMetadata | null;
+  /**
+   * Identifier for the protocol channel that carried this record.
+   * In proxy mode it's the per-TCP-connection id; in client (rdkafka)
+   * mode it's the librdkafka broker_id. `null` when neither path
+   * could attribute the record to a connection.
+   */
+  connectionId: number | null;
 }
 
 export interface AppInfo {

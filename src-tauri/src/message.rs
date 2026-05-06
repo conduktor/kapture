@@ -31,4 +31,10 @@ pub struct CapturedMessage {
     /// when the consumer was created against the Kapture-patched
     /// librdkafka and the proto correlator is wired in.
     pub fetch: Option<FetchMetadata>,
+    /// Opaque identifier for the protocol channel that carried this
+    /// record. In proxy mode it's the per-TCP-connection id (truncated
+    /// to i32). In client (rdkafka) mode it's the librdkafka `broker_id`
+    /// resolved via the `FetchMetadata` correlator. `None` when neither
+    /// path could supply a value.
+    pub connection_id: Option<i32>,
 }
