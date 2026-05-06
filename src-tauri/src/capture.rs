@@ -238,14 +238,16 @@ fn build_client_config(config: &CaptureConfig) -> ClientConfig {
     client_config
         .set("bootstrap.servers", &config.bootstrap_servers)
         .set("group.id", &config.group_id)
-        // Auto-commit is intentionally ENABLED so the consumer
-        // periodically sends OffsetCommit frames the proto-hook
-        // observes. The group_id is a UUID minted per capture session
-        // (`kapture-<uuid>`), so there's no real-world side effect —
-        // Kafka GCs the ephemeral group after retention. Without
-        // auto-commit the Protocol tab would only show Fetch +
-        // Heartbeat, which is much less interesting.
-        .set("enable.auto.commit", "true")
+        // Kapture is a passive sniffer — never commit anything to the
+        // broker. The group is ephemeral (UUID per session) but
+        // committing offsets would still write to __consumer_offsets
+        // and could surprise the user. To see OffsetCommit traffic
+        // run `pnpm seed:consumer` (a separate consumer program);
+        // its frames won't show in Kapture's Protocol tab because
+        // the proto-hook only sees this client's wire, but the broker
+        // load + the resulting Fetch/Heartbeat traffic Kapture itself
+        // generates make for a richer demo.
+        .set("enable.auto.commit", "false")
         .set(
             "auto.offset.reset",
             if config.from_beginning {

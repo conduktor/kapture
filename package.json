@@ -34,6 +34,8 @@
     "seed:kafka": "node tools/seed.mjs --broker localhost:29092 --registry http://localhost:28081",
     "seed:loop": "node tools/seed.mjs --loop --rate 10",
     "seed:loop:kafka": "node tools/seed.mjs --broker localhost:29092 --registry http://localhost:28081 --loop --rate 10",
+    "seed:consumer": "node tools/consumer.mjs",
+    "seed:consumer:kafka": "node tools/consumer.mjs --broker localhost:29092",
     "prepare": "husky"
   },
   "lint-staged": {
