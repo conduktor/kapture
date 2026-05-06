@@ -75,6 +75,11 @@ export function ConnectionDialog({
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
+  // Inline "save profile" name-entry row. `null` = row hidden; a string
+  // (even empty) = row visible. Replaces `window.prompt`, which Tauri 2's
+  // webview disables silently — clicking "Save profile…" did nothing.
+  const [profileNameInput, setProfileNameInput] = useState<string | null>(null);
+  const [savingProfile, setSavingProfile] = useState(false);
 
   // Auto-detect: probe localhost on mount only when the user is starting
   // from the blank state. We don't overwrite any field the user has
@@ -135,9 +140,20 @@ export function ConnectionDialog({
     }
   }
 
-  async function saveAsProfile(): Promise<void> {
-    const name = window.prompt("Profile name", selectedProfile || upstream);
-    if (name === null || name === "") {
+  function openSaveProfileRow(): void {
+    // Default to the current profile name if editing one, otherwise to
+    // the upstream string — matches the previous prompt's default.
+    setProfileNameInput(selectedProfile || upstream);
+    setProfileError(null);
+  }
+
+  function cancelSaveProfile(): void {
+    setProfileNameInput(null);
+  }
+
+  async function confirmSaveProfile(): Promise<void> {
+    const name = (profileNameInput ?? "").trim();
+    if (name === "") {
       return;
     }
     // Profiles store bootstrap-only metadata in proxy mode. SASL/TLS
@@ -151,16 +167,17 @@ export function ConnectionDialog({
       auth: null,
       fromBeginning: false,
     };
-    setProfileBusy(true);
+    setSavingProfile(true);
     setProfileError(null);
     try {
       await invoke("save_profile", { args });
       await refreshProfiles();
       setSelectedProfile(name);
+      setProfileNameInput(null);
     } catch (err) {
       setProfileError(err instanceof Error ? err.message : String(err));
     } finally {
-      setProfileBusy(false);
+      setSavingProfile(false);
     }
   }
 
@@ -396,10 +413,8 @@ export function ConnectionDialog({
           <button
             type="button"
             className="btn"
-            onClick={() => {
-              void saveAsProfile();
-            }}
-            disabled={profileBusy}
+            onClick={openSaveProfileRow}
+            disabled={profileBusy || savingProfile || profileNameInput !== null}
           >
             Save profile…
           </button>
@@ -412,6 +427,49 @@ export function ConnectionDialog({
             {pending ? "Starting…" : isEditing ? "Restart proxy" : "Start proxy"}
           </button>
         </div>
+        {profileNameInput !== null ? (
+          <div className="dialog__profile-row">
+            <input
+              className="dialog__input"
+              value={profileNameInput}
+              onChange={(e) => {
+                setProfileNameInput(e.target.value);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void confirmSaveProfile();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancelSaveProfile();
+                }
+              }}
+              placeholder="Profile name"
+              spellCheck={false}
+              autoComplete="off"
+              autoFocus
+              disabled={savingProfile}
+            />
+            <button
+              type="button"
+              className="btn btn--primary"
+              onClick={() => {
+                void confirmSaveProfile();
+              }}
+              disabled={savingProfile || profileNameInput.trim() === ""}
+            >
+              {savingProfile ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={cancelSaveProfile}
+              disabled={savingProfile}
+            >
+              Cancel
+            </button>
+          </div>
+        ) : null}
       </form>
     </div>
   );
