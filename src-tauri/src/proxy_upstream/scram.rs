@@ -31,6 +31,8 @@ use subtle::ConstantTimeEq;
 
 const MIN_PBKDF2_ITERATIONS: u64 = 4096;
 const MAX_PBKDF2_ITERATIONS: u64 = 1_000_000;
+const MAX_SALT_BYTES: usize = 256;
+const MAX_SALT_BASE64_BYTES: usize = 344;
 
 /// Hash backend for SCRAM. Each variant binds the hash function used
 /// for `H()`, `HMAC()`, and `PBKDF2()` together — they must match.
@@ -124,8 +126,12 @@ pub enum ScramError {
     MalformedMessage(String),
     #[error("server nonce does not extend our client nonce")]
     InvalidNonce,
-    #[error("server reported invalid PBKDF2 iteration count {iterations} (must be 4096..=1_000_000)")]
+    #[error(
+        "server reported invalid PBKDF2 iteration count {iterations} (must be 4096..=1_000_000)"
+    )]
     InvalidIterations { iterations: u64 },
+    #[error("invalid SCRAM salt: {0}")]
+    InvalidSalt(String),
     #[error("server signature mismatch — possible MITM or wrong password")]
     BadServerSignature,
     #[error("base64 decode failed: {0}")]
@@ -240,9 +246,28 @@ impl<H: ScramHash> ScramClient<H> {
         // Safe: bounded above by MAX_PBKDF2_ITERATIONS.
         let iterations = iterations_u64 as u32;
 
+        if salt_b64.is_empty() {
+            return Err(ScramError::InvalidSalt("empty base64 salt".to_owned()));
+        }
+        if salt_b64.len() > MAX_SALT_BASE64_BYTES {
+            return Err(ScramError::InvalidSalt(format!(
+                "base64 salt too large ({} bytes, max {MAX_SALT_BASE64_BYTES})",
+                salt_b64.len()
+            )));
+        }
+
         let salt = base64::engine::general_purpose::STANDARD
             .decode(salt_b64.as_bytes())
             .map_err(|e| ScramError::Base64(format!("salt: {e}")))?;
+        if salt.is_empty() {
+            return Err(ScramError::InvalidSalt("empty decoded salt".to_owned()));
+        }
+        if salt.len() > MAX_SALT_BYTES {
+            return Err(ScramError::InvalidSalt(format!(
+                "decoded salt too large ({} bytes, max {MAX_SALT_BYTES})",
+                salt.len()
+            )));
+        }
 
         let salted_password = H::pbkdf2(self.password.as_bytes(), &salt, iterations);
         let client_key = H::hmac(&salted_password, b"Client Key");
@@ -450,6 +475,35 @@ mod tests {
                 iterations: 10_000_000,
             }) => {}
             other => panic!("expected InvalidIterations(10_000_000), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_first_with_empty_salt_rejected() {
+        let mut c = ScramClient::<Sha256Hash>::with_nonce(
+            "user".to_owned(),
+            "pencil".to_owned(),
+            RFC7677_CNONCE.to_owned(),
+        );
+        let m = "r=rOprNGfwEbeRWgbNEkqOX,s=,i=4096";
+        match c.server_first(m) {
+            Err(ScramError::InvalidSalt(msg)) => assert!(msg.contains("empty"), "msg = {msg}"),
+            other => panic!("expected InvalidSalt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_first_with_oversized_salt_rejected() {
+        let mut c = ScramClient::<Sha256Hash>::with_nonce(
+            "user".to_owned(),
+            "pencil".to_owned(),
+            RFC7677_CNONCE.to_owned(),
+        );
+        let salt_b64 = base64::engine::general_purpose::STANDARD.encode(vec![7_u8; 257]);
+        let m = format!("r=rOprNGfwEbeRWgbNEkqOX,s={salt_b64},i=4096");
+        match c.server_first(&m) {
+            Err(ScramError::InvalidSalt(msg)) => assert!(msg.contains("too large"), "msg = {msg}"),
+            other => panic!("expected InvalidSalt, got {other:?}"),
         }
     }
 
