@@ -22,6 +22,7 @@ use std::time::Instant;
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
@@ -56,6 +57,15 @@ pub struct ProxyConfig {
     pub upstream: String,
     /// TCP port we bind on `127.0.0.1` for clients to connect to.
     pub listen_port: u16,
+    /// Optional TLS config for the upstream connection. `None` means
+    /// plaintext upstream. Same config is reused for every broker in
+    /// the cluster (Kafka deployments share TLS server certs across
+    /// brokers in normal setups).
+    pub upstream_tls: Option<UpstreamTlsConfig>,
+    /// Optional SASL credentials for the upstream connection. `None`
+    /// means no SASL handshake. Same credentials are reused for every
+    /// broker in the cluster.
+    pub upstream_sasl: Option<UpstreamSaslConfig>,
 }
 
 #[allow(dead_code)] // see note on `ProxyConfig`
@@ -65,7 +75,23 @@ impl ProxyConfig {
         Self {
             upstream,
             listen_port,
+            upstream_tls: None,
+            upstream_sasl: None,
         }
+    }
+
+    /// Builder-style: attach TLS config for the upstream.
+    #[must_use]
+    pub fn with_tls(mut self, tls: UpstreamTlsConfig) -> Self {
+        self.upstream_tls = Some(tls);
+        self
+    }
+
+    /// Builder-style: attach SASL credentials for the upstream.
+    #[must_use]
+    pub fn with_sasl(mut self, sasl: UpstreamSaslConfig) -> Self {
+        self.upstream_sasl = Some(sasl);
+        self
     }
 
     #[must_use]
@@ -85,7 +111,9 @@ impl ProxyConfig {
 /// against a 10k-topic cluster would still parse, while a malicious peer
 /// can't OOM us with a 4 GiB `len` field.
 #[allow(dead_code)] // see note on `ProxyConfig`
-pub fn framed_kafka(socket: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec> {
+pub fn framed_kafka<S: AsyncRead + AsyncWrite + Unpin>(
+    socket: S,
+) -> Framed<S, LengthDelimitedCodec> {
     let codec = LengthDelimitedCodec::builder()
         .length_field_offset(0)
         .length_field_length(4)
@@ -222,13 +250,14 @@ pub fn next_connection_id() -> ConnectionId {
 /// not block: in production it just pushes into the correlator's
 /// ring-buffer mutex (~µs).
 #[allow(dead_code)] // see note on `ProxyConfig`
-pub async fn run_pump<F>(
+pub async fn run_pump<U, F>(
     conn_id: ConnectionId,
     client: TcpStream,
-    upstream: TcpStream,
+    upstream: U,
     tap: F,
 ) -> io::Result<()>
 where
+    U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     F: Fn(ProxyDirection, ConnectionId, &Bytes) + Send + Sync + 'static,
 {
     let mut client_framed = framed_kafka(client);
@@ -274,16 +303,19 @@ where
 /// Bubbles up `io::Error` from the underlying TCP read/write.
 #[allow(dead_code)] // wired into ProxyHandle::start in Task 16
 #[allow(clippy::too_many_arguments)]
-pub async fn run_pump_with_rewrite(
+pub async fn run_pump_with_rewrite<U>(
     conn_id: ConnectionId,
     client: TcpStream,
-    upstream: TcpStream,
+    upstream: U,
     correlator: Arc<ProtoCorrelator>,
     corr_map: Arc<CorrelationMap>,
     provisioner: Arc<dyn BrokerProvisioner>,
     record_sink: RecordSink,
     topic_ids: Arc<TopicIdMap>,
-) -> io::Result<()> {
+) -> io::Result<()>
+where
+    U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
 
@@ -448,6 +480,7 @@ pub fn build_proto_event(
 
 pub use crate::proxy_broker_map::BrokerMap;
 pub use crate::proxy_handle::ProxyHandle;
+pub use crate::proxy_upstream::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -834,10 +867,7 @@ mod tests {
         });
 
         let correlator = Arc::new(crate::correlator::ProtoCorrelator::new());
-        let cfg = ProxyConfig {
-            upstream: upstream_addr.to_string(),
-            listen_port: 0, // OS assigns
-        };
+        let cfg = ProxyConfig::new(upstream_addr.to_string(), 0);
         let no_op_sink: crate::proxy_handle::RecordSink = Arc::new(|_msg| {});
         let handle = ProxyHandle::start(cfg, Arc::clone(&correlator), no_op_sink)
             .await

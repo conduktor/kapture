@@ -217,6 +217,33 @@ struct SetProxyTargetParams {
     upstream: String,
     /// Local port to listen on. Use 0 for an ephemeral port.
     listen_port: u16,
+    /// Optional TLS config for the upstream connection. When omitted
+    /// the proxy connects in plaintext.
+    #[serde(default)]
+    upstream_tls: Option<McpProxyTlsArgs>,
+    /// Optional SASL credentials (PLAIN only for now). When omitted no
+    /// SASL handshake is performed against the upstream.
+    #[serde(default)]
+    upstream_sasl: Option<McpProxySaslArgs>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct McpProxyTlsArgs {
+    server_name: String,
+    #[serde(default)]
+    ca_path: Option<String>,
+    #[serde(default)]
+    skip_hostname_verification: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct McpProxySaslArgs {
+    /// `"PLAIN"` only for now.
+    mechanism: String,
+    username: String,
+    password: String,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -510,6 +537,8 @@ impl KaptureMcp {
         Parameters(SetProxyTargetParams {
             upstream,
             listen_port,
+            upstream_tls,
+            upstream_sasl,
         }): Parameters<SetProxyTargetParams>,
     ) -> Result<Json<ProxyStatusResponse>, ErrorData> {
         {
@@ -521,6 +550,44 @@ impl KaptureMcp {
                 ));
             }
         }
+        let tls_cfg = upstream_tls.map(|t| crate::proxy::UpstreamTlsConfig {
+            server_name: t.server_name,
+            ca_path: t.ca_path.and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::PathBuf::from(s))
+                }
+            }),
+            skip_hostname_verification: t.skip_hostname_verification,
+        });
+        let sasl_cfg = match upstream_sasl {
+            Some(s) => {
+                let mech = match s.mechanism.to_uppercase().as_str() {
+                    "PLAIN" => crate::proxy::UpstreamSaslMechanism::Plain,
+                    other => {
+                        return Err(ErrorData::invalid_request(
+                            format!(
+                                "unsupported upstream SASL mechanism `{other}` (only PLAIN supported)"
+                            ),
+                            None,
+                        ));
+                    }
+                };
+                if s.username.is_empty() || s.password.is_empty() {
+                    return Err(ErrorData::invalid_request(
+                        "upstream SASL username and password must be non-empty",
+                        None,
+                    ));
+                }
+                Some(crate::proxy::UpstreamSaslConfig {
+                    mechanism: mech,
+                    username: s.username,
+                    password: s.password,
+                })
+            }
+            None => None,
+        };
         // The Tauri State<'_, AppState> wrapper is only needed by the
         // command-layer entry point; the shared impl takes &AppState
         // directly so MCP can call it without faking a State.
@@ -533,6 +600,8 @@ impl KaptureMcp {
             &state_ref,
             upstream,
             listen_port,
+            tls_cfg,
+            sasl_cfg,
             true, // MCP path: re-check gate before slot claim (race fix)
         )
         .await

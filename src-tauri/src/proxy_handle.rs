@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::sync::Mutex as TokioMutex;
@@ -29,6 +29,7 @@ use crate::proxy::{
 use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_topic_ids::TopicIdMap;
+use crate::proxy_upstream::{open_upstream, UpstreamSaslConfig, UpstreamTlsConfig};
 
 /// Sink for `CapturedMessage` instances extracted from Produce
 /// requests / Fetch responses traversing the proxy. Invoked
@@ -64,6 +65,14 @@ pub struct ProxyInner {
     active_pumps: Mutex<HashMap<u64, JoinHandle<()>>>,
     bootstrap_addr: SocketAddr,
     bootstrap_upstream: String,
+    /// TLS config to use when opening upstream connections (bootstrap
+    /// plus every lazily-bound satellite broker). Same config for all
+    /// brokers; Kafka deployments share TLS server certs cluster-wide.
+    upstream_tls: Option<UpstreamTlsConfig>,
+    /// SASL credentials to use when opening upstream connections. Same
+    /// credentials for all brokers; they're cluster-wide in standard
+    /// Kafka deployments.
+    upstream_sasl: Option<UpstreamSaslConfig>,
     correlator: Arc<ProtoCorrelator>,
     broker_map: Arc<BrokerMap>,
     topic_id_map: Arc<TopicIdMap>,
@@ -225,10 +234,28 @@ fn spawn_accept_loop(
                                 let pump_inner = Arc::clone(&inner);
                                 let record_sink = Arc::clone(&record_sink);
                                 let topic_id_map = Arc::clone(&topic_id_map);
+                                let upstream_tls = pump_inner.upstream_tls.clone();
+                                let upstream_sasl = pump_inner.upstream_sasl.clone();
                                 let (start_tx, start_rx) = oneshot::channel();
                                 let task = tokio::spawn(async move {
                                     let _ = start_rx.await;
-                                    let upstream_sock = match TcpStream::connect(&upstream_target).await {
+                                    let (upstream_host, upstream_port) =
+                                        match parse_host_port(&upstream_target) {
+                                            Ok(hp) => hp,
+                                            Err(err) => {
+                                                warn!(conn = conn_id.0, error = %err, "upstream target invalid");
+                                                pump_inner.active_pumps.lock().remove(&conn_id.0);
+                                                return;
+                                            }
+                                        };
+                                    let upstream_sock = match open_upstream(
+                                        &upstream_host,
+                                        upstream_port,
+                                        upstream_tls.as_ref(),
+                                        upstream_sasl.as_ref(),
+                                    )
+                                    .await
+                                    {
                                         Ok(s) => s,
                                     Err(err) => {
                                         warn!(conn = conn_id.0, error = %err, "upstream connect failed");
@@ -296,6 +323,8 @@ impl ProxyHandle {
             active_pumps: Mutex::new(HashMap::new()),
             bootstrap_addr: local_addr,
             bootstrap_upstream: config.upstream.clone(),
+            upstream_tls: config.upstream_tls.clone(),
+            upstream_sasl: config.upstream_sasl.clone(),
             correlator,
             broker_map,
             topic_id_map: Arc::new(TopicIdMap::new()),
@@ -613,6 +642,98 @@ mod tests {
         assert_eq!(summary.listen_addr, handle.local_addr().to_string());
         assert_eq!(summary.active_connections, 0);
         assert_eq!(summary.broker_mappings.len(), 1);
+
+        handle.stop().await;
+    }
+
+    /// With `upstream_sasl` set on `ProxyConfig`, the bootstrap accept
+    /// loop must route the upstream connect through `open_upstream` —
+    /// observed indirectly by the fake broker receiving an
+    /// `ApiVersions` request as the FIRST frame on the upstream TCP
+    /// connection (the SASL handshake's first leg), before any
+    /// client-driven traffic flows. If the accept loop still went
+    /// straight to `TcpStream::connect`, the first bytes seen by the
+    /// fake broker would be the client's request, not the SASL
+    /// pre-roll.
+    #[tokio::test]
+    async fn proxy_handle_connects_to_upstream_via_open_upstream() {
+        use crate::proxy::{UpstreamSaslConfig, UpstreamSaslMechanism};
+        use crate::proxy_upstream::test_support::{
+            build_api_versions_response, build_sasl_authenticate_response,
+            build_sasl_handshake_response, decode_request_header, server_read_frame,
+            server_write_frame,
+        };
+        use kafka_protocol::messages::ApiKey;
+
+        // Fake broker that drives the SASL handshake and then idles.
+        // If `open_upstream` was bypassed the first frame would not be
+        // ApiVersions and `decode_request_header` would assert-fail.
+        let bootstrap = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let bootstrap_addr = bootstrap.local_addr().unwrap();
+        let server_observed = Arc::new(parking_lot::Mutex::new(false));
+        let server_observed_clone = Arc::clone(&server_observed);
+        tokio::spawn(async move {
+            let (mut sock, _) = bootstrap.accept().await.unwrap();
+            // Frame 1: ApiVersions request from open_upstream.
+            let f1 = server_read_frame(&mut sock).await.unwrap();
+            let (h1, _) = decode_request_header(&f1, ApiKey::ApiVersions, 0);
+            *server_observed_clone.lock() = true;
+            server_write_frame(&mut sock, &build_api_versions_response(h1.correlation_id))
+                .await
+                .unwrap();
+            // Frame 2: SaslHandshake.
+            let f2 = server_read_frame(&mut sock).await.unwrap();
+            let (h2, _) = decode_request_header(&f2, ApiKey::SaslHandshake, 1);
+            server_write_frame(
+                &mut sock,
+                &build_sasl_handshake_response(h2.correlation_id, 0),
+            )
+            .await
+            .unwrap();
+            // Frame 3: SaslAuthenticate.
+            let f3 = server_read_frame(&mut sock).await.unwrap();
+            let (h3, _) = decode_request_header(&f3, ApiKey::SaslAuthenticate, 2);
+            server_write_frame(
+                &mut sock,
+                &build_sasl_authenticate_response(h3.correlation_id, 0),
+            )
+            .await
+            .unwrap();
+            // Linger so the proxy's pump task can finish wiring up.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        });
+
+        let correlator = Arc::new(ProtoCorrelator::new());
+        let cfg = ProxyConfig::new(bootstrap_addr.to_string(), 0).with_sasl(UpstreamSaslConfig {
+            mechanism: UpstreamSaslMechanism::Plain,
+            username: "alice".to_owned(),
+            password: "s3cret".to_owned(),
+        });
+        let no_op_sink: RecordSink = Arc::new(|_msg| {});
+        let handle = ProxyHandle::start(cfg, correlator, no_op_sink)
+            .await
+            .unwrap();
+        let listen_addr = handle.local_addr();
+
+        // Drive a client into the proxy so the bootstrap accept loop
+        // actually connects upstream.
+        let mut client = tokio::net::TcpStream::connect(listen_addr).await.unwrap();
+        // Send a length-prefixed dummy frame; we don't expect a useful
+        // reply because the fake server doesn't pump traffic after
+        // the SASL exchange.
+        AsyncWriteExt::write_all(&mut client, &4u32.to_be_bytes())
+            .await
+            .unwrap();
+        AsyncWriteExt::write_all(&mut client, &[0u8, 0, 0, 0])
+            .await
+            .unwrap();
+        // Allow the upstream handshake to finish.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        assert!(
+            *server_observed.lock(),
+            "fake broker did not observe ApiVersions handshake → open_upstream was not used",
+        );
 
         handle.stop().await;
     }

@@ -13,6 +13,7 @@ use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata};
+use crate::proxy::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
 use crate::ring_buffer::CaptureStats;
 use crate::schema_registry::SchemaRegistryClient;
 use crate::state::AppState;
@@ -394,6 +395,74 @@ pub struct ProxyStatus {
     pub upstream: String,
 }
 
+/// TLS args for the upstream connection. Mirrors `UpstreamTlsConfig`
+/// with serde-friendly types so the GUI can pass it through `invoke`.
+#[derive(Default, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyTlsArgs {
+    /// SNI / cert hostname. Defaults to the bootstrap host parsed from
+    /// `upstream` when the GUI leaves this empty (caller decides — the
+    /// command takes the value as-is).
+    pub server_name: String,
+    pub ca_path: Option<String>,
+    #[serde(default)]
+    pub skip_hostname_verification: bool,
+}
+
+impl ProxyTlsArgs {
+    fn into_config(self) -> UpstreamTlsConfig {
+        UpstreamTlsConfig {
+            server_name: self.server_name,
+            ca_path: empty_to_none(self.ca_path).map(std::path::PathBuf::from),
+            skip_hostname_verification: self.skip_hostname_verification,
+        }
+    }
+}
+
+/// SASL credentials for the upstream connection. Step 3 supports
+/// `PLAIN` only — SCRAM lands in a follow-up.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxySaslArgs {
+    /// `"PLAIN"` only for step 3. Case-insensitive.
+    pub mechanism: String,
+    pub username: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for ProxySaslArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxySaslArgs")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
+impl ProxySaslArgs {
+    fn into_config(self) -> Result<UpstreamSaslConfig> {
+        let mechanism = match self.mechanism.to_uppercase().as_str() {
+            "PLAIN" => UpstreamSaslMechanism::Plain,
+            other => {
+                return Err(KaptureError::Config(format!(
+                    "unsupported upstream SASL mechanism `{other}` (only PLAIN supported)"
+                )));
+            }
+        };
+        if self.username.is_empty() || self.password.is_empty() {
+            return Err(KaptureError::Config(
+                "upstream SASL username and password must be non-empty".to_owned(),
+            ));
+        }
+        Ok(UpstreamSaslConfig {
+            mechanism,
+            username: self.username,
+            password: self.password,
+        })
+    }
+}
+
 /// Start the proxy listener. Bound to `127.0.0.1:listen_port`. The
 /// previous capture (if any) is stopped first so client mode and
 /// proxy mode are mutually exclusive — exactly one Protocol tab at
@@ -404,8 +473,12 @@ pub async fn start_proxy(
     app: AppHandle,
     upstream: String,
     listen_port: u16,
+    upstream_tls: Option<ProxyTlsArgs>,
+    upstream_sasl: Option<ProxySaslArgs>,
 ) -> Result<ProxyStatus> {
-    start_proxy_impl(&app, &state, upstream, listen_port, false).await
+    let tls = upstream_tls.map(ProxyTlsArgs::into_config);
+    let sasl = upstream_sasl.map(ProxySaslArgs::into_config).transpose()?;
+    start_proxy_impl(&app, &state, upstream, listen_port, tls, sasl, false).await
 }
 
 /// Implementation shared between the Tauri command and the MCP
@@ -423,6 +496,8 @@ pub async fn start_proxy_impl(
     state: &AppState,
     upstream: String,
     listen_port: u16,
+    tls: Option<UpstreamTlsConfig>,
+    sasl: Option<UpstreamSaslConfig>,
     mcp_authorized: bool,
 ) -> Result<ProxyStatus> {
     if let Some(handle) = state.take_capture() {
@@ -454,7 +529,9 @@ pub async fn start_proxy_impl(
     }
 
     let correlator = Arc::new(ProtoCorrelator::new());
-    let cfg = crate::proxy::ProxyConfig::new(trimmed_upstream.clone(), listen_port);
+    let mut cfg = crate::proxy::ProxyConfig::new(trimmed_upstream.clone(), listen_port);
+    cfg.upstream_tls = tls;
+    cfg.upstream_sasl = sasl;
     let buffer = Arc::clone(&state.buffer);
     let filter = Arc::clone(&state.filter);
     let app_for_messages = app.clone();
