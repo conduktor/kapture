@@ -48,7 +48,6 @@ regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 apache-avro = "0.17"
 lru = "0.12"
-keyring = { version = "3", features = ["apple-native", "linux-native", "windows-native"] }
 dirs = "5"
 rmcp = { version = "1.6", features = [
   "server",

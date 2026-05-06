@@ -2,36 +2,41 @@
 //!
 //! Profile metadata (name, bootstrap, `topic_pattern`, SR URL, auth mechanism,
 //! username, TLS flag, cert paths) lives in a JSON file under Tauri's
-//! `app_config_dir`. Secrets (SASL password and TLS key password) are
-//! stored in the OS keychain via the `keyring` crate, keyed by
-//! `(SERVICE, "{profile_name}::{kind}")` where `kind ∈ {sasl, tls-key}`.
+//! `app_config_dir`. Secrets (SASL password and TLS key password) live in a
+//! sibling `secrets.json` file with mode `0600` on Unix — same posture as
+//! `~/.aws/credentials`, `~/.config/gcloud/`, `~/.config/gh/`, and friends.
+//!
+//! ### Why a file, not the OS keychain?
+//!
+//! The macOS Keychain ACL prompts the user every time the binary
+//! signature changes — i.e. on every `cargo run` / `tauri dev` rebuild
+//! during development. The previous keyring-backed implementation was
+//! unusable because of that. Industry standard for developer-tier CLIs
+//! is the file-based approach.
 //!
 //! ### Threat model and known gaps
 //!
-//! In scope: prevent accidental on-disk credential leakage (no secrets
-//! in the JSON), prevent path traversal via profile names, redact
-//! secrets from `Debug`, fail-safe on partial writes.
+//! In scope: prevent accidental on-disk credential leakage to **other
+//! users** (mode 0600), prevent path traversal via profile names,
+//! redact secrets from `Debug`, fail-safe on partial writes.
 //!
 //! Out of scope (deferred — single-user desktop app):
 //!
-//!  * **Cross-process race on `profiles.json`.** Two Kapture instances
-//!    writing concurrently can lose a save. We do not take an OS-level
-//!    file lock; that needs a fs2 / file-lock dependency and proper
-//!    teardown. The Tauri identity guard usually prevents two app
-//!    instances anyway.
-//!  * **Per-profile keychain service isolation.** All entries share
-//!    `service = "io.kapture.app"`; an in-process attacker who already
-//!    owns the app can read every secret. Per-profile services would
-//!    not actually mitigate that — the same attacker can also read
-//!    `profiles.json` to enumerate names.
-//!  * **Tauri capability scoping per command.** All profile commands
-//!    are exposed via the default capability. Useful only when we
+//!  * Any in-process attacker running as the same user can read both
+//!    `profiles.json` and `secrets.json`. Same threat profile as
+//!    `~/.aws/credentials`.
+//!  * Cross-process race on `secrets.json` / `profiles.json`. Two
+//!    Kapture instances writing concurrently can lose a save. We do
+//!    not take an OS-level file lock; the Tauri identity guard usually
+//!    prevents two app instances anyway.
+//!  * Tauri capability scoping per command. All profile commands are
+//!    exposed via the default capability. Useful only when we
 //!    introduce additional webviews / plugins.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use schemars::JsonSchema;
@@ -39,11 +44,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::warn;
 
-const KEYRING_SERVICE: &str = "io.kapture.app";
 const PROFILES_FILE: &str = "profiles.json";
-/// Cap the profile name length so a pathological JSON or keychain
-/// entry name can't be produced. 128 chars is generous for
-/// human-friendly labels.
+const SECRETS_FILE: &str = "secrets.json";
+const SECRETS_VERSION: u32 = 1;
+/// Cap the profile name length so a pathological JSON entry name
+/// can't be produced. 128 chars is generous for human-friendly labels.
 const MAX_NAME_LEN: usize = 128;
 
 #[derive(Debug, Error)]
@@ -53,9 +58,6 @@ pub enum ProfileError {
 
     #[error("profile store JSON: {0}")]
     Json(#[from] serde_json::Error),
-
-    #[error("keychain: {0}")]
-    Keyring(#[from] keyring::Error),
 
     #[error("profile name must be non-empty")]
     EmptyName,
@@ -89,14 +91,14 @@ pub struct ProfileMetadata {
     #[serde(default)]
     pub upstream_tls: Option<UpstreamTlsMetadata>,
     /// Proxy-mode upstream SASL settings (no password — that lives in
-    /// the keychain under `<name>::proxy-sasl`).
+    /// `secrets.json` under `<name>::proxy-sasl`).
     #[serde(default)]
     pub upstream_sasl: Option<UpstreamSaslMetadata>,
 }
 
 /// Proxy-mode upstream TLS settings, mirrored to JSON. Paths are stored
 /// in cleartext; there is no key file in proxy mode (the proxy presents
-/// no client cert), so no keychain entry is needed.
+/// no client cert), so no secret entry is needed.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamTlsMetadata {
@@ -110,7 +112,7 @@ pub struct UpstreamTlsMetadata {
 }
 
 /// Proxy-mode upstream SASL settings, mirrored to JSON. The password
-/// (when present) lives in the OS keychain at `<name>::proxy-sasl`;
+/// (when present) lives in `secrets.json` at `<name>::proxy-sasl`;
 /// `has_password` lets the UI show a "saved" indicator without
 /// resolving the secret.
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
@@ -130,12 +132,12 @@ pub struct AuthMetadata {
     pub mechanism: String,
     pub username: String,
     pub use_tls: bool,
-    /// `true` when a password is stored in the OS keychain for this
+    /// `true` when a password is stored in `secrets.json` for this
     /// profile. Frontend uses this to render a "saved" indicator.
     #[serde(default)]
     pub has_password: bool,
     /// Optional TLS / mTLS material. Paths are stored in cleartext;
-    /// the key password (if any) lives in the OS keychain alongside
+    /// the key password (if any) lives in `secrets.json` alongside
     /// the SASL password.
     #[serde(default)]
     pub tls: Option<TlsMetadata>,
@@ -147,13 +149,13 @@ pub struct TlsMetadata {
     pub ca_path: Option<String>,
     pub cert_path: Option<String>,
     pub key_path: Option<String>,
-    /// `true` when a TLS key password is stored in the OS keychain
-    /// for this profile (under a separate keyring entry).
+    /// `true` when a TLS key password is stored in `secrets.json`
+    /// for this profile (under a separate slot).
     #[serde(default)]
     pub has_key_password: bool,
 }
 
-/// Full profile, secrets resolved from the keychain.
+/// Full profile, secrets resolved from the file store.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadedProfile {
@@ -164,7 +166,7 @@ pub struct LoadedProfile {
     /// TLS key password (legacy client-mode mTLS) — `None` when none stored.
     pub key_password: Option<String>,
     /// Proxy-mode upstream SASL password — `None` when none stored.
-    /// Sourced from keychain `<name>::proxy-sasl` on load.
+    /// Sourced from `secrets.json` `<name>::proxy-sasl` on load.
     pub upstream_sasl_password: Option<String>,
 }
 
@@ -193,15 +195,145 @@ struct ProfilesFile {
     profiles: BTreeMap<String, ProfileMetadata>,
 }
 
+/// Pluggable secret storage so tests can use an in-memory fake without
+/// hitting the filesystem. Production wires up [`FileSecretStore`].
+pub trait SecretStore: Send + Sync + std::fmt::Debug {
+    fn get(&self, profile: &str, kind: &str) -> Option<String>;
+    fn set(&self, profile: &str, kind: &str, secret: &str);
+    fn delete(&self, profile: &str, kind: &str);
+}
+
+/// `secrets.json` on-disk shape.
+///
+/// Keys in `entries` are `"<profile>::<kind>"` so a single map suffices
+/// for SASL + TLS-key + proxy-SASL slots without nested objects. The
+/// `version` field lets future migrations distinguish layouts.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SecretsFile {
+    version: u32,
+    #[serde(default)]
+    entries: BTreeMap<String, String>,
+}
+
+/// Production secret store: a JSON file written with mode `0600` on
+/// Unix. On Windows the file inherits parent ACLs (matches gcloud /
+/// gh CLI / vercel / aws — none of them tighten Windows ACLs either).
+#[derive(Debug)]
+pub struct FileSecretStore {
+    path: PathBuf,
+    inner: Mutex<SecretsFile>,
+}
+
+impl FileSecretStore {
+    /// Open (or create) the secrets store at `<config_dir>/secrets.json`.
+    /// On corruption (parse error, partial write, anything that isn't
+    /// `NotFound`), log a warn and start with an empty map. Losing
+    /// passwords is strictly better than crashing the app at startup.
+    pub fn open(config_dir: &Path) -> Self {
+        let path = config_dir.join(SECRETS_FILE);
+        let inner = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<SecretsFile>(&bytes).unwrap_or_else(|err| {
+                warn!(error = %err, "secrets.json malformed; starting empty");
+                SecretsFile {
+                    version: SECRETS_VERSION,
+                    entries: BTreeMap::new(),
+                }
+            }),
+            Err(err) if err.kind() == ErrorKind::NotFound => SecretsFile {
+                version: SECRETS_VERSION,
+                entries: BTreeMap::new(),
+            },
+            Err(err) => {
+                warn!(error = %err, "secrets.json read failed; starting empty");
+                SecretsFile {
+                    version: SECRETS_VERSION,
+                    entries: BTreeMap::new(),
+                }
+            }
+        };
+        Self {
+            path,
+            inner: Mutex::new(inner),
+        }
+    }
+
+    fn flush(&self, file: &SecretsFile) {
+        // Failure to persist secrets must not crash the app or block
+        // the JSON metadata write that already happened. Worst case:
+        // user re-enters the password next session.
+        if let Err(err) = write_secrets_atomic(&self.path, file) {
+            warn!(error = %err, "secrets.json write failed");
+        }
+    }
+}
+
+fn entry_key(profile: &str, kind: &str) -> String {
+    format!("{profile}::{kind}")
+}
+
+impl SecretStore for FileSecretStore {
+    fn get(&self, profile: &str, kind: &str) -> Option<String> {
+        self.inner
+            .lock()
+            .entries
+            .get(&entry_key(profile, kind))
+            .cloned()
+    }
+
+    fn set(&self, profile: &str, kind: &str, secret: &str) {
+        let snapshot = {
+            let mut guard = self.inner.lock();
+            guard
+                .entries
+                .insert(entry_key(profile, kind), secret.to_owned());
+            SecretsFile {
+                version: SECRETS_VERSION,
+                entries: guard.entries.clone(),
+            }
+        };
+        self.flush(&snapshot);
+    }
+
+    fn delete(&self, profile: &str, kind: &str) {
+        let snapshot = {
+            let mut guard = self.inner.lock();
+            if guard.entries.remove(&entry_key(profile, kind)).is_none() {
+                return;
+            }
+            SecretsFile {
+                version: SECRETS_VERSION,
+                entries: guard.entries.clone(),
+            }
+        };
+        self.flush(&snapshot);
+    }
+}
+
 #[derive(Debug)]
 pub struct ProfileStore {
     path: PathBuf,
     inner: Mutex<ProfilesFile>,
+    secrets: Box<dyn SecretStore>,
 }
 
 impl ProfileStore {
-    /// Open (or create) the profiles store at `<config_dir>/profiles.json`.
+    /// Open (or create) the profiles store at `<config_dir>/profiles.json`,
+    /// backed by a `FileSecretStore` at `<config_dir>/secrets.json`.
     pub fn open(config_dir: PathBuf) -> Result<Self, ProfileError> {
+        if let Err(err) = fs::create_dir_all(&config_dir) {
+            // create_dir_all returns Ok if it exists; an actual error
+            // here means we won't be able to read/write — surface it.
+            return Err(err.into());
+        }
+        let secrets = FileSecretStore::open(&config_dir);
+        Self::with_secret_store(config_dir, Box::new(secrets))
+    }
+
+    /// Constructor that lets tests inject an in-memory secret store.
+    pub fn with_secret_store(
+        config_dir: PathBuf,
+        secrets: Box<dyn SecretStore>,
+    ) -> Result<Self, ProfileError> {
         let path = config_dir.join(PROFILES_FILE);
         let inner = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
@@ -217,6 +349,7 @@ impl ProfileStore {
         Ok(Self {
             path,
             inner: Mutex::new(inner),
+            secrets,
         })
     }
 
@@ -233,7 +366,7 @@ impl ProfileStore {
             .cloned()
             .ok_or_else(|| ProfileError::Unknown(name.to_owned()))?;
         let password = if meta.auth.as_ref().is_some_and(|a| a.has_password) {
-            keyring_get(name, KEY_SASL)?
+            self.secrets.get(name, KEY_SASL)
         } else {
             None
         };
@@ -243,13 +376,13 @@ impl ProfileStore {
             .and_then(|a| a.tls.as_ref())
             .is_some_and(|t| t.has_key_password)
         {
-            keyring_get(name, KEY_TLS)?
+            self.secrets.get(name, KEY_TLS)
         } else {
             None
         };
         let upstream_sasl_password = if meta.upstream_sasl.as_ref().is_some_and(|s| s.has_password)
         {
-            keyring_get(name, KEY_PROXY_SASL)?
+            self.secrets.get(name, KEY_PROXY_SASL)
         } else {
             None
         };
@@ -273,7 +406,7 @@ impl ProfileStore {
             return Err(ProfileError::EmptyName);
         }
         // Defence in depth: forbid path-traversal-ish names so the
-        // profile name (used as a JSON key AND as a keychain account
+        // profile name (used as a JSON key AND as a secrets-file key
         // suffix) cannot collide with another profile's slot or
         // confuse downstream tooling that treats it as a path.
         if trimmed.contains(['/', '\\', '\0', ':']) || trimmed == "." || trimmed == ".." {
@@ -287,9 +420,9 @@ impl ProfileStore {
         trimmed.clone_into(&mut meta.name);
 
         // 1) Persist the JSON file FIRST, with the new metadata that
-        //    optimistically reflects whether we'll write a keychain
-        //    entry. If that file write fails, the keychain has not
-        //    been touched yet — no orphans.
+        //    optimistically reflects whether we'll write a secret
+        //    entry. If that file write fails, the secrets file has
+        //    not been touched yet — no orphans.
         if let Some(auth) = &mut meta.auth {
             auth.has_password = matches!(&password, Some(secret) if !secret.is_empty());
             if let Some(tls) = &mut auth.tls {
@@ -309,32 +442,42 @@ impl ProfileStore {
         };
         write_atomic(&self.path, &snapshot)?;
 
-        // 2) Now sync the keychain. Failures here log and leave the
-        //    JSON metadata claiming `has_password = true` even though
-        //    the secret never landed — the next `load_profile` will
-        //    return `None` for that field, which the UI surfaces as
-        //    an empty password. Acceptable: we never silently lose a
-        //    secret we successfully wrote, only fail to write a new one.
+        // 2) Sync secrets. `FileSecretStore` swallows IO errors
+        //    internally (warns on failure) so we never abort a
+        //    metadata save because of a secrets-file glitch.
         if let Some(auth) = &meta.auth {
-            sync_secret(&trimmed, KEY_SASL, password, auth.has_password)?;
+            sync_secret(
+                self.secrets.as_ref(),
+                &trimmed,
+                KEY_SASL,
+                password,
+                auth.has_password,
+            );
             if let Some(tls) = &auth.tls {
-                sync_secret(&trimmed, KEY_TLS, key_password, tls.has_key_password)?;
+                sync_secret(
+                    self.secrets.as_ref(),
+                    &trimmed,
+                    KEY_TLS,
+                    key_password,
+                    tls.has_key_password,
+                );
             } else {
-                let _ = keyring_delete(&trimmed, KEY_TLS);
+                self.secrets.delete(&trimmed, KEY_TLS);
             }
         } else {
-            let _ = keyring_delete(&trimmed, KEY_SASL);
-            let _ = keyring_delete(&trimmed, KEY_TLS);
+            self.secrets.delete(&trimmed, KEY_SASL);
+            self.secrets.delete(&trimmed, KEY_TLS);
         }
         if let Some(sasl) = &meta.upstream_sasl {
             sync_secret(
+                self.secrets.as_ref(),
                 &trimmed,
                 KEY_PROXY_SASL,
                 upstream_sasl_password,
                 sasl.has_password,
-            )?;
+            );
         } else {
-            let _ = keyring_delete(&trimmed, KEY_PROXY_SASL);
+            self.secrets.delete(&trimmed, KEY_PROXY_SASL);
         }
         Ok(meta)
     }
@@ -350,16 +493,16 @@ impl ProfileStore {
             }
         };
         write_atomic(&self.path, &snapshot)?;
-        // Best-effort secret cleanup; an empty keychain is fine.
-        let _ = keyring_delete(name, KEY_SASL);
-        let _ = keyring_delete(name, KEY_TLS);
-        let _ = keyring_delete(name, KEY_PROXY_SASL);
+        // Best-effort secret cleanup; an empty secrets file is fine.
+        self.secrets.delete(name, KEY_SASL);
+        self.secrets.delete(name, KEY_TLS);
+        self.secrets.delete(name, KEY_PROXY_SASL);
         Ok(())
     }
 }
 
-/// Keyring entry suffixes — kept short so the human-readable
-/// keychain entry "name" stays close to the profile name.
+/// Secret slot suffixes — kept short so the on-disk key stays close
+/// to the profile name.
 const KEY_SASL: &str = "sasl";
 const KEY_TLS: &str = "tls-key";
 /// Proxy-mode upstream SASL password. Distinct from `KEY_SASL` so a
@@ -382,16 +525,28 @@ const KEY_PROXY_SASL: &str = "proxy-sasl";
 /// final `profiles.json` is never world-readable, and `fsync` it so
 /// a crash between the rename and the next disk flush still leaves
 /// a fully-written file on disk.
-fn write_atomic(path: &std::path::Path, file: &ProfilesFile) -> Result<(), ProfileError> {
+fn write_atomic(path: &Path, file: &ProfilesFile) -> Result<(), ProfileError> {
     let bytes = serde_json::to_vec_pretty(file)?;
-    let tmp = path.with_extension("json.tmp");
+    write_atomic_bytes(path, &bytes)
+}
+
+fn write_secrets_atomic(path: &Path, file: &SecretsFile) -> Result<(), ProfileError> {
+    let bytes = serde_json::to_vec_pretty(file)?;
+    write_atomic_bytes(path, &bytes)
+}
+
+fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), ProfileError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("tmp");
     {
         let mut handle = fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&tmp)?;
-        std::io::Write::write_all(&mut handle, &bytes)?;
+        std::io::Write::write_all(&mut handle, bytes)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -403,51 +558,22 @@ fn write_atomic(path: &std::path::Path, file: &ProfilesFile) -> Result<(), Profi
     Ok(())
 }
 
-/// Write or clear a single keychain slot. Logs at warn level on
-/// failure so the caller can keep moving — a keychain hiccup must
-/// not block the JSON write that already succeeded.
+/// Write or clear a single secret slot. The store impl decides how to
+/// surface persistence errors (the production `FileSecretStore` warns
+/// internally — a secret-file glitch must not block the JSON save
+/// that already succeeded).
 fn sync_secret(
+    store: &dyn SecretStore,
     profile: &str,
     kind: &str,
     secret: Option<String>,
     expected_present: bool,
-) -> Result<(), ProfileError> {
+) {
     if expected_present {
         let value = secret.unwrap_or_default();
-        if let Err(err) = keyring_set(profile, kind, &value) {
-            warn!(profile, kind, error = %err, "keychain set failed");
-            return Err(err);
-        }
+        store.set(profile, kind, &value);
     } else {
-        let _ = keyring_delete(profile, kind);
-    }
-    Ok(())
-}
-
-fn keyring_entry(profile: &str, kind: &str) -> Result<keyring::Entry, ProfileError> {
-    Ok(keyring::Entry::new(
-        KEYRING_SERVICE,
-        &format!("{profile}::{kind}"),
-    )?)
-}
-
-fn keyring_get(profile: &str, kind: &str) -> Result<Option<String>, ProfileError> {
-    match keyring_entry(profile, kind)?.get_password() {
-        Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn keyring_set(profile: &str, kind: &str, secret: &str) -> Result<(), ProfileError> {
-    keyring_entry(profile, kind)?.set_password(secret)?;
-    Ok(())
-}
-
-fn keyring_delete(profile: &str, kind: &str) -> Result<(), ProfileError> {
-    match keyring_entry(profile, kind)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(err.into()),
+        store.delete(profile, kind);
     }
 }
 
@@ -455,7 +581,38 @@ fn keyring_delete(profile: &str, kind: &str) -> Result<(), ProfileError> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex as PlMutex;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// Process-local in-memory secret store for tests that round-trip
+    /// secrets through `ProfileStore::save` / `load` without touching
+    /// disk. Each test gets a fresh instance.
+    #[derive(Debug, Default)]
+    struct MemoryStore {
+        inner: Arc<PlMutex<HashMap<String, String>>>,
+    }
+
+    impl MemoryStore {
+        fn new() -> Self {
+            Self::default()
+        }
+    }
+
+    impl SecretStore for MemoryStore {
+        fn get(&self, profile: &str, kind: &str) -> Option<String> {
+            self.inner.lock().get(&entry_key(profile, kind)).cloned()
+        }
+        fn set(&self, profile: &str, kind: &str, secret: &str) {
+            self.inner
+                .lock()
+                .insert(entry_key(profile, kind), secret.to_owned());
+        }
+        fn delete(&self, profile: &str, kind: &str) {
+            self.inner.lock().remove(&entry_key(profile, kind));
+        }
+    }
 
     fn meta(name: &str) -> ProfileMetadata {
         ProfileMetadata {
@@ -470,13 +627,16 @@ mod tests {
         }
     }
 
-    /// Save / list / delete the *metadata* without touching the
-    /// keychain. (The keychain code paths live behind the OS-specific
-    /// `keyring` backend and are not exercised in CI.)
+    fn store_with_memory_secrets(dir: &TempDir) -> ProfileStore {
+        ProfileStore::with_secret_store(dir.path().to_path_buf(), Box::new(MemoryStore::new()))
+            .unwrap()
+    }
+
+    /// Save / list / delete the *metadata* without touching secrets.
     #[test]
     fn metadata_roundtrip() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         store.save(meta("local"), None, None, None).unwrap();
         store.save(meta("staging"), None, None, None).unwrap();
         let names: Vec<_> = store.list().into_iter().map(|p| p.name).collect();
@@ -489,7 +649,7 @@ mod tests {
     #[test]
     fn rejects_empty_name() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         let mut m = meta("");
         m.name = "   ".into();
         assert!(matches!(
@@ -501,7 +661,7 @@ mod tests {
     #[test]
     fn rejects_invalid_name_chars() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         for bad in ["a/b", "a\\b", "a:b", "a\0b", ".", ".."] {
             let m = meta(bad);
             assert!(
@@ -517,7 +677,7 @@ mod tests {
     #[test]
     fn unknown_profile() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         assert!(matches!(store.load("nope"), Err(ProfileError::Unknown(_))));
         assert!(matches!(
             store.delete("nope"),
@@ -525,10 +685,7 @@ mod tests {
         ));
     }
 
-    /// JSON round-trip for the proxy-mode TLS+SASL fields. The
-    /// `has_password` flag tracks whether the keychain *should*
-    /// hold a value; we only verify metadata serialisation here
-    /// (keychain side-effects are covered by `sync_secret`).
+    /// JSON round-trip for the proxy-mode TLS+SASL fields.
     #[test]
     fn proxy_metadata_roundtrip_via_json() {
         let m = ProfileMetadata {
@@ -591,33 +748,17 @@ mod tests {
         assert!(m.upstream_sasl.is_none());
     }
 
-    /// Round-trip a proxy-mode SASL password through save → load
-    /// using an in-memory credential store so CI never touches the OS
-    /// secret service. The upstream `keyring::mock` builds a *fresh*
-    /// `MockCredential` per `Entry::new` call (mocks "have no
-    /// persistence between sessions" — see keyring 3.6 mock.rs:188),
-    /// so it cannot back a save → load round-trip. We register our
-    /// own `CredentialBuilder` that persists to a process-wide
-    /// `HashMap<(service, user), secret>` instead.
-    ///
-    /// The default builder is a process-wide global — we install ours
-    /// once and rely on every other test in this module passing
-    /// `None` for secrets (so they never inspect the credential
-    /// contents and so don't care whose backend they hit). The
-    /// `keyring_delete` calls those tests do issue still work: the
-    /// backend just returns `NoEntry`.
+    /// Round-trip a proxy-mode SASL password through save → load using
+    /// the in-memory secret store.
     #[test]
-    fn proxy_sasl_password_roundtrip_via_in_memory_keychain() {
-        install_in_memory_keychain();
+    fn proxy_sasl_password_roundtrip_via_memory_store() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         let mut m = meta("kc-mock");
         m.upstream_sasl = Some(UpstreamSaslMetadata {
             mechanism: "SCRAM-SHA-512".to_owned(),
             username: "alice".to_owned(),
-            // `save` overwrites this from whether a non-empty secret
-            // is supplied — the input value is irrelevant.
-            has_password: false,
+            has_password: false, // overwritten by save
         });
         let secret = "hunter2".to_owned();
         let saved = store.save(m, None, None, Some(secret.clone())).unwrap();
@@ -634,102 +775,12 @@ mod tests {
         );
     }
 
-    /// In-memory `keyring` backend used by tests that need a real
-    /// save → load round-trip. Installed once per process, idempotent
-    /// across calls (the underlying `set_default_credential_builder`
-    /// just overwrites the slot).
-    fn install_in_memory_keychain() {
-        use keyring::credential::{
-            Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi,
-        };
-        use keyring::Error as KrErr;
-        use std::collections::HashMap;
-        use std::sync::Mutex;
-        use std::sync::OnceLock;
-
-        static STORE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
-        fn store() -> &'static Mutex<HashMap<(String, String), String>> {
-            STORE.get_or_init(|| Mutex::new(HashMap::new()))
-        }
-
-        #[derive(Debug)]
-        struct InMemoryCredential {
-            service: String,
-            user: String,
-        }
-        impl InMemoryCredential {
-            fn key(&self) -> (String, String) {
-                (self.service.clone(), self.user.clone())
-            }
-        }
-        impl CredentialApi for InMemoryCredential {
-            fn set_password(&self, password: &str) -> Result<(), KrErr> {
-                self.set_secret(password.as_bytes())
-            }
-            fn set_secret(&self, secret: &[u8]) -> Result<(), KrErr> {
-                let value = String::from_utf8(secret.to_vec())
-                    .map_err(|_| KrErr::Invalid("secret".into(), "non-utf8".into()))?;
-                store().lock().unwrap().insert(self.key(), value);
-                Ok(())
-            }
-            fn get_password(&self) -> Result<String, KrErr> {
-                store()
-                    .lock()
-                    .unwrap()
-                    .get(&self.key())
-                    .cloned()
-                    .ok_or(KrErr::NoEntry)
-            }
-            fn get_secret(&self) -> Result<Vec<u8>, KrErr> {
-                self.get_password().map(String::into_bytes)
-            }
-            fn delete_credential(&self) -> Result<(), KrErr> {
-                if store().lock().unwrap().remove(&self.key()).is_some() {
-                    Ok(())
-                } else {
-                    Err(KrErr::NoEntry)
-                }
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                std::fmt::Debug::fmt(self, f)
-            }
-        }
-
-        struct InMemoryBuilder;
-        impl CredentialBuilderApi for InMemoryBuilder {
-            fn build(
-                &self,
-                _target: Option<&str>,
-                service: &str,
-                user: &str,
-            ) -> Result<Box<Credential>, KrErr> {
-                Ok(Box::new(InMemoryCredential {
-                    service: service.to_owned(),
-                    user: user.to_owned(),
-                }))
-            }
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-            fn persistence(&self) -> keyring::credential::CredentialPersistence {
-                keyring::credential::CredentialPersistence::ProcessOnly
-            }
-        }
-
-        keyring::set_default_credential_builder(Box::new(InMemoryBuilder) as Box<CredentialBuilder>);
-    }
-
     /// Saving a profile with proxy SASL+TLS metadata persists the
-    /// fields (sans secrets) through the on-disk JSON file. We don't
-    /// touch the OS keychain in CI, so `has_password` only flips
-    /// when a non-empty secret is supplied.
+    /// fields (sans secrets) through the on-disk JSON file.
     #[test]
     fn save_persists_proxy_tls_and_sasl_metadata() {
         let dir = TempDir::new().unwrap();
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         let mut m = meta("cc");
         m.upstream_tls = Some(UpstreamTlsMetadata {
             server_name: String::new(),
@@ -741,8 +792,6 @@ mod tests {
             username: "bob".to_owned(),
             has_password: false,
         });
-        // Pass `None` for the proxy SASL password to skip keychain
-        // writes — CI doesn't have a usable keyring backend.
         let saved = store.save(m, None, None, None).unwrap();
         assert!(saved.upstream_tls.is_some());
         let tls = saved.upstream_tls.as_ref().unwrap();
@@ -753,10 +802,10 @@ mod tests {
         assert_eq!(sasl.username, "bob");
         assert!(!sasl.has_password);
 
-        // Reopen the store from disk and confirm the JSON file
-        // carries the same fields.
+        // Reopen from disk, in-memory secrets are gone but metadata
+        // is durable.
         drop(store);
-        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let store = store_with_memory_secrets(&dir);
         let listed = store.list();
         let p = listed.iter().find(|p| p.name == "cc").unwrap();
         assert_eq!(
@@ -764,5 +813,74 @@ mod tests {
             Some("/tmp/ca.pem")
         );
         assert_eq!(p.upstream_sasl.as_ref().unwrap().username, "bob");
+    }
+
+    /// `FileSecretStore` round-trips a secret across reopens and
+    /// writes the file with mode 0600 on Unix.
+    #[test]
+    fn file_secret_store_persists_across_reopen_and_chmods_0600() {
+        let dir = TempDir::new().unwrap();
+        let secrets_path = dir.path().join(SECRETS_FILE);
+        {
+            let store = FileSecretStore::open(dir.path());
+            store.set("p", KEY_PROXY_SASL, "hunter2");
+            assert_eq!(store.get("p", KEY_PROXY_SASL).as_deref(), Some("hunter2"));
+        }
+        // Reopen and confirm persistence.
+        {
+            let store = FileSecretStore::open(dir.path());
+            assert_eq!(store.get("p", KEY_PROXY_SASL).as_deref(), Some("hunter2"));
+            store.delete("p", KEY_PROXY_SASL);
+            assert!(store.get("p", KEY_PROXY_SASL).is_none());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&secrets_path).unwrap().permissions().mode();
+            // Mask off the file-type bits; keep the perm bits.
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "secrets.json must be mode 0600, got {:o}",
+                mode & 0o777
+            );
+        }
+        // Reference the path so the variable isn't unused on non-Unix.
+        let _ = secrets_path;
+    }
+
+    /// Corrupted `secrets.json` must not crash; the store starts empty.
+    #[test]
+    fn file_secret_store_recovers_from_corruption() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(SECRETS_FILE);
+        fs::write(&path, b"{not valid json").unwrap();
+        let store = FileSecretStore::open(dir.path());
+        assert!(store.get("p", KEY_PROXY_SASL).is_none());
+        // Writes still work after recovery.
+        store.set("p", KEY_PROXY_SASL, "x");
+        assert_eq!(store.get("p", KEY_PROXY_SASL).as_deref(), Some("x"));
+    }
+
+    /// `ProfileStore::open` end-to-end: real `FileSecretStore`, real
+    /// JSON round-trip on disk.
+    #[test]
+    fn profile_store_open_with_file_backend_roundtrips_secret() {
+        let dir = TempDir::new().unwrap();
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let mut m = meta("disk");
+        m.upstream_sasl = Some(UpstreamSaslMetadata {
+            mechanism: "PLAIN".to_owned(),
+            username: "u".to_owned(),
+            has_password: false,
+        });
+        store
+            .save(m, None, None, Some("topsecret".to_owned()))
+            .unwrap();
+        drop(store);
+
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let loaded = store.load("disk").unwrap();
+        assert_eq!(loaded.upstream_sasl_password.as_deref(), Some("topsecret"));
     }
 }
