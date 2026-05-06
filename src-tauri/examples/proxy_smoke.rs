@@ -36,6 +36,7 @@ struct Args {
     upstream: String,
     listen_port: u16,
     seconds: u64,
+    sasl_mechanism: String,
     sasl_username: Option<String>,
     sasl_password: Option<String>,
 }
@@ -44,6 +45,7 @@ fn parse_args() -> Result<Args, String> {
     let mut upstream = "localhost:39092".to_owned();
     let mut listen_port: u16 = 9092;
     let mut seconds: u64 = 60;
+    let mut sasl_mechanism = "PLAIN".to_owned();
     let mut sasl_username: Option<String> = None;
     let mut sasl_password: Option<String> = None;
 
@@ -61,6 +63,9 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--seconds needs a value")?;
                 seconds = v.parse().map_err(|e| format!("--seconds: {e}"))?;
             }
+            "--sasl-mechanism" => {
+                sasl_mechanism = iter.next().ok_or("--sasl-mechanism needs a value")?;
+            }
             "--sasl-username" => {
                 sasl_username = Some(iter.next().ok_or("--sasl-username needs a value")?);
             }
@@ -68,7 +73,7 @@ fn parse_args() -> Result<Args, String> {
                 sasl_password = Some(iter.next().ok_or("--sasl-password needs a value")?);
             }
             "-h" | "--help" => {
-                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--seconds N] [--sasl-username U --sasl-password P]");
+                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--seconds N] [--sasl-mechanism PLAIN|SCRAM-SHA-256|SCRAM-SHA-512] [--sasl-username U --sasl-password P]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -78,9 +83,33 @@ fn parse_args() -> Result<Args, String> {
         upstream,
         listen_port,
         seconds,
+        sasl_mechanism,
         sasl_username,
         sasl_password,
     })
+}
+
+fn build_proxy_config(args: &Args) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
+    let mut cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
+    if let (Some(u), Some(p)) = (args.sasl_username.as_ref(), args.sasl_password.as_ref()) {
+        let mechanism = match args.sasl_mechanism.to_uppercase().as_str() {
+            "PLAIN" => UpstreamSaslMechanism::Plain,
+            "SCRAM-SHA-256" => UpstreamSaslMechanism::ScramSha256,
+            "SCRAM-SHA-512" => UpstreamSaslMechanism::ScramSha512,
+            other => {
+                return Err(format!(
+                    "unsupported --sasl-mechanism `{other}` (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)"
+                )
+                .into());
+            }
+        };
+        cfg = cfg.with_sasl(UpstreamSaslConfig {
+            mechanism,
+            username: u.clone(),
+            password: p.clone(),
+        });
+    }
+    Ok(cfg)
 }
 
 #[tokio::main]
@@ -99,18 +128,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         args.upstream,
         args.listen_port,
         args.seconds,
-        if sasl_enabled { "PLAIN" } else { "off" },
+        if sasl_enabled {
+            args.sasl_mechanism.as_str()
+        } else {
+            "off"
+        },
     );
 
     let correlator = Arc::new(ProtoCorrelator::new());
-    let mut cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
-    if let (Some(u), Some(p)) = (args.sasl_username.as_ref(), args.sasl_password.as_ref()) {
-        cfg = cfg.with_sasl(UpstreamSaslConfig {
-            mechanism: UpstreamSaslMechanism::Plain,
-            username: u.clone(),
-            password: p.clone(),
-        });
-    }
+    let cfg = build_proxy_config(&args)?;
     let captured_count = Arc::new(AtomicUsize::new(0));
     let captured_count_for_sink = Arc::clone(&captured_count);
     let sink: RecordSink = Arc::new(move |msg: CapturedMessage| {

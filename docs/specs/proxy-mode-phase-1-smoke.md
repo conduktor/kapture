@@ -400,3 +400,114 @@ sasl handshake ok mechanism={mech}")` would be a nice-to-have
   client config delta from direct → proxied is `bootstrap=localhost:49092
   - 4 SASL params`→`bootstrap=localhost:9092`. Three lines
     removed, one host changed.
+
+## Phase 4 step 6 — SCRAM injection smoke
+
+End-to-end validation of upstream SCRAM-SHA-256 / SCRAM-SHA-512
+injection against a real Apache Kafka 4.x KRaft broker. Same
+"change only the bootstrap server" promise as the PLAIN smoke:
+kcat carries zero SASL config and produces / consumes through
+Kapture; Kapture performs the SCRAM dance with the broker.
+
+### Reproduce
+
+```sh
+pnpm stack:up:scram                              # broker on :59092 + SCRAM users init
+# Direct check (PLAIN-config kcat → SCRAM listener)
+kcat -b localhost:59092 \
+    -X security.protocol=SASL_PLAINTEXT \
+    -X sasl.mechanism=SCRAM-SHA-256 \
+    -X sasl.username=alice -X sasl.password=alice-scram -L
+
+# Through Kapture (NO SASL config on kcat)
+cargo run --manifest-path src-tauri/Cargo.toml --example proxy_smoke -- \
+    --upstream localhost:59092 --listen 9092 --seconds 25 \
+    --sasl-mechanism SCRAM-SHA-256 --sasl-username alice --sasl-password alice-scram &
+sleep 4
+kcat -b 127.0.0.1:9092 -L
+printf "scram-k1:scram-v1\nscram-k2:scram-v2\nscram-k3:scram-v3\n" \
+    | kcat -b 127.0.0.1:9092 -P -t scram-test -K:
+kcat -b 127.0.0.1:9092 -C -t scram-test -e -o beginning -q
+```
+
+### Direct case — kcat with full SCRAM config
+
+```
+Metadata for all topics (from broker 1: sasl_plaintext://localhost:59092/1):
+ 1 brokers:
+  broker 1 at localhost:59092 (controller)
+ 0 topics:
+```
+
+### Through proxy — kcat with NO SASL config
+
+```
+Metadata for all topics (from broker 1: 127.0.0.1:9092/1):
+ 1 brokers:
+  broker 1 at 127.0.0.1:9092 (controller)
+ 0 topics:
+```
+
+### Produce + consume round-trip (SCRAM-SHA-256)
+
+`scram-v1`, `scram-v2`, `scram-v3` produced via proxy, consumed via
+proxy. proxy_smoke summary:
+
+```
+proxy_smoke: stopped. total frames observed: 37 | captured 6 messages | topic_id_map size: 1
+  topic_id <uuid> -> scram-test
+```
+
+Frame breakdown — each kcat connection drives a fresh upstream
+connect, each with its own SCRAM handshake on the upstream side:
+ApiVersions, Metadata, then Produce or Fetch as needed.
+
+### SCRAM-SHA-512 (bob / bob-scram-512)
+
+Identical exercise on listener 9093 with `--sasl-mechanism
+SCRAM-SHA-512`. proxy_smoke summary:
+
+```
+proxy_smoke: stopped. total frames observed: 37 | captured 4 messages | topic_id_map size: 2
+```
+
+### What this proves
+
+- Kapture's hand-rolled SCRAM client (RFC 5802 / 7677) interoperates
+  with a stock Apache Kafka 4.x broker: client-first → server-first
+  → client-final → server-final, with `ServerSignature` mutual-auth
+  verification.
+- PBKDF2 + HMAC-SHA-{256,512} + StoredKey/ClientKey/ServerKey
+  derivations match the broker's. If they didn't, server_first
+  would emit a SASL_AUTHENTICATION_FAILED.
+- `auth_bytes` is correctly carried inside `SaslAuthenticateRequest
+/ Response` v2 with compact framing (`kafka-protocol` handles
+  the flexible-version encoding).
+- The post-SCRAM `TcpStream` is clean — first downstream-driven
+  request flows immediately with no buffered preamble.
+
+### Notes / deviations
+
+- KRaft SCRAM provisioning: Apache Kafka 4.x KRaft requires SCRAM
+  users either at format time (`kafka-storage format --add-scram`)
+  or via `kafka-configs.sh --alter` after startup. We use the
+  latter, against the broker's internal PLAINTEXT listener, in a
+  one-shot `kafka-scram-init` sidecar. This avoids a chicken-and-
+  egg where the SCRAM mechanism would need creds to provision its
+  own creds.
+- The SASL listener also enables PLAIN alongside SCRAM (via static
+  JAAS) so the broker has a working mechanism during the brief
+  window before init completes. Not consumed by Kapture.
+- env-var → property name conversion in apache/kafka image:
+  `_` → `.`, `__` → `_`, `___` → `-`. Hence
+  `KAFKA_LISTENER_NAME_SASL_SCRAM___SHA___256_SASL_JAAS_CONFIG`
+  for `listener.name.sasl.scram-sha-256.sasl.jaas.config`.
+- PBKDF2 iterations: client caps at `1..=1_000_000` to refuse a
+  hostile broker pinning the proxy in PBKDF2. At Kafka's default
+  4096 the work is sub-millisecond; we keep it inline rather than
+  offloading to `spawn_blocking` (offloading would require
+  `'static + Send` on the generic upstream stream type).
+- RFC 7677 §3 SCRAM-SHA-256 test vector hard-coded in
+  `proxy_upstream::scram::tests` — `ClientProof = dHzbZapWIk4j…`
+  matches byte-for-byte. SCRAM-SHA-512 has a self-consistency
+  round-trip test (no widely-published RFC vector).

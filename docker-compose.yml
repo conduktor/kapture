@@ -192,6 +192,82 @@ services:
       - "49092:49092"
     networks: [kafka-sasl]
 
+  # ──────────── Apache Kafka with SASL_PLAINTEXT + SCRAM (Phase 4 step 6) ────────────
+  # Single-broker KRaft cluster with a SASL_PLAINTEXT listener on 59092.
+  # Mechanisms: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512.
+  # Inter-broker mechanism is PLAIN (broker bootstraps before SCRAM users exist).
+  # Dev-only credentials. NEVER reuse outside the dev stack.
+  #   PLAIN          : admin / admin-scram-secret, alice / alice-scram (alias to SCRAM also)
+  #   SCRAM-SHA-256  : alice / alice-scram         (provisioned by kafka-scram-init)
+  #   SCRAM-SHA-512  : bob   / bob-scram-512       (provisioned by kafka-scram-init)
+  kafka-scram:
+    image: apache/kafka:latest
+    container_name: kapture-kafka-scram
+    profiles: ["scram"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,SASL://0.0.0.0:59092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-scram:9092,SASL://localhost:59092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,SASL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-scram:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # PLAIN on the SASL listener provides static creds during the
+      # window before SCRAM users are provisioned. SCRAM mechanisms are
+      # advertised alongside it.
+      KAFKA_SASL_ENABLED_MECHANISMS: "PLAIN,SCRAM-SHA-256,SCRAM-SHA-512"
+      # apache/kafka env-to-prop conversion: `_` → `.`, `__` → `_`,
+      # `___` → `-`. So `SCRAM___SHA___256` → `scram-sha-256`.
+      # All three mechanisms get a per-listener JAAS entry; SCRAM ones
+      # use ScramLoginModule which sources creds from broker metadata
+      # (provisioned by kafka-scram-init).
+      KAFKA_LISTENER_NAME_SASL_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-scram-secret" user_admin="admin-scram-secret";'
+      KAFKA_LISTENER_NAME_SASL_SCRAM___SHA___256_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
+      KAFKA_LISTENER_NAME_SASL_SCRAM___SHA___512_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.scram.ScramLoginModule required;'
+      CLUSTER_ID: "kapture-scram-cluster"
+    ports:
+      - "59092:59092"
+    healthcheck:
+      test:
+        ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-scram:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [kafka-scram]
+
+  # Sidecar that provisions SCRAM users via the internal PLAINTEXT
+  # listener once the broker is healthy. Apache Kafka 4.x KRaft
+  # requires SCRAM users either at format time (`--add-scram`) or via
+  # `kafka-configs.sh --alter` post-startup. We use the latter against
+  # the broker's internal PLAINTEXT listener so we avoid the
+  # chicken-and-egg of needing SCRAM creds to provision SCRAM users.
+  kafka-scram-init:
+    image: apache/kafka:latest
+    container_name: kapture-kafka-scram-init
+    profiles: ["scram"]
+    depends_on:
+      kafka-scram:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "Provisioning SCRAM users via kafka-scram:9092..."
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka-scram:9092 \
+          --alter --add-config 'SCRAM-SHA-256=[iterations=4096,password=alice-scram]' \
+          --entity-type users --entity-name alice
+        /opt/kafka/bin/kafka-configs.sh --bootstrap-server kafka-scram:9092 \
+          --alter --add-config 'SCRAM-SHA-512=[iterations=4096,password=bob-scram-512]' \
+          --entity-type users --entity-name bob
+        echo "SCRAM users provisioned."
+    restart: "no"
+    networks: [kafka-scram]
+
 networks:
   redpanda:
     name: kapture-redpanda
@@ -201,3 +277,5 @@ networks:
     name: kapture-kafka-mb
   kafka-sasl:
     name: kapture-kafka-sasl
+  kafka-scram:
+    name: kapture-kafka-scram
