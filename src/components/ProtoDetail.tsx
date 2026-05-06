@@ -1,5 +1,6 @@
 import { type JSX } from "react";
 import type { ProtoFrame } from "../types";
+import { parseDebug, type DebugNode } from "../lib/debugTree";
 
 interface Props {
   frame: ProtoFrame | null;
@@ -41,14 +42,7 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {frame.decoded ? (
-        <details className="layer" open>
-          <summary className="layer__title">decoded ({frame.apiName})</summary>
-          <div className="layer__body">
-            <pre className="proto-decoded">{frame.decoded}</pre>
-          </div>
-        </details>
-      ) : null}
+      {frame.decoded ? <DecodedTree decoded={frame.decoded} apiName={frame.apiName} /> : null}
       {rows.length > 0 ? (
         <details className="layer" {...(frame.decoded ? {} : { open: true })}>
           <summary className="layer__title">payload — hex view</summary>
@@ -76,6 +70,104 @@ function Field({ name, value }: { name: string; value: string }): JSX.Element {
       <span className="field__value">{value}</span>
     </div>
   );
+}
+
+function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string }): JSX.Element {
+  const tree = parseDebug(decoded);
+  if (!tree) {
+    // Parser bailed out: surface the raw Debug string rather than nothing.
+    // This shouldn't happen for derive(Debug) output but the kafka-protocol
+    // crate may grow a hand-rolled Debug impl that breaks the grammar.
+    return (
+      <details className="layer" open>
+        <summary className="layer__title">decoded ({apiName})</summary>
+        <div className="layer__body">
+          <pre className="proto-decoded">{decoded}</pre>
+        </div>
+      </details>
+    );
+  }
+  return (
+    <details className="layer" open>
+      <summary className="layer__title">decoded ({apiName})</summary>
+      <div className="layer__body">
+        <DebugNodeView node={tree} />
+      </div>
+    </details>
+  );
+}
+
+/**
+ * Render a parsed Debug tree using the same Layer / Field components as
+ * the message view. Compound nodes (struct, seq, tuple) become
+ * collapsible details with a chevron; leaves render as `name: value`
+ * fields.
+ */
+function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.Element {
+  if (node.kind === "struct") {
+    return (
+      <details className="layer" open>
+        <summary className="layer__title">
+          {name ? `${name}: ` : ""}
+          {node.name}
+        </summary>
+        <div className="layer__body">
+          {node.fields.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            node.fields.map((f, i) => <DebugNodeView key={i} node={f.value} name={f.name} />)
+          )}
+        </div>
+      </details>
+    );
+  }
+  if (node.kind === "seq") {
+    return (
+      <details className="layer" open>
+        <summary className="layer__title">
+          {name ? `${name}: ` : ""}[{node.items.length}]
+        </summary>
+        <div className="layer__body">
+          {node.items.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            node.items.map((item, i) => <DebugNodeView key={i} node={item} name={`[${i}]`} />)
+          )}
+        </div>
+      </details>
+    );
+  }
+  if (node.kind === "tuple") {
+    // Single-item tuple wrappers (`Some(x)`, `TopicName("foo")`) are
+    // visually noisy as nested headers — flatten by combining the
+    // wrapper name into the field label.
+    if (node.items.length === 1) {
+      const inner = node.items[0];
+      if (!inner) {
+        return <Field name={name ?? ""} value={`${node.name}()`} />;
+      }
+      const label = name ? `${name} (${node.name})` : node.name;
+      return <DebugNodeView node={inner} name={label} />;
+    }
+    return (
+      <details className="layer" open>
+        <summary className="layer__title">
+          {name ? `${name}: ` : ""}
+          {node.name}(…)
+        </summary>
+        <div className="layer__body">
+          {node.items.map((item, i) => (
+            <DebugNodeView key={i} node={item} name={`[${i}]`} />
+          ))}
+        </div>
+      </details>
+    );
+  }
+  if (node.kind === "string") {
+    return <Field name={name ?? ""} value={`"${node.value}"`} />;
+  }
+  // primitive
+  return <Field name={name ?? ""} value={node.text} />;
 }
 
 interface HexRow {

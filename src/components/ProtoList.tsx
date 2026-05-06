@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent } from "react";
-import { List, type RowComponentProps } from "react-window";
+import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { ProtoFrame } from "../types";
-import { ensureRowVisible } from "../lib/listNav";
 
 interface Props {
   frames: ProtoFrame[];
@@ -83,7 +82,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
     () => ({ frames, selectedId, pairedId, onSelect }),
     [frames, selectedId, pairedId, onSelect],
   );
-  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const listRef = useRef<ListImperativeAPI | null>(null);
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
@@ -106,7 +105,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         return;
       }
       onSelect(nextFrame.id);
-      ensureRowVisible(bodyRef.current, next, ROW_HEIGHT);
+      listRef.current?.scrollToRow({ index: next, align: "auto" });
     },
     [frames, selectedId, onSelect],
   );
@@ -123,7 +122,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         <span className="proto__col proto__col--size">size</span>
         <span className="proto__col proto__col--rtt">rtt (ms)</span>
       </div>
-      <div className="msglist__body" ref={bodyRef}>
+      <div className="msglist__body">
         {frames.length === 0 ? (
           <div className="msglist__empty">
             <p>No protocol frames yet.</p>
@@ -135,6 +134,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         ) : (
           <List
             className="msglist__virtual"
+            listRef={listRef}
             rowComponent={ProtoRow}
             rowCount={frames.length}
             rowHeight={ROW_HEIGHT}

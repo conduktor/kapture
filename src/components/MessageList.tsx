@@ -7,9 +7,8 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { List, type RowComponentProps } from "react-window";
+import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
-import { ensureRowVisible } from "../lib/listNav";
 import type { FilterTarget } from "./FilterMenu";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
@@ -40,12 +39,13 @@ export function MessageList({
     () => ({ messages, selectedId, onSelect, onOpenFilterMenu }),
     [messages, selectedId, onSelect, onOpenFilterMenu],
   );
-  const bodyRef = useRef<HTMLDivElement | null>(null);
+  // react-window manages its own scrolling container. Driving body
+  // scrollTop directly (an earlier attempt) didn't work because the
+  // virtualisation host element is INSIDE .msglist__body and has its
+  // own overflow. The library's imperative `scrollToRow` is the right
+  // hook — `align: "auto"` is a no-op when the row is already in view.
+  const listRef = useRef<ListImperativeAPI | null>(null);
 
-  // Up/Down navigation: move the selection one step and ensure the row
-  // is visible. Virtualisation means we can't rely on the focused
-  // <button> being mounted, so we drive scrollTop directly off the
-  // index × ROW_HEIGHT geometry.
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
@@ -68,7 +68,7 @@ export function MessageList({
         return;
       }
       onSelect(nextMessage.id);
-      ensureRowVisible(bodyRef.current, next, ROW_HEIGHT);
+      listRef.current?.scrollToRow({ index: next, align: "auto" });
     },
     [messages, selectedId, onSelect],
   );
@@ -84,7 +84,7 @@ export function MessageList({
         <span className="msglist__col msglist__col--schema">schema</span>
         <span className="msglist__col msglist__col--size">size</span>
       </div>
-      <div className="msglist__body" ref={bodyRef}>
+      <div className="msglist__body">
         {messages.length === 0 ? (
           <div className="msglist__empty">
             <p>No messages yet.</p>
@@ -93,6 +93,7 @@ export function MessageList({
         ) : (
           <List
             className="msglist__virtual"
+            listRef={listRef}
             rowComponent={MessageRow}
             rowCount={messages.length}
             rowHeight={ROW_HEIGHT}
