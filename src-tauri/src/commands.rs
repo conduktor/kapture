@@ -464,6 +464,42 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStatusSummary {
+    pub listening: bool,
+    pub listen_addr: Option<String>,
+    pub upstream: Option<String>,
+    pub active_connections: usize,
+    /// `((upstream_host, upstream_port), local_port)` mapping for the
+    /// `SidePanel` summary. Sorted by `local_port` so the order is
+    /// stable across polls.
+    pub broker_mappings: Vec<((String, u16), u16)>,
+}
+
+/// Snapshot of the running proxy. `listening: false` (with all other
+/// fields zeroed / empty) when no proxy is active. Polled by the
+/// `SidePanel` once per second to render the proxy summary.
+#[tauri::command]
+pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatusSummary {
+    state.proxy_summary().map_or(
+        ProxyStatusSummary {
+            listening: false,
+            listen_addr: None,
+            upstream: None,
+            active_connections: 0,
+            broker_mappings: Vec::new(),
+        },
+        |s| ProxyStatusSummary {
+            listening: true,
+            listen_addr: Some(s.listen_addr),
+            upstream: Some(s.upstream),
+            active_connections: s.active_connections,
+            broker_mappings: s.broker_mappings,
+        },
+    )
+}
+
 /// Snapshot of recent observed Kafka protocol frames as **summaries**
 /// (no payload bytes, no decoded body — those are megabyte-scale on
 /// busy clusters and don't belong in the 1 Hz polling path). Returns

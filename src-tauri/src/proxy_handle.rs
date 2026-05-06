@@ -35,6 +35,20 @@ use crate::proxy_topic_ids::TopicIdMap;
 /// synchronously from the per-connection pump — must not block.
 pub type RecordSink = Arc<dyn Fn(CapturedMessage) + Send + Sync + 'static>;
 
+/// Diagnostic snapshot of proxy state. Returned by
+/// `ProxyHandle::summary` and surfaced both via the Tauri command
+/// `proxy_status` (for the `SidePanel`) and via the
+/// `kapture_proxy_status` MCP tool (for AI agents).
+#[derive(Debug, Clone)]
+pub struct ProxySummary {
+    pub listen_addr: String,
+    pub upstream: String,
+    pub active_connections: usize,
+    /// `((upstream_host, upstream_port), local_port)` triples sorted
+    /// by local port so the order is stable across polls.
+    pub broker_mappings: Vec<((String, u16), u16)>,
+}
+
 /// Shared proxy state. Wrapped in an `Arc` by `ProxyHandle` so the
 /// per-listener accept loops AND the rewriter (via
 /// `BrokerProvisioner`) see the same `BrokerMap`, `correlator`,
@@ -333,6 +347,26 @@ impl ProxyHandle {
     #[must_use]
     pub fn broker_map(&self) -> Arc<BrokerMap> {
         Arc::clone(&self.0.broker_map)
+    }
+
+    /// Snapshot of proxy runtime for the `SidePanel` summary and the
+    /// `kapture_proxy_status` MCP tool: bootstrap listen address,
+    /// configured upstream, count of currently-active connection
+    /// pumps, and the `(upstream_host:port, local_port)` mapping
+    /// inferred from observed Metadata responses.
+    #[must_use]
+    pub fn summary(&self) -> ProxySummary {
+        let active_connections = self.0.active_pumps.lock().len();
+        let mut broker_mappings: Vec<((String, u16), u16)> = self.0.broker_map.snapshot();
+        // Stable order (sort by local port) so the UI doesn't reshuffle
+        // the list every poll.
+        broker_mappings.sort_by_key(|((_, _), local)| *local);
+        ProxySummary {
+            listen_addr: self.0.bootstrap_addr.to_string(),
+            upstream: self.0.bootstrap_upstream.clone(),
+            active_connections,
+            broker_mappings,
+        }
     }
 
     /// Shared `TopicIdMap`. Examples (`proxy_smoke`) and tests use this

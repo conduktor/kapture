@@ -98,6 +98,7 @@ pub fn run() {
             commands::disconnect,
             commands::start_proxy,
             commands::stop_proxy,
+            commands::proxy_status,
             commands::snapshot,
             commands::proto_frames,
             commands::proto_frame_detail,

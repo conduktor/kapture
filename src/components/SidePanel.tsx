@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import type { AppInfo, CaptureStats, ConnectionState } from "../types";
+import type { AppInfo, CaptureStats, ConnectionState, ProxyStatusSummary } from "../types";
 
 interface Props {
   appInfo: AppInfo | null;
@@ -8,11 +8,14 @@ interface Props {
   stats: CaptureStats;
 }
 
+const PROXY_POLL_MS = 1000;
+
 export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
   const fillPct = stats.bufferCapacity === 0 ? 0 : (stats.inBuffer / stats.bufferCapacity) * 100;
   const byteFillPct =
     stats.bufferByteCapacity === 0 ? 0 : (stats.bufferBytes / stats.bufferByteCapacity) * 100;
   const [mcpAllowed, setMcpAllowed] = useState(false);
+  const [proxy, setProxy] = useState<ProxyStatusSummary | null>(null);
 
   useEffect(() => {
     void (async () => {
@@ -24,6 +27,38 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
       }
     })();
   }, []);
+
+  // Poll proxy status only while we're in proxy mode. The polling
+  // stops automatically when `connection.mode` flips back to client
+  // (the effect re-runs and the cleanup clears the interval). The
+  // "drop stale state" path lives in render: when the mode flips, we
+  // skip rendering the section and `proxy` becomes irrelevant; we
+  // intentionally do NOT call `setProxy(null)` from inside the effect
+  // body (cascading renders, see the React docs `set-state-in-effect`).
+  useEffect(() => {
+    if (connection.mode !== "proxy") {
+      return undefined;
+    }
+    let cancelled = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const next = await invoke<ProxyStatusSummary>("proxy_status");
+        if (!cancelled) {
+          setProxy(next);
+        }
+      } catch {
+        /* command may transiently fail during connect/disconnect */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, PROXY_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [connection.mode]);
 
   const toggleMcp = (next: boolean): void => {
     setMcpAllowed(next);
@@ -49,6 +84,29 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
           ) : null}
         </dl>
       </section>
+      {connection.mode === "proxy" && proxy?.listening ? (
+        <section className="side__section">
+          <h2 className="side__title">Proxy</h2>
+          <p className="side__note">
+            proxy <code>{proxy.listenAddr ?? "—"}</code> → <code>{proxy.upstream ?? "—"}</code>
+          </p>
+          <dl className="side__kv">
+            <dt>active</dt>
+            <dd>
+              {proxy.activeConnections.toLocaleString()}{" "}
+              {proxy.activeConnections === 1 ? "connection" : "connections"}
+            </dd>
+            <dt>mappings</dt>
+            <dd>
+              {proxy.brokerMappings.length.toLocaleString()}{" "}
+              {proxy.brokerMappings.length === 1 ? "broker" : "brokers"}
+              {proxy.brokerMappings.length > 0
+                ? ` (${proxy.brokerMappings.map(([, localPort]) => String(localPort)).join(", ")})`
+                : ""}
+            </dd>
+          </dl>
+        </section>
+      ) : null}
       <section className="side__section">
         <h2 className="side__title">Capture</h2>
         <dl className="side__kv">

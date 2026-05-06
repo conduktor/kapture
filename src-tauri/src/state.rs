@@ -116,6 +116,16 @@ impl AppState {
         self.inner.lock().proxy.is_some()
     }
 
+    /// Borrow the active `ProxyHandle` long enough to capture its
+    /// summary, then drop the lock. `None` when no proxy is running.
+    pub fn proxy_summary(&self) -> Option<crate::proxy_handle::ProxySummary> {
+        self.inner
+            .lock()
+            .proxy
+            .as_ref()
+            .map(crate::proxy_handle::ProxyHandle::summary)
+    }
+
     pub fn is_capturing(&self) -> bool {
         let (has_capture, has_proxy) = {
             let guard = self.inner.lock();
