@@ -139,11 +139,26 @@ jobs:
           chmod +x tools/relocate-macos-dylibs.sh
           tools/relocate-macos-dylibs.sh
 
+      - name: Check Apple notarization secrets
+        id: notarize_check
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "${APPLE_ID}" && -n "${APPLE_APP_PASSWORD}" && -n "${APPLE_TEAM_ID}" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Notarize (Apple)
         # Skipped if the Apple credentials are not provided. Releases
         # without notarization are still installable but Gatekeeper will
         # show a warning to the user. Codex finding [12].
-        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+        # The `secrets` context is not allowed in step-level `if:` — we
+        # gate via the output of the preceding check step instead.
+        if: steps.notarize_check.outputs.enabled == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
