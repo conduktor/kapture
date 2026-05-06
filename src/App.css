@@ -1466,3 +1466,105 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   color: var(--text);
   border-color: var(--border-strong);
 }
+
+/* ---------- Brokers tab ---------- */
+.brokers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  overflow: auto;
+  background: var(--bg);
+}
+.brokers--empty {
+  align-items: center;
+  justify-content: center;
+}
+.brokers__empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
+  font-family: var(--sans);
+}
+.brokers__empty code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg-subtle);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.brokers__summary {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 2px;
+}
+.brokers__table {
+  display: grid;
+  grid-template-columns: max-content max-content 1fr max-content;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.brokers__row {
+  display: contents;
+}
+.brokers__row > .brokers__cell {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brokers__row:last-child > .brokers__cell {
+  border-bottom: none;
+}
+.brokers__row--head > .brokers__cell {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 500;
+  font-family: var(--sans);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.brokers__row:not(.brokers__row--head):nth-child(even) > .brokers__cell {
+  background: var(--bg-subtle);
+}
+.brokers__row:not(.brokers__row--head):hover > .brokers__cell {
+  background: var(--bg-hover);
+}
+.brokers__cell--port {
+  color: var(--text);
+  font-weight: 500;
+}
+.brokers__cell--arrow {
+  color: var(--text-faint);
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+.brokers__cell--upstream {
+  color: var(--text);
+}
+.brokers__badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: var(--sans);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+}
+.brokers__badge--bootstrap {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.brokers__badge--lazy {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}

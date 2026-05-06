@@ -23,6 +23,7 @@ import {
   type ProtoFilterKind,
   type ProtoFilterMode,
 } from "./lib/protoFilter";
+import { BrokersTab } from "./components/BrokersTab";
 import type {
   CaptureStats,
   ConnectionState,
@@ -30,6 +31,7 @@ import type {
   ProtoFrame,
   ProtoFrameDetail,
   ProxyStatus,
+  ProxyStatusSummary,
 } from "./types";
 
 interface MenuState {
@@ -73,7 +75,11 @@ function App(): JSX.Element {
   // the disconnected workspace; the user re-opens via the cluster pill.
   const [editing, setEditing] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [tab, setTab] = useState<"messages" | "protocol">("messages");
+  const [tab, setTab] = useState<"messages" | "protocol" | "brokers">("messages");
+  // Lifted from StatusBar so the Brokers tab can read the same snapshot
+  // without a second 1Hz poll. Null when no proxy is up (or before the
+  // first tick lands).
+  const [proxyStatusSummary, setProxyStatusSummary] = useState<ProxyStatusSummary | null>(null);
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
@@ -218,6 +224,35 @@ function App(): JSX.Element {
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+    };
+  }, [connection.status]);
+
+  // 1Hz proxy_status poll. Lifted from StatusBar so both StatusBar and
+  // BrokersTab consume one snapshot — no double polling. The
+  // disconnect handler clears the summary explicitly (lint forbids a
+  // setState call in the effect body itself).
+  useEffect(() => {
+    if (connection.status !== "connected") {
+      return;
+    }
+    let cancelled = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const next = await invoke<ProxyStatusSummary>("proxy_status");
+        if (!cancelled) {
+          setProxyStatusSummary(next);
+        }
+      } catch {
+        /* command may transiently fail during connect/disconnect */
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
     };
   }, [connection.status]);
 
@@ -371,6 +406,12 @@ function App(): JSX.Element {
         console.error("stop_proxy failed", err);
       } finally {
         setConnection(INITIAL_CONNECTION);
+        // Brokers tab is hidden when disconnected — fall back to messages
+        // so the user lands on a visible tab next time they connect.
+        setTab((current) => (current === "brokers" ? "messages" : current));
+        // Drop the stale snapshot so a quick reconnect doesn't flash the
+        // previous broker list before the next poll tick lands.
+        setProxyStatusSummary(null);
       }
     })();
   };
@@ -581,8 +622,27 @@ function App(): JSX.Element {
             >
               Protocol <span className="tabs__count">({protoFrames.length})</span>
             </button>
+            {connection.status === "connected" ? (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === "brokers"}
+                className={`tabs__tab${tab === "brokers" ? " is-active" : ""}`}
+                onClick={() => {
+                  setTab("brokers");
+                }}
+                title="Per-broker proxy port mappings"
+              >
+                Brokers{" "}
+                <span className="tabs__count">
+                  ({proxyStatusSummary?.brokerMappings.length ?? 0})
+                </span>
+              </button>
+            ) : null}
           </div>
-          {tab === "messages" ? (
+          {tab === "brokers" ? (
+            <BrokersTab proxyStatus={proxyStatusSummary} />
+          ) : tab === "messages" ? (
             <div
               ref={panesRef}
               className="layout__panes"
@@ -647,7 +707,7 @@ function App(): JSX.Element {
           )}
         </div>
       </main>
-      <StatusBar connection={connection} stats={stats} />
+      <StatusBar connection={connection} stats={stats} proxy={proxyStatusSummary} />
       {snippetsOpen && connection.status === "connected" && connection.proxyStatus !== null ? (
         <SnippetsModal
           listenAddr={connection.proxyStatus.listenAddr}

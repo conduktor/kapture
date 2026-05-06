@@ -1,13 +1,12 @@
-import { useEffect, useState, type JSX } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import type { JSX } from "react";
 import type { CaptureStats, ConnectionState, ProxyStatusSummary } from "../types";
 
 interface Props {
   connection: ConnectionState;
   stats: CaptureStats;
+  /** 1Hz proxy snapshot, polled at the App level and shared with BrokersTab. */
+  proxy: ProxyStatusSummary | null;
 }
-
-const PROXY_POLL_MS = 1000;
 
 /**
  * Thin status row pinned to the bottom of the workspace. Renders a compact,
@@ -15,37 +14,10 @@ const PROXY_POLL_MS = 1000;
  * proxy is connected — disconnected we render an empty placeholder so the
  * grid row stays reserved (no layout shift on first connect).
  *
- * Polls `proxy_status` at 1Hz (same cadence the old SidePanel used) and
- * folds in the `kapture:stats` event-driven snapshot from App.tsx.
+ * The proxy snapshot is owned by App.tsx (see the lifted `proxy_status`
+ * poll) so a single 1 Hz tick feeds both this row and the Brokers tab.
  */
-export function StatusBar({ connection, stats }: Props): JSX.Element {
-  const [proxy, setProxy] = useState<ProxyStatusSummary | null>(null);
-
-  useEffect(() => {
-    if (connection.status !== "connected") {
-      return undefined;
-    }
-    let cancelled = false;
-    const tick = async (): Promise<void> => {
-      try {
-        const next = await invoke<ProxyStatusSummary>("proxy_status");
-        if (!cancelled) {
-          setProxy(next);
-        }
-      } catch {
-        /* command may transiently fail during connect/disconnect */
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => {
-      void tick();
-    }, PROXY_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, [connection.status]);
-
+export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
   const isConnected = connection.status === "connected";
   // Empty placeholder keeps the row reserved when disconnected.
   if (!isConnected) {
