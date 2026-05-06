@@ -336,8 +336,8 @@ export function ConnectionDialog({
           </button>
         </div>
         {profileError !== null ? <p className="dialog__error">{profileError}</p> : null}
-        <fieldset className="dialog__section">
-          <legend>Upstream</legend>
+        <div className="dialog__section">
+          <div className="dialog__section-title">Upstream</div>
           <label className="dialog__field">
             <span className="dialog__label">Upstream broker</span>
             <input
@@ -460,9 +460,9 @@ export function ConnectionDialog({
               </label>
             </>
           ) : null}
-        </fieldset>
-        <fieldset className="dialog__section">
-          <legend>Local</legend>
+        </div>
+        <div className="dialog__section">
+          <div className="dialog__section-title">Local</div>
           <label className="dialog__field">
             <span className="dialog__label">Listen port (127.0.0.1)</span>
             <input
@@ -480,7 +480,7 @@ export function ConnectionDialog({
               Bound to 127.0.0.1 — only reachable from this machine.
             </span>
           </label>
-        </fieldset>
+        </div>
         {validationError !== null ? <p className="dialog__error">{validationError}</p> : null}
         {error !== null ? <p className="dialog__error">{error}</p> : null}
         <div className="dialog__actions">
