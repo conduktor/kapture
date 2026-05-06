@@ -168,6 +168,16 @@ export function removePredicate<K extends ProtoFilterKind>(
   return withSlot(f, kind, nextSlot);
 }
 
+/** True if the filter currently holds the (kind, value, mode) triple. */
+export function hasPredicate<K extends ProtoFilterKind>(
+  f: ProtoFilter,
+  kind: K,
+  value: KindMap[K],
+  mode: ProtoFilterMode,
+): boolean {
+  return slotFor(f, kind)[mode].includes(value);
+}
+
 export interface ProtoFilterChip<K extends ProtoFilterKind = ProtoFilterKind> {
   kind: K;
   mode: ProtoFilterMode;

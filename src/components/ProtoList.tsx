@@ -12,6 +12,7 @@ import type { ProtoDirection, ProtoFrame } from "../types";
 import {
   applyFilter,
   filterChips,
+  hasPredicate,
   isFilterEmpty,
   type ProtoFilter,
   type ProtoFilterChip,
@@ -42,6 +43,7 @@ interface RowProps {
   pairedId: string | null;
   onSelect: (id: string) => void;
   onAddPredicate: AddPredicateFn;
+  filter: ProtoFilter;
 }
 
 type AddPredicateFn = <K extends ProtoFilterKind>(
@@ -146,8 +148,8 @@ export function ProtoList({
   );
 
   const rowProps = useMemo<RowProps>(
-    () => ({ frames: visibleFrames, selectedId, pairedId, onSelect, onAddPredicate }),
-    [visibleFrames, selectedId, pairedId, onSelect, onAddPredicate],
+    () => ({ frames: visibleFrames, selectedId, pairedId, onSelect, onAddPredicate, filter }),
+    [visibleFrames, selectedId, pairedId, onSelect, onAddPredicate, filter],
   );
   const listRef = useRef<ListImperativeAPI | null>(null);
   const onKeyDown = useCallback(
@@ -315,16 +317,23 @@ interface FilterableCellProps {
   kind: ProtoFilterKind;
   /** Value to filter on; type varies with `kind` (string covers ProtoDirection). */
   value: number | string;
+  /**
+   * Toggle callback. Adds the (kind, value, mode) predicate if absent,
+   * removes it if already present. Wiring lives in App.tsx so the
+   * top-of-page DSL textbox stays the canonical source of truth.
+   */
   onAdd: AddPredicateFn;
+  /** Current filter — used to decide whether each button is active. */
+  filter: ProtoFilter;
 }
 
 /**
- * Cell wrapper that reveals a tiny ⊕ filter button on hover. Click
- * adds an INCLUDE predicate; Alt/Option-click adds an EXCLUDE.
- * (Earlier we tried a popover for explicit choices, but the proto list
- * row uses overflow:hidden + react-window virtualization, which clips
- * any absolutely-positioned popover content. The mod-key approach
- * keeps the click discoverable via the button title.)
+ * Cell wrapper that reveals two tiny filter buttons on hover: `=`
+ * (include this value) and `≠` (exclude this value). Each button
+ * toggles its own predicate — clicking an already-active button
+ * removes that predicate. Active buttons are highlighted in the
+ * accent / danger colors so the current state of the row is visible
+ * at a glance.
  */
 function FilterableCell({
   className,
@@ -333,29 +342,48 @@ function FilterableCell({
   kind,
   value,
   onAdd,
+  filter,
 }: FilterableCellProps): JSX.Element {
-  const onIconClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    event.preventDefault();
-    event.stopPropagation();
-    const mode: ProtoFilterMode = event.altKey ? "exclude" : "include";
-    onAdd(kind as never, value as never, mode);
-  };
+  const includeActive = hasPredicate(filter, kind as never, value as never, "include");
+  const excludeActive = hasPredicate(filter, kind as never, value as never, "exclude");
+  const handle =
+    (mode: ProtoFilterMode) =>
+    (event: MouseEvent<HTMLButtonElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      onAdd(kind as never, value as never, mode);
+    };
   return (
-    <span
-      className={`${className} proto-cell--filterable`}
-      title={title ?? "Click ⊕ to filter • Alt/Option-click to exclude"}
-    >
+    <span className={`${className} proto-cell--filterable`} title={title}>
       <span className="proto-cell__content">{children}</span>
-      <button
-        type="button"
-        className="proto-cell__filter"
-        tabIndex={-1}
-        aria-label="Filter on this value"
-        title="Click: include this value · Alt/Option-click: exclude"
-        onClick={onIconClick}
-      >
-        ⊕
-      </button>
+      <span className="proto-cell__filters">
+        <button
+          type="button"
+          className={`proto-cell__filter proto-cell__filter--include${
+            includeActive ? " is-active" : ""
+          }`}
+          tabIndex={-1}
+          aria-label={includeActive ? "Remove include filter" : "Filter to this value"}
+          aria-pressed={includeActive}
+          title={includeActive ? "Click to remove this include filter" : "Filter to this value"}
+          onClick={handle("include")}
+        >
+          =
+        </button>
+        <button
+          type="button"
+          className={`proto-cell__filter proto-cell__filter--exclude${
+            excludeActive ? " is-active" : ""
+          }`}
+          tabIndex={-1}
+          aria-label={excludeActive ? "Remove exclude filter" : "Exclude this value"}
+          aria-pressed={excludeActive}
+          title={excludeActive ? "Click to remove this exclude filter" : "Exclude this value"}
+          onClick={handle("exclude")}
+        >
+          ≠
+        </button>
+      </span>
     </span>
   );
 }
@@ -402,6 +430,7 @@ function ProtoRow({
   pairedId,
   onSelect,
   onAddPredicate,
+  filter,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const frame = frames[index];
   if (!frame) {
@@ -451,6 +480,7 @@ function ProtoRow({
         kind="apiName"
         value={frame.apiName}
         onAdd={onAddPredicate}
+        filter={filter}
       >
         {frame.apiName}
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
@@ -461,6 +491,7 @@ function ProtoRow({
         kind="connectionId"
         value={frame.connectionId}
         onAdd={onAddPredicate}
+        filter={filter}
       >
         {frame.connectionId}
       </FilterableCell>
@@ -469,6 +500,7 @@ function ProtoRow({
         kind="corrId"
         value={frame.corrId}
         onAdd={onAddPredicate}
+        filter={filter}
       >
         {frame.corrId}
       </FilterableCell>

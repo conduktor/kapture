@@ -490,19 +490,37 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
     color 0.12s,
     border-color 0.12s;
 }
+.proto-cell__filters {
+  display: inline-flex;
+  gap: 2px;
+}
 .proto-cell--filterable:hover .proto-cell__filter,
 .proto-cell__filter:focus-visible,
-.proto-cell--filterable.is-open .proto-cell__filter {
+.proto-cell__filter.is-active {
   visibility: visible;
 }
-.proto-cell--filterable.is-open .proto-cell__filter {
+/* Active include filter — accent (indigo) highlight to mirror the
+ * "filter chip" colour used in the top filter bar. */
+.proto-cell__filter--include.is-active {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
 }
-.proto-cell__filter:hover {
+/* Active exclude filter — danger (red) highlight; same ADHD-friendly
+ * convention as the chip bar. */
+.proto-cell__filter--exclude.is-active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.proto-cell__filter--include:hover {
   background: var(--accent);
   border-color: var(--accent);
+  color: #fff;
+}
+.proto-cell__filter--exclude:hover {
+  background: var(--danger);
+  border-color: var(--danger);
   color: #fff;
 }
 

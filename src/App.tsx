@@ -15,7 +15,9 @@ import { ProtoList } from "./components/ProtoList";
 import { ProtoDetail } from "./components/ProtoDetail";
 import { Splitter } from "./components/Splitter";
 import {
+  addPredicate as addProtoPredicate,
   appendClause as appendProtoClause,
+  hasPredicate as hasProtoPredicate,
   parseExpression as parseProtoExpression,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
@@ -500,13 +502,28 @@ function App(): JSX.Element {
     setProtoFilterText((prev) => appendProtoClause(prev, "decodedContains", substring, mode));
   }, []);
 
-  // Hover popover from a list cell appends the matching clause.
+  // Hover-cell click: TOGGLE the (kind, value, mode) predicate.
+  //  - Already present in this mode → remove it (the user is undoing).
+  //  - Not present → add it. addPredicate() removes any opposite-mode
+  //    predicate for the same value automatically (a value can't sit
+  //    in both include and exclude — that would be unsatisfiable).
+  // The textbox is then re-serialised from the updated filter so the
+  // top-of-page DSL stays the canonical source of truth.
   const onAddProtoPredicate = useCallback(
     (kind: ProtoFilterKind, value: number | string, mode: ProtoFilterMode): void => {
-      setProtoFilterText((prev) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        appendProtoClause(prev, kind as any, value as any, mode),
-      );
+      setProtoFilterText((prev) => {
+        const current = parseProtoExpression(prev).filter;
+        // The protoFilter helpers are generic over `K extends ProtoFilterKind`
+        // with `KindMap[K]` for the value type. We hold the kind+value as a
+        // dynamic pair here (the row only knows them at runtime), so we
+        // forward through `never` to satisfy each generic without an `any`.
+        const k = kind as never;
+        const v = value as never;
+        const next = hasProtoPredicate(current, k, v, mode)
+          ? removeProtoPredicate(current, k, v, mode)
+          : addProtoPredicate(current, k, v, mode);
+        return serializeProtoFilter(next);
+      });
     },
     [],
   );
