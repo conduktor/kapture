@@ -98,20 +98,21 @@ function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string })
 }
 
 /**
- * Render a parsed Debug tree using the same Layer / Field components as
- * the message view. Compound nodes (struct, seq, tuple) become
- * collapsible details with a chevron; leaves render as `name: value`
- * fields.
+ * Render a parsed Debug tree as a flat indented tree — same visual
+ * vocabulary as the `frame` block (`name | value` rows). Compound
+ * nodes (struct, seq, tuple) get a chevron disclosure but no boxed
+ * card around their children, so nesting reads as indentation rather
+ * than a stack of nested containers.
  */
 function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.Element {
   if (node.kind === "struct") {
     return (
-      <details className="layer" open>
-        <summary className="layer__title">
-          {name ? `${name}: ` : ""}
-          {node.name}
+      <details className="tree-node" open>
+        <summary className="tree-node__summary">
+          <span className="field__name">{name ?? ""}</span>
+          <span className="field__value">{node.name === "" ? "{}" : node.name}</span>
         </summary>
-        <div className="layer__body">
+        <div className="tree-node__children">
           {node.fields.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
@@ -123,11 +124,12 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
   }
   if (node.kind === "seq") {
     return (
-      <details className="layer" open>
-        <summary className="layer__title">
-          {name ? `${name}: ` : ""}[{node.items.length}]
+      <details className="tree-node" open>
+        <summary className="tree-node__summary">
+          <span className="field__name">{name ?? ""}</span>
+          <span className="field__value">[{node.items.length}]</span>
         </summary>
-        <div className="layer__body">
+        <div className="tree-node__children">
           {node.items.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
@@ -139,8 +141,8 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
   }
   if (node.kind === "tuple") {
     // Single-item tuple wrappers (`Some(x)`, `TopicName("foo")`) are
-    // visually noisy as nested headers — flatten by combining the
-    // wrapper name into the field label.
+    // visually noisy when nested — flatten by combining the wrapper
+    // name into the field label.
     if (node.items.length === 1) {
       const inner = node.items[0];
       if (!inner) {
@@ -150,12 +152,12 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
       return <DebugNodeView node={inner} name={label} />;
     }
     return (
-      <details className="layer" open>
-        <summary className="layer__title">
-          {name ? `${name}: ` : ""}
-          {node.name}(…)
+      <details className="tree-node" open>
+        <summary className="tree-node__summary">
+          <span className="field__name">{name ?? ""}</span>
+          <span className="field__value">{node.name}(…)</span>
         </summary>
-        <div className="layer__body">
+        <div className="tree-node__children">
           {node.items.map((item, i) => (
             <DebugNodeView key={i} node={item} name={`[${i}]`} />
           ))}

@@ -369,6 +369,49 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
   box-shadow: none;
 }
 
+/* Tree node inside the decoded body — flat indented disclosure, no
+ * boxed card. Mirrors the `frame` Field grid (160 px name + 1 fr value)
+ * so column alignment carries through every nesting level. */
+.tree-node {
+  margin: 0;
+}
+.tree-node__summary {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tree-node__summary::-webkit-details-marker {
+  display: none;
+}
+.tree-node__summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 10px;
+  margin-left: -14px;
+  margin-right: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform 0.12s;
+}
+.tree-node[open] > .tree-node__summary::before {
+  transform: rotate(90deg);
+}
+.tree-node__summary:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.tree-node__children {
+  margin-left: 16px;
+  padding-left: 4px;
+  border-left: 1px dashed var(--border);
+}
+
 /* Pretty-printed Debug output of the decoded frame body (kafka-protocol). */
 .proto-decoded {
   display: block;
