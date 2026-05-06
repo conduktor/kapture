@@ -5,6 +5,13 @@ import { composeAnd, equalityExpr, inequalityExpr, type PrimitiveLiteral } from 
 export interface FilterTarget {
   path: string;
   literal: PrimitiveLiteral;
+  /**
+   * When true the menu adds "Has value" / "No value" entries that filter
+   * by presence/absence of the path (truthy check). Useful for fields
+   * that may be missing entirely — typically `headers.<name>` and
+   * `envelope.key`.
+   */
+  supportsPresence?: boolean;
 }
 
 interface Props {
@@ -107,6 +114,30 @@ export function FilterMenu({
       >
         Filter <code>!=</code>
       </button>
+      {target.supportsPresence ? (
+        <>
+          <button
+            type="button"
+            className="filter-menu__item"
+            onClick={() => {
+              applySet(target.path);
+            }}
+            title="Match messages where this field is present (any value)"
+          >
+            Has value
+          </button>
+          <button
+            type="button"
+            className="filter-menu__item"
+            onClick={() => {
+              applySet(`!${target.path}`);
+            }}
+            title="Match messages where this field is absent"
+          >
+            No value
+          </button>
+        </>
+      ) : null}
       <div className="filter-menu__sep" />
       <button
         type="button"
@@ -126,6 +157,28 @@ export function FilterMenu({
       >
         AND <code>!=</code>
       </button>
+      {target.supportsPresence ? (
+        <>
+          <button
+            type="button"
+            className="filter-menu__item"
+            onClick={() => {
+              applyAnd(target.path);
+            }}
+          >
+            AND has value
+          </button>
+          <button
+            type="button"
+            className="filter-menu__item"
+            onClick={() => {
+              applyAnd(`!${target.path}`);
+            }}
+          >
+            AND no value
+          </button>
+        </>
+      ) : null}
     </div>,
     document.body,
   );

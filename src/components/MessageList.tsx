@@ -9,7 +9,6 @@ interface Props {
   messages: KafkaMessage[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onFollow: (message: KafkaMessage) => void;
   onOpenFilterMenu: OpenFilterMenu;
 }
 
@@ -17,7 +16,6 @@ interface RowProps {
   messages: KafkaMessage[];
   selectedId: string | null;
   onSelect: (id: string) => void;
-  onFollow: (message: KafkaMessage) => void;
   onOpenFilterMenu: OpenFilterMenu;
 }
 
@@ -27,12 +25,11 @@ export function MessageList({
   messages,
   selectedId,
   onSelect,
-  onFollow,
   onOpenFilterMenu,
 }: Props): JSX.Element {
   const rowProps = useMemo<RowProps>(
-    () => ({ messages, selectedId, onSelect, onFollow, onOpenFilterMenu }),
-    [messages, selectedId, onSelect, onFollow, onOpenFilterMenu],
+    () => ({ messages, selectedId, onSelect, onOpenFilterMenu }),
+    [messages, selectedId, onSelect, onOpenFilterMenu],
   );
 
   return (
@@ -74,7 +71,6 @@ function MessageRow({
   messages,
   selectedId,
   onSelect,
-  onFollow,
   onOpenFilterMenu,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const message = messages[index];
@@ -143,10 +139,7 @@ function MessageRow({
       onClick={() => {
         onSelect(message.id);
       }}
-      onDoubleClick={() => {
-        onFollow(message);
-      }}
-      title="Click to inspect — double-click to follow this key — hover a cell for filter options"
+      title="Click to inspect — hover a cell for filter options"
       aria-posinset={ariaAttributes["aria-posinset"]}
       aria-setsize={ariaAttributes["aria-setsize"]}
       role={ariaAttributes.role}
@@ -171,7 +164,11 @@ function MessageRow({
       ) : (
         filterableCell(
           "msglist__col--key",
-          { path: "envelope.key", literal: { kind: "string", value: message.key } },
+          {
+            path: "envelope.key",
+            literal: { kind: "string", value: message.key },
+            supportsPresence: true,
+          },
           message.key,
         )
       )}

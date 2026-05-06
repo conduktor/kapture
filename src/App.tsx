@@ -10,7 +10,6 @@ import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
-import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
 interface MenuState {
@@ -270,14 +269,6 @@ function App(): JSX.Element {
     [],
   );
 
-  const followKey = useCallback((message: KafkaMessage): void => {
-    // Empty-string keys are valid in Kafka and meaningfully filterable
-    // (envelope.key == "").
-    if (message.key !== null) {
-      setFilter(followKeyExpr(message.key));
-    }
-  }, []);
-
   // Always allow the user to escape the dialog. Real-world traps this
   // unblocks:
   //   1. Connect fails with "AlreadyCapturing" (zombie slot from a previous
@@ -343,7 +334,6 @@ function App(): JSX.Element {
             messages={messages}
             selectedId={selectedId}
             onSelect={setSelectedId}
-            onFollow={followKey}
             onOpenFilterMenu={openFilterMenu}
           />
           <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />

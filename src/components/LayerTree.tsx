@@ -60,7 +60,11 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           target={
             message.key === null
               ? null
-              : { path: "envelope.key", literal: { kind: "string", value: message.key } }
+              : {
+                  path: "envelope.key",
+                  literal: { kind: "string", value: message.key },
+                  supportsPresence: true,
+                }
           }
           onOpenFilterMenu={onOpenFilterMenu}
         />
@@ -140,6 +144,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
                   ? {
                       path: `headers.${header.key}`,
                       literal: { kind: "string", value: header.value },
+                      supportsPresence: true,
                     }
                   : null
               }
