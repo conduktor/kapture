@@ -405,6 +405,18 @@ pub async fn start_proxy(
     upstream: String,
     listen_port: u16,
 ) -> Result<ProxyStatus> {
+    start_proxy_impl(&app, &state, upstream, listen_port).await
+}
+
+/// Implementation shared between the Tauri command and the MCP
+/// `kapture_set_proxy_target` tool. The argument layering mirrors
+/// `start_capture_from_profile` in `mcp.rs`.
+pub async fn start_proxy_impl(
+    app: &AppHandle,
+    state: &AppState,
+    upstream: String,
+    listen_port: u16,
+) -> Result<ProxyStatus> {
     if let Some(handle) = state.take_capture() {
         handle.stop().await;
     }
@@ -445,7 +457,7 @@ pub async fn start_proxy(
     };
     let listen_addr = handle.local_addr().to_string();
     state.install_proxy(handle, correlator);
-    spawn_stats_emitter(&app);
+    spawn_stats_emitter(app);
     info!(listen = %listen_addr, upstream = %trimmed_upstream, "proxy started");
 
     Ok(ProxyStatus {

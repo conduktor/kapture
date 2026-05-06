@@ -35,6 +35,12 @@
 //!    (Metadata / Fetch / Heartbeat / …) as lightweight summaries
 //!  * `kafka_inspect_frame` — full `ProtoFrame` for one id (captured
 //!    bytes + decoded body via the `kafka-protocol` crate)
+//!  * `kapture_set_proxy_target` / `kapture_stop_proxy` /
+//!    `kapture_proxy_status` — start/stop the TCP proxy and observe
+//!    its listener fleet. `set_proxy_target` is gated behind
+//!    `mcp_connect_allowed` (network sockets ⇒ explicit consent);
+//!    `stop_proxy` and `proxy_status` are administrative and always
+//!    allowed.
 //!
 //! ### Resource surface (read-only views)
 //!
@@ -203,6 +209,25 @@ struct InspectFrameResponse {
 struct AckResponse {
     ok: bool,
     detail: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct SetProxyTargetParams {
+    /// Upstream Kafka bootstrap as `host:port`.
+    upstream: String,
+    /// Local port to listen on. Use 0 for an ephemeral port.
+    listen_port: u16,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct ProxyStatusResponse {
+    listening: bool,
+    listen_addr: Option<String>,
+    upstream: Option<String>,
+    active_connections: usize,
+    /// `((upstream_host, upstream_port), local_port)` mapping. Sorted
+    /// by `local_port` so the order is stable across calls.
+    broker_mappings: Vec<((String, u16), u16)>,
 }
 
 // Resource URIs. Kept as constants so the list_resources entries and the
@@ -476,6 +501,96 @@ impl KaptureMcp {
             })),
         }
     }
+
+    #[tool(
+        description = "Start the TCP proxy targeting `upstream` (host:port) on `listen_port` (0 for an ephemeral port). Stops any previous capture/proxy first. Requires the user to have armed MCP connect from the GUI — proxy mode opens listening sockets, so the same explicit-consent gate as kafka_connect_profile applies."
+    )]
+    async fn kapture_set_proxy_target(
+        &self,
+        Parameters(SetProxyTargetParams {
+            upstream,
+            listen_port,
+        }): Parameters<SetProxyTargetParams>,
+    ) -> Result<Json<ProxyStatusResponse>, ErrorData> {
+        {
+            let state = self.state()?;
+            if !state.mcp_connect_allowed() {
+                return Err(ErrorData::invalid_request(
+                    "MCP-initiated proxy is not allowed; arm MCP connect from the GUI first",
+                    None,
+                ));
+            }
+        }
+        // The Tauri State<'_, AppState> wrapper is only needed by the
+        // command-layer entry point; the shared impl takes &AppState
+        // directly so MCP can call it without faking a State.
+        let state_ref = self
+            .app_handle
+            .try_state::<AppState>()
+            .ok_or_else(|| ErrorData::internal_error("AppState not initialised", None))?;
+        crate::commands::start_proxy_impl(&self.app_handle, &state_ref, upstream, listen_port)
+            .await
+            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        // Read the freshly-installed proxy summary so the agent gets a
+        // proper status object (listen address etc.) on the same call.
+        Ok(Json(proxy_status_response(&state_ref)))
+    }
+
+    #[tool(
+        description = "Stop the active TCP proxy. Idempotent — succeeds when no proxy is running. Always allowed regardless of the MCP connect arm state (administrative)."
+    )]
+    async fn kapture_stop_proxy(
+        &self,
+        _: Parameters<EmptyParams>,
+    ) -> Result<Json<AckResponse>, ErrorData> {
+        let handle = {
+            let state = self.state()?;
+            state.take_proxy()
+        };
+        match handle {
+            Some(h) => {
+                h.stop().await;
+                Ok(Json(AckResponse {
+                    ok: true,
+                    detail: "proxy stopped".into(),
+                }))
+            }
+            None => Ok(Json(AckResponse {
+                ok: true,
+                detail: "no active proxy".into(),
+            })),
+        }
+    }
+
+    #[tool(
+        description = "Snapshot of the running TCP proxy: listen address, upstream, count of currently-active client→broker connection pumps, and the (upstream_host:port, local_port) broker map inferred from observed Metadata responses. Returns `listening: false` (and zeroed/empty fields) when no proxy is active. Always allowed (administrative)."
+    )]
+    fn kapture_proxy_status(
+        &self,
+        _: Parameters<EmptyParams>,
+    ) -> Result<Json<ProxyStatusResponse>, ErrorData> {
+        let state = self.state()?;
+        Ok(Json(proxy_status_response(&state)))
+    }
+}
+
+fn proxy_status_response(state: &AppState) -> ProxyStatusResponse {
+    state.proxy_summary().map_or(
+        ProxyStatusResponse {
+            listening: false,
+            listen_addr: None,
+            upstream: None,
+            active_connections: 0,
+            broker_mappings: Vec::new(),
+        },
+        |s| ProxyStatusResponse {
+            listening: true,
+            listen_addr: Some(s.listen_addr),
+            upstream: Some(s.upstream),
+            active_connections: s.active_connections,
+            broker_mappings: s.broker_mappings,
+        },
+    )
 }
 
 #[tool_handler]

@@ -587,4 +587,33 @@ mod tests {
 
         handle.stop().await;
     }
+
+    /// `summary()` exposes the bootstrap addr/upstream and observes a
+    /// freshly-started proxy as having one broker mapping (the
+    /// bootstrap) and zero active connection pumps.
+    #[tokio::test]
+    async fn proxy_handle_summary_reports_bootstrap_state() {
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        // Hold the upstream listener so its port is taken — the proxy
+        // doesn't connect until a client speaks, which we don't do here.
+        drop(tokio::spawn(async move {
+            let _ = upstream.accept().await;
+        }));
+
+        let correlator = Arc::new(ProtoCorrelator::new());
+        let cfg = ProxyConfig::new(upstream_addr.to_string(), 0);
+        let no_op_sink: RecordSink = Arc::new(|_msg| {});
+        let handle = ProxyHandle::start(cfg, correlator, no_op_sink)
+            .await
+            .unwrap();
+
+        let summary = handle.summary();
+        assert_eq!(summary.upstream, upstream_addr.to_string());
+        assert_eq!(summary.listen_addr, handle.local_addr().to_string());
+        assert_eq!(summary.active_connections, 0);
+        assert_eq!(summary.broker_mappings.len(), 1);
+
+        handle.stop().await;
+    }
 }
