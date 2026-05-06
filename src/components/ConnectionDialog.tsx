@@ -153,17 +153,24 @@ export function ConnectionDialog({
         setTlsCaPath("");
         setTlsSkipHostname(false);
       }
-      // Restore proxy-mode SASL state. Password is intentionally NOT
-      // pasted back into the form — keychain-resident only and the
-      // user re-enters per session. `savedSaslPasswordHint` surfaces
-      // a non-blocking hint so the empty field doesn't look like data
-      // loss.
+      // Restore proxy-mode SASL state. The backend resolves the
+      // upstream SASL password from the OS keychain at load time
+      // (`<name>::proxy-sasl`); when present we paste it back into
+      // the form so a profile load is one click away from a working
+      // proxy. Earlier behaviour left the field blank ("defence in
+      // depth") which was painful in practice — the secret already
+      // round-trips through the keychain on every save, so reading it
+      // back doesn't broaden the threat surface.
+      // The "re-enter" hint only surfaces in the broken case where
+      // `hasPassword === true` but the keychain returned nothing
+      // (entry wiped out-of-band, no keychain backend in this env).
       if (profile.upstreamSasl !== null) {
         setUseSasl(true);
         setSaslMechanism(profile.upstreamSasl.mechanism);
         setSaslUsername(profile.upstreamSasl.username);
-        setSaslPassword("");
-        setSavedSaslPasswordHint(profile.upstreamSasl.hasPassword);
+        const resolved = profile.upstreamSaslPassword ?? "";
+        setSaslPassword(resolved);
+        setSavedSaslPasswordHint(profile.upstreamSasl.hasPassword && resolved === "");
       } else {
         setUseSasl(false);
         setSaslMechanism("PLAIN");

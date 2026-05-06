@@ -591,6 +591,137 @@ mod tests {
         assert!(m.upstream_sasl.is_none());
     }
 
+    /// Round-trip a proxy-mode SASL password through save → load
+    /// using an in-memory credential store so CI never touches the OS
+    /// secret service. The upstream `keyring::mock` builds a *fresh*
+    /// `MockCredential` per `Entry::new` call (mocks "have no
+    /// persistence between sessions" — see keyring 3.6 mock.rs:188),
+    /// so it cannot back a save → load round-trip. We register our
+    /// own `CredentialBuilder` that persists to a process-wide
+    /// `HashMap<(service, user), secret>` instead.
+    ///
+    /// The default builder is a process-wide global — we install ours
+    /// once and rely on every other test in this module passing
+    /// `None` for secrets (so they never inspect the credential
+    /// contents and so don't care whose backend they hit). The
+    /// `keyring_delete` calls those tests do issue still work: the
+    /// backend just returns `NoEntry`.
+    #[test]
+    fn proxy_sasl_password_roundtrip_via_in_memory_keychain() {
+        install_in_memory_keychain();
+        let dir = TempDir::new().unwrap();
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let mut m = meta("kc-mock");
+        m.upstream_sasl = Some(UpstreamSaslMetadata {
+            mechanism: "SCRAM-SHA-512".to_owned(),
+            username: "alice".to_owned(),
+            // `save` overwrites this from whether a non-empty secret
+            // is supplied — the input value is irrelevant.
+            has_password: false,
+        });
+        let secret = "hunter2".to_owned();
+        let saved = store.save(m, None, None, Some(secret.clone())).unwrap();
+        assert!(saved.upstream_sasl.as_ref().unwrap().has_password);
+
+        let loaded = store.load("kc-mock").unwrap();
+        assert_eq!(
+            loaded.upstream_sasl_password.as_deref(),
+            Some(secret.as_str())
+        );
+        assert_eq!(
+            loaded.meta.upstream_sasl.as_ref().unwrap().username,
+            "alice"
+        );
+    }
+
+    /// In-memory `keyring` backend used by tests that need a real
+    /// save → load round-trip. Installed once per process, idempotent
+    /// across calls (the underlying `set_default_credential_builder`
+    /// just overwrites the slot).
+    fn install_in_memory_keychain() {
+        use keyring::credential::{
+            Credential, CredentialApi, CredentialBuilder, CredentialBuilderApi,
+        };
+        use keyring::Error as KrErr;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        use std::sync::OnceLock;
+
+        static STORE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
+        fn store() -> &'static Mutex<HashMap<(String, String), String>> {
+            STORE.get_or_init(|| Mutex::new(HashMap::new()))
+        }
+
+        #[derive(Debug)]
+        struct InMemoryCredential {
+            service: String,
+            user: String,
+        }
+        impl InMemoryCredential {
+            fn key(&self) -> (String, String) {
+                (self.service.clone(), self.user.clone())
+            }
+        }
+        impl CredentialApi for InMemoryCredential {
+            fn set_password(&self, password: &str) -> Result<(), KrErr> {
+                self.set_secret(password.as_bytes())
+            }
+            fn set_secret(&self, secret: &[u8]) -> Result<(), KrErr> {
+                let value = String::from_utf8(secret.to_vec())
+                    .map_err(|_| KrErr::Invalid("secret".into(), "non-utf8".into()))?;
+                store().lock().unwrap().insert(self.key(), value);
+                Ok(())
+            }
+            fn get_password(&self) -> Result<String, KrErr> {
+                store()
+                    .lock()
+                    .unwrap()
+                    .get(&self.key())
+                    .cloned()
+                    .ok_or(KrErr::NoEntry)
+            }
+            fn get_secret(&self) -> Result<Vec<u8>, KrErr> {
+                self.get_password().map(String::into_bytes)
+            }
+            fn delete_credential(&self) -> Result<(), KrErr> {
+                if store().lock().unwrap().remove(&self.key()).is_some() {
+                    Ok(())
+                } else {
+                    Err(KrErr::NoEntry)
+                }
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn debug_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                std::fmt::Debug::fmt(self, f)
+            }
+        }
+
+        struct InMemoryBuilder;
+        impl CredentialBuilderApi for InMemoryBuilder {
+            fn build(
+                &self,
+                _target: Option<&str>,
+                service: &str,
+                user: &str,
+            ) -> Result<Box<Credential>, KrErr> {
+                Ok(Box::new(InMemoryCredential {
+                    service: service.to_owned(),
+                    user: user.to_owned(),
+                }))
+            }
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+            fn persistence(&self) -> keyring::credential::CredentialPersistence {
+                keyring::credential::CredentialPersistence::ProcessOnly
+            }
+        }
+
+        keyring::set_default_credential_builder(Box::new(InMemoryBuilder) as Box<CredentialBuilder>);
+    }
+
     /// Saving a profile with proxy SASL+TLS metadata persists the
     /// fields (sans secrets) through the on-disk JSON file. We don't
     /// touch the OS keychain in CI, so `has_password` only flips
