@@ -1,7 +1,9 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
+  useState,
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
@@ -10,12 +12,9 @@ import {
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { ProtoDirection, ProtoFrame } from "../types";
 import {
-  EMPTY_PROTO_FILTER,
-  addPredicate,
   applyFilter,
   filterChips,
   isFilterEmpty,
-  removePredicate,
   type ProtoFilter,
   type ProtoFilterChip,
   type ProtoFilterKind,
@@ -26,8 +25,14 @@ interface Props {
   frames: ProtoFrame[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Parsed filter (derived from the top-bar text by the parent). */
   filter: ProtoFilter;
-  onFilterChange: (next: ProtoFilter) => void;
+  /** Append a predicate clause to the parent's filter text. */
+  onAddPredicate: (kind: ProtoFilterKind, value: number | string, mode: ProtoFilterMode) => void;
+  /** Remove a chip → drop the matching clause from the filter text. */
+  onRemoveChip: (chip: ProtoFilterChip) => void;
+  /** Clear the entire filter text. */
+  onClearFilter: () => void;
   /** Cache lookup for decodedContains predicates (frame id → decoded body). */
   decodedFor?: (id: string) => string | undefined;
 }
@@ -62,7 +67,9 @@ export function ProtoList({
   selectedId,
   onSelect,
   filter,
-  onFilterChange,
+  onAddPredicate: onAddPredicateRaw,
+  onRemoveChip,
+  onClearFilter,
   decodedFor,
 }: Props): JSX.Element {
   // Apply the filter. Stable identity for `frames` ref keeps reconciliation
@@ -129,17 +136,15 @@ export function ProtoList({
     return null;
   }, [visibleFrames, selectedId]);
 
-  // TS can't narrow the `value` conditional inside AddPredicateFn back
-  // to the matching `KindMap[K]` slot — addPredicate is generic so we
-  // forward the (kind, value) pair through an `any`-cast. The public
-  // AddPredicateFn signature still enforces the correct value-per-kind
-  // at every call site outside this component.
+  // The parent owns the filter text; the popover just forwards the
+  // (kind, value, mode) triple. AddPredicateFn's per-kind value type
+  // is enforced at the call site (each FilterableCell knows its kind),
+  // so the cast at this hand-off is safe.
   const onAddPredicate = useCallback<AddPredicateFn>(
     (kind, value, mode) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      onFilterChange(addPredicate(filter, kind as any, value as any, mode));
+      onAddPredicateRaw(kind, value, mode);
     },
-    [filter, onFilterChange],
+    [onAddPredicateRaw],
   );
 
   const rowProps = useMemo<RowProps>(
@@ -185,12 +190,8 @@ export function ProtoList({
           chips={chips}
           shown={shown}
           total={total}
-          onRemove={(chip) => {
-            onFilterChange(removePredicate(filter, chip.kind, chip.value, chip.mode));
-          }}
-          onClear={() => {
-            onFilterChange(EMPTY_PROTO_FILTER);
-          }}
+          onRemove={onRemoveChip}
+          onClear={onClearFilter}
         />
       ) : null}
       <div className="msglist__head">
@@ -291,9 +292,10 @@ interface FilterableCellProps {
 }
 
 /**
- * Cell wrapper that reveals a tiny ⊕/⊖ filter button on hover. Click
- * adds an include predicate; alt/option-click adds an exclude. Stops
- * row-click propagation so filtering doesn't also select the row.
+ * Cell wrapper that reveals a tiny ⊕ filter button on hover. Click
+ * opens a small popover with explicit "Filter ≡" (include) and
+ * "Filter ≢" (exclude) options. Stops row-click propagation on the
+ * button so filtering doesn't also select the row.
  */
 function FilterableCell({
   className,
@@ -303,31 +305,103 @@ function FilterableCell({
   value,
   onAdd,
 }: FilterableCellProps): JSX.Element {
-  // Clicks on the cell body itself bubble up to the row so row
-  // selection still works. Only the ⊕ icon stops propagation —
-  // adding a filter MUST NOT also flip the selected frame.
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLSpanElement | null>(null);
+
+  // Close the popover when clicking outside or pressing Escape.
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+    const onDocClick = (event: globalThis.MouseEvent): void => {
+      if (
+        wrapperRef.current &&
+        event.target instanceof Node &&
+        !wrapperRef.current.contains(event.target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onKey = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   const onIconClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    const mode: ProtoFilterMode = event.altKey ? "exclude" : "include";
-    onAdd(kind as never, value as never, mode);
+    setOpen((v) => !v);
   };
+  const choose =
+    (mode: ProtoFilterMode) =>
+    (event: MouseEvent<HTMLButtonElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      onAdd(kind as never, value as never, mode);
+      setOpen(false);
+    };
+
+  const renderedValue = typeof value === "string" ? `"${value}"` : String(value);
+
   return (
     <span
-      className={`${className} proto-cell--filterable`}
-      title={title ?? "Click ⊕ to filter • Alt-click to exclude"}
+      ref={wrapperRef}
+      className={`${className} proto-cell--filterable${open ? " is-open" : ""}`}
+      title={title ?? "Click ⊕ to filter on this value"}
     >
       <span className="proto-cell__content">{children}</span>
       <button
         type="button"
         className="proto-cell__filter"
         tabIndex={-1}
+        aria-haspopup="menu"
+        aria-expanded={open}
         aria-label="Filter on this value"
-        title="Click: filter ⊕ this value • Alt/Option-click: exclude ⊖"
+        title="Filter on this value"
         onClick={onIconClick}
       >
         ⊕
       </button>
+      {open ? (
+        <span
+          className="proto-cell__popover"
+          role="menu"
+          onClick={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          <span className="proto-cell__popover-header">
+            <span className="proto-cell__popover-kind">{kind}</span>
+            <span className="proto-cell__popover-value">{renderedValue}</span>
+          </span>
+          <button
+            type="button"
+            role="menuitem"
+            className="proto-cell__popover-item proto-cell__popover-item--include"
+            onClick={choose("include")}
+          >
+            <span className="proto-cell__popover-icon">≡</span>
+            <span>Filter to this value</span>
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            className="proto-cell__popover-item proto-cell__popover-item--exclude"
+            onClick={choose("exclude")}
+          >
+            <span className="proto-cell__popover-icon">≢</span>
+            <span>Exclude this value</span>
+          </button>
+        </span>
+      ) : null}
     </span>
   );
 }

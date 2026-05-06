@@ -269,3 +269,393 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Mini DSL: parse / serialize / append
+//
+// Grammar (AND-only, no OR):
+//   expression := clause ('&&' clause)*
+//   clause     := <kind> <op> <value>
+//   kind       := 'apiName' | 'direction' | 'conn' | 'corrId' | 'decoded'
+//   op         := '==' | '!='
+//   value      := <quoted-string> | <bareword> | <integer>
+//
+// User-facing kind tokens differ from the AST keys:
+//   conn    ↔ connectionId
+//   decoded ↔ decodedContains
+//
+// Whitespace flexible. Quoted strings via "..." with `\"` and `\\` escapes.
+// ---------------------------------------------------------------------------
+
+type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded";
+
+const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
+  apiName: "apiName",
+  direction: "direction",
+  conn: "connectionId",
+  corrId: "corrId",
+  decoded: "decodedContains",
+};
+
+const AST_TO_DSL: Record<ProtoFilterKind, DslKind> = {
+  apiName: "apiName",
+  direction: "direction",
+  connectionId: "conn",
+  corrId: "corrId",
+  decodedContains: "decoded",
+};
+
+const KIND_ORDER: ProtoFilterKind[] = [
+  "apiName",
+  "direction",
+  "connectionId",
+  "corrId",
+  "decodedContains",
+];
+
+interface ParsedClause {
+  kind: ProtoFilterKind;
+  mode: ProtoFilterMode;
+  // Stored using the AST value type (string for apiName/direction/decoded,
+  // number for conn/corrId).
+  value: string | number;
+}
+
+/**
+ * Parse a filter expression into a `ProtoFilter`.
+ *
+ * On parse error: returns `EMPTY_PROTO_FILTER` plus a string explaining
+ * where the parse failed (with column position). Choosing "empty filter
+ * on error" over "keep last good filter" is deliberate — broken text
+ * means "no filter, all rows visible" which is the least surprising
+ * outcome for a typo mid-edit.
+ *
+ * Empty / whitespace-only input → empty filter, no error.
+ */
+export function parseExpression(text: string): { filter: ProtoFilter; error: string | null } {
+  const trimmed = text.trim();
+  if (trimmed === "") {
+    return { filter: EMPTY_PROTO_FILTER, error: null };
+  }
+  try {
+    const clauses = parseClauses(text);
+    let f: ProtoFilter = EMPTY_PROTO_FILTER;
+    for (const c of clauses) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      f = addPredicate(f, c.kind as any, c.value as any, c.mode);
+    }
+    return { filter: f, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { filter: EMPTY_PROTO_FILTER, error: message };
+  }
+}
+
+/**
+ * Serialize a `ProtoFilter` to its canonical expression form. Stable,
+ * lexicographically/numerically sorted within each kind, kind order
+ * fixed by `KIND_ORDER`. Includes come before excludes within a kind.
+ *
+ * Round-trip: `parseExpression(serializeFilter(f)).filter` ≡ f
+ * (for any well-formed f).
+ */
+export function serializeFilter(f: ProtoFilter): string {
+  const parts: string[] = [];
+  for (const astKind of KIND_ORDER) {
+    const slot = slotForReadOnly(f, astKind);
+    const dsl = AST_TO_DSL[astKind];
+    const sortedInclude = sortValues(astKind, slot.include);
+    const sortedExclude = sortValues(astKind, slot.exclude);
+    for (const v of sortedInclude) {
+      parts.push(`${dsl} == ${formatValue(astKind, v)}`);
+    }
+    for (const v of sortedExclude) {
+      parts.push(`${dsl} != ${formatValue(astKind, v)}`);
+    }
+  }
+  return parts.join(" && ");
+}
+
+/**
+ * Append a clause to an existing expression text. Implementation: parse
+ * → addPredicate → serialize. This guarantees the round-trip property
+ * (the text is always in canonical form after an append) and avoids
+ * fragile string splicing that would mishandle quoted values.
+ *
+ * If `currentText` doesn't parse, the new text starts fresh from the
+ * single appended clause — losing the broken text is the right call;
+ * the user is asking us to add a known-good predicate.
+ */
+export function appendClause<K extends ProtoFilterKind>(
+  currentText: string,
+  kind: K,
+  value: KindMap[K],
+  mode: ProtoFilterMode,
+): string {
+  const parsed = parseExpression(currentText);
+  const base = parsed.error === null ? parsed.filter : EMPTY_PROTO_FILTER;
+  const next = addPredicate(base, kind, value, mode);
+  return serializeFilter(next);
+}
+
+// --- internals --------------------------------------------------------------
+
+function slotForReadOnly(
+  f: ProtoFilter,
+  kind: ProtoFilterKind,
+): { include: (string | number)[]; exclude: (string | number)[] } {
+  switch (kind) {
+    case "apiName":
+      return f.apiNames;
+    case "direction":
+      return f.directions;
+    case "connectionId":
+      return f.connectionIds;
+    case "corrId":
+      return f.corrIds;
+    case "decodedContains":
+      return f.decodedContains;
+  }
+}
+
+function sortValues(
+  kind: ProtoFilterKind,
+  values: readonly (string | number)[],
+): (string | number)[] {
+  const copy = values.slice();
+  if (kind === "connectionId" || kind === "corrId") {
+    copy.sort((a, b) => (a as number) - (b as number));
+  } else {
+    copy.sort((a, b) => String(a).localeCompare(String(b)));
+  }
+  return copy;
+}
+
+function formatValue(kind: ProtoFilterKind, value: string | number): string {
+  if (kind === "connectionId" || kind === "corrId") {
+    return String(value);
+  }
+  if (kind === "direction") {
+    // Bareword form for direction — matches what the popover would emit.
+    return String(value);
+  }
+  // apiName, decodedContains: always quoted.
+  return quoteString(String(value));
+}
+
+function quoteString(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+// --- parser -----------------------------------------------------------------
+
+function parseClauses(text: string): ParsedClause[] {
+  const tokens = tokenize(text);
+  const clauses: ParsedClause[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const kindTok = tokens[i];
+    if (kindTok?.type !== "ident") {
+      throw new Error(parseErrAt(text, kindTok?.pos ?? text.length, "expected filter kind"));
+    }
+    const dslKind = kindTok.text as DslKind;
+    if (!(dslKind in DSL_TO_AST)) {
+      throw new Error(
+        parseErrAt(
+          text,
+          kindTok.pos,
+          `unknown filter kind "${kindTok.text}" (expected apiName/direction/conn/corrId/decoded)`,
+        ),
+      );
+    }
+    const astKind = DSL_TO_AST[dslKind];
+    i += 1;
+
+    const opTok = tokens[i];
+    if (opTok?.type !== "op") {
+      throw new Error(parseErrAt(text, opTok?.pos ?? text.length, "expected '==' or '!='"));
+    }
+    const mode: ProtoFilterMode = opTok.text === "==" ? "include" : "exclude";
+    i += 1;
+
+    const valTok = tokens[i];
+    if (!valTok || (valTok.type !== "string" && valTok.type !== "ident" && valTok.type !== "int")) {
+      throw new Error(parseErrAt(text, valTok?.pos ?? text.length, "expected a value"));
+    }
+    const value = coerceValue(astKind, valTok, text);
+    i += 1;
+    clauses.push({ kind: astKind, mode, value });
+
+    if (i < tokens.length) {
+      const sep = tokens[i];
+      if (sep?.type !== "and") {
+        throw new Error(parseErrAt(text, sep?.pos ?? text.length, "expected '&&'"));
+      }
+      i += 1;
+      // Trailing '&&' with nothing after → error.
+      if (i >= tokens.length) {
+        throw new Error(parseErrAt(text, sep.pos + 2, "expected another clause after '&&'"));
+      }
+    }
+  }
+  return clauses;
+}
+
+function coerceValue(kind: ProtoFilterKind, tok: Token, text: string): string | number {
+  if (kind === "connectionId" || kind === "corrId") {
+    if (tok.type !== "int") {
+      throw new Error(parseErrAt(text, tok.pos, `${AST_TO_DSL[kind]} requires an integer value`));
+    }
+    return tok.value as number;
+  }
+  if (kind === "direction") {
+    let v: string;
+    if (tok.type === "ident") {
+      v = tok.text;
+    } else if (tok.type === "string") {
+      v = tok.value as string;
+    } else {
+      throw new Error(parseErrAt(text, tok.pos, "direction requires 'send' or 'recv'"));
+    }
+    if (v !== "send" && v !== "recv") {
+      throw new Error(parseErrAt(text, tok.pos, `direction must be 'send' or 'recv', got "${v}"`));
+    }
+    return v;
+  }
+  // apiName, decodedContains — string only.
+  if (tok.type === "string") {
+    return tok.value as string;
+  }
+  throw new Error(parseErrAt(text, tok.pos, `${AST_TO_DSL[kind]} requires a quoted string value`));
+}
+
+function parseErrAt(_text: string, pos: number, msg: string): string {
+  return `parse error at col ${String(pos + 1)}: ${msg}`;
+}
+
+// --- tokenizer --------------------------------------------------------------
+
+interface Token {
+  type: "ident" | "op" | "and" | "string" | "int";
+  text: string;
+  pos: number;
+  value?: string | number;
+}
+
+function tokenize(text: string): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === undefined) {
+      break;
+    }
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      i += 1;
+      continue;
+    }
+    // && separator
+    if (ch === "&" && text[i + 1] === "&") {
+      tokens.push({ type: "and", text: "&&", pos: i });
+      i += 2;
+      continue;
+    }
+    // == / != operators
+    if ((ch === "=" || ch === "!") && text[i + 1] === "=") {
+      tokens.push({ type: "op", text: ch + "=", pos: i });
+      i += 2;
+      continue;
+    }
+    // Quoted string
+    if (ch === '"') {
+      const start = i;
+      i += 1;
+      let value = "";
+      let closed = false;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === undefined) {
+          break;
+        }
+        if (c === "\\" && i + 1 < text.length) {
+          const esc = text[i + 1];
+          if (esc === '"' || esc === "\\") {
+            value += esc;
+            i += 2;
+            continue;
+          }
+          // Unknown escape: take the next char verbatim.
+          value += esc ?? "";
+          i += 2;
+          continue;
+        }
+        if (c === '"') {
+          closed = true;
+          i += 1;
+          break;
+        }
+        value += c;
+        i += 1;
+      }
+      if (!closed) {
+        throw new Error(parseErrAt(text, start, "unterminated string literal"));
+      }
+      tokens.push({ type: "string", text: text.slice(start, i), pos: start, value });
+      continue;
+    }
+    // Integer (with optional leading '-')
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      const start = i;
+      if (ch === "-") {
+        i += 1;
+      }
+      const digitStart = i;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === undefined) {
+          break;
+        }
+        if (c >= "0" && c <= "9") {
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      if (i === digitStart) {
+        // Lone '-' with no digits after.
+        throw new Error(parseErrAt(text, start, "expected digits after '-'"));
+      }
+      const slice = text.slice(start, i);
+      const n = Number.parseInt(slice, 10);
+      if (!Number.isFinite(n)) {
+        throw new Error(parseErrAt(text, start, `invalid integer "${slice}"`));
+      }
+      tokens.push({ type: "int", text: slice, pos: start, value: n });
+      continue;
+    }
+    // Bareword: [A-Za-z_][A-Za-z0-9_]*
+    if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_") {
+      const start = i;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === undefined) {
+          break;
+        }
+        if (
+          (c >= "a" && c <= "z") ||
+          (c >= "A" && c <= "Z") ||
+          (c >= "0" && c <= "9") ||
+          c === "_"
+        ) {
+          i += 1;
+          continue;
+        }
+        break;
+      }
+      tokens.push({ type: "ident", text: text.slice(start, i), pos: start });
+      continue;
+    }
+    throw new Error(parseErrAt(text, i, `unexpected character "${ch}"`));
+  }
+  return tokens;
+}

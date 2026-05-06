@@ -14,9 +14,12 @@ import { ProtoList } from "./components/ProtoList";
 import { ProtoDetail } from "./components/ProtoDetail";
 import { Splitter } from "./components/Splitter";
 import {
-  EMPTY_PROTO_FILTER,
-  addPredicate as addProtoPredicate,
-  type ProtoFilter,
+  appendClause as appendProtoClause,
+  parseExpression as parseProtoExpression,
+  removePredicate as removeProtoPredicate,
+  serializeFilter as serializeProtoFilter,
+  type ProtoFilterChip,
+  type ProtoFilterKind,
   type ProtoFilterMode,
 } from "./lib/protoFilter";
 import type {
@@ -72,11 +75,13 @@ function App(): JSX.Element {
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
-  // Chip-based filter for the protocol tab. Built from hover ⊕/⊖
-  // affordances on list cells and decoded leaf values. Kept separate
+  // Top-textbox-driven filter for the protocol tab. The textbox is
+  // the single source of truth: typing → re-parses → ProtoFilter →
+  // applied to rows. The hover ⊕ popover and chip-bar removal both
+  // mutate this text via parse/serialize round-trips. Kept separate
   // from the Wireshark-style DSL filter applied to messages — proto
   // frames don't go through the message DSL.
-  const [protoFilter, setProtoFilter] = useState<ProtoFilter>(EMPTY_PROTO_FILTER);
+  const [protoFilterText, setProtoFilterText] = useState("");
   // Opportunistic LRU of fetched decoded bodies keyed by frame id.
   // Used by the decodedContains predicate; frames not in the cache
   // bypass the predicate (over-include rather than over-exclude).
@@ -402,30 +407,75 @@ function App(): JSX.Element {
     ? { upstream: connection.upstream ?? DEFAULT_UPSTREAM }
     : undefined;
 
+  // Parse the protocol-tab text on every keystroke. Pure client-side,
+  // cheap (≤ a few clauses), so no debounce. On parse error we surface
+  // EMPTY_PROTO_FILTER (= no filtering, all rows visible) — the least
+  // surprising outcome for a typo mid-edit. The error message renders
+  // inline near the textbox.
+  const protoParsed = useMemo(() => parseProtoExpression(protoFilterText), [protoFilterText]);
+  const protoFilter = protoParsed.filter;
+  const protoFilterError = protoParsed.error;
+
   // Filter bar wiring — Messages tab uses the Wireshark-style DSL
-  // (validated server-side); Protocol tab disables the top input and
-  // exposes filters via in-row hover ⊕/⊖ chips instead. The chip bar
-  // lives inside ProtoList.
-  const filterValue = tab === "messages" ? filter : "";
+  // (validated server-side); Protocol tab uses the local DSL parsed
+  // from the same input box.
+  const filterValue = tab === "messages" ? filter : protoFilterText;
   const filterPlaceholder =
     tab === "messages"
       ? 'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
-      : "Hover any cell or decoded field and click ⊕ to filter";
+      : 'apiName == "Fetch" && conn != 42 && corrId == 7';
   const onFilterChange = (next: string): void => {
     if (tab === "messages") {
       setFilter(next);
+    } else {
+      setProtoFilterText(next);
     }
-    // Protocol tab: top filter input is read-only / informational. The
-    // chip-based filter is driven by hover ⊕/⊖ buttons.
   };
+  const topFilterError = tab === "messages" ? filterError : protoFilterError;
 
   const decodedFor = useCallback(
     (id: string): string | undefined => decodedCacheRef.current.get(id),
     [],
   );
 
+  // Hover popover from the decoded leaf appends a `decoded == "..."`
+  // (or `!=`) clause to the textbox. The chip bar will reflect it via
+  // the parser on the next render.
   const onAddDecodedFilter = useCallback((substring: string, mode: ProtoFilterMode): void => {
-    setProtoFilter((prev) => addProtoPredicate(prev, "decodedContains", substring, mode));
+    setProtoFilterText((prev) => appendProtoClause(prev, "decodedContains", substring, mode));
+  }, []);
+
+  // Hover popover from a list cell appends the matching clause.
+  const onAddProtoPredicate = useCallback(
+    (kind: ProtoFilterKind, value: number | string, mode: ProtoFilterMode): void => {
+      setProtoFilterText((prev) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        appendProtoClause(prev, kind as any, value as any, mode),
+      );
+    },
+    [],
+  );
+
+  // Chip removal: parse current text → drop the predicate → serialize
+  // back. Keeps the canonical form intact and means the textbox always
+  // mirrors the chips exactly. The chip carries `(kind, value)` with
+  // the value already typed against its kind (KindMap[K]) — the cast
+  // re-aligns the call back into the generic on a per-chip basis.
+  const onRemoveProtoChip = useCallback((chip: ProtoFilterChip): void => {
+    setProtoFilterText((prev) => {
+      const parsed = parseProtoExpression(prev);
+      const next = removeProtoPredicate(
+        parsed.filter,
+        chip.kind,
+        chip.value as string & number,
+        chip.mode,
+      );
+      return serializeProtoFilter(next);
+    });
+  }, []);
+
+  const onClearProtoFilter = useCallback((): void => {
+    setProtoFilterText("");
   }, []);
 
   // Backlink from a captured Message → its originating Fetch frame.
@@ -467,7 +517,7 @@ function App(): JSX.Element {
       <TopBar
         filter={filterValue}
         onFilterChange={onFilterChange}
-        filterError={tab === "messages" ? filterError : null}
+        filterError={topFilterError}
         filterPlaceholder={filterPlaceholder}
         capturing={connection.status === "connected"}
         onToggleCapture={() => {
@@ -549,7 +599,9 @@ function App(): JSX.Element {
                 selectedId={selectedFrameId}
                 onSelect={setSelectedFrameId}
                 filter={protoFilter}
-                onFilterChange={setProtoFilter}
+                onAddPredicate={onAddProtoPredicate}
+                onRemoveChip={onRemoveProtoChip}
+                onClearFilter={onClearProtoFilter}
                 decodedFor={decodedFor}
               />
               <Splitter

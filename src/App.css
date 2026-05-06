@@ -391,13 +391,95 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
     border-color 0.12s;
 }
 .proto-cell--filterable:hover .proto-cell__filter,
-.proto-cell__filter:focus-visible {
+.proto-cell__filter:focus-visible,
+.proto-cell--filterable.is-open .proto-cell__filter {
   visibility: visible;
+}
+.proto-cell--filterable.is-open .proto-cell__filter {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 .proto-cell__filter:hover {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+/* Filter popover anchored under the ⊕ button. Two-row menu with an
+ * "Include" / "Exclude" pair plus a header showing the kind+value
+ * being filtered, so the action is unambiguous before clicking. */
+.proto-cell__popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  font-size: 12px;
+}
+.proto-cell__popover-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.proto-cell__popover-kind {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.proto-cell__popover-value {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+.proto-cell__popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  transition: background 0.12s;
+}
+.proto-cell__popover-item:first-of-type {
+  border-top: 0;
+}
+.proto-cell__popover-item:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+.proto-cell__popover-icon {
+  width: 18px;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.proto-cell__popover-item--include:hover .proto-cell__popover-icon {
+  color: var(--accent);
+}
+.proto-cell__popover-item--exclude:hover .proto-cell__popover-icon {
+  color: var(--danger);
 }
 
 /* Decoded-tree leaf value variant: same affordance, but the surrounding
