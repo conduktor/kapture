@@ -8,6 +8,7 @@ import { LayerTree } from "./components/LayerTree";
 import { HexDump } from "./components/HexDump";
 import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
@@ -256,6 +257,7 @@ function App(): JSX.Element {
 
   return (
     <div className="app">
+      <UpdateBanner />
       <TopBar
         filter={filter}
         onFilterChange={setFilter}

@@ -51,6 +51,43 @@ body,
   color: var(--text-muted);
 }
 
+/* ---------- UpdateBanner ---------- */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+}
+.update-banner__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.update-banner__text {
+  flex: 1;
+  min-width: 0;
+}
+.update-banner__notes {
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+.update-banner__actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 /* ---------- TopBar ---------- */
 .topbar {
   display: grid;

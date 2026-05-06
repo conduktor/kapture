@@ -31,6 +31,16 @@ pub fn run() {
 
     let result = tauri::Builder::default()
         .setup(|app| {
+            // Auto-update on desktop. Mobile platforms ship through their
+            // store and don't need this. tauri-plugin-process exposes
+            // `relaunch()` to the renderer so the UI can apply updates.
+            #[cfg(desktop)]
+            {
+                app.handle()
+                    .plugin(tauri_plugin_updater::Builder::new().build())?;
+                app.handle().plugin(tauri_plugin_process::init())?;
+            }
+
             // Resolve the per-platform profiles directory through Tauri,
             // falling back to a process-local directory if Tauri can't
             // tell us (e.g., during certain test harnesses).

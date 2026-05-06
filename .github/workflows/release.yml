@@ -1,0 +1,215 @@
+name: Release
+
+# Triggered by pushing a tag like `v0.2.0`. Builds the Tauri app, relocates
+# Homebrew + vendored dylibs into the .app/Frameworks bundle, signs the
+# updater artifact, and publishes everything to a GitHub Release alongside
+# `latest.json` (the manifest the in-app updater fetches).
+#
+# Secrets required (set in repo settings):
+#   TAURI_SIGNING_PRIVATE_KEY            — Tauri updater signing private key
+#                                          (`pnpm tauri signer generate`)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD   — passphrase for the private key
+#
+# Secrets optional (enable real macOS distribution):
+#   APPLE_DEVELOPER_ID_APPLICATION       — codesign identity, e.g.
+#                                          "Developer ID Application: Foo (TEAMID)"
+#   APPLE_ID, APPLE_APP_PASSWORD, APPLE_TEAM_ID — for `notarytool submit`
+#
+# Public key lives in src-tauri/tauri.conf.json under plugins.updater.pubkey.
+#
+# Action versions are pinned to major tags. We deliberately do NOT pin to
+# commit SHAs yet because the project is pre-1.0 and Dependabot (.github/
+# dependabot.yml) tracks updates and auto-PRs them. Switch to SHA pinning
+# before going OSS-public if the supply-chain bar warrants it.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos:
+    name: macOS (aarch64)
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Read version from tag
+        id: meta
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package versions
+        # Codex finding [15]: a tag of v0.2.0 must not advertise an artifact
+        # whose package.json / Cargo.toml / tauri.conf.json says 0.1.0.
+        # We fail early so the release never publishes a misleading version.
+        run: |
+          set -euo pipefail
+          EXPECTED="${{ steps.meta.outputs.version }}"
+          PKG_VER="$(jq -r '.version' package.json)"
+          CONF_VER="$(jq -r '.version' src-tauri/tauri.conf.json)"
+          CARGO_VER="$(grep -m1 '^version *=' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          for pair in "package.json:${PKG_VER}" "tauri.conf.json:${CONF_VER}" "Cargo.toml:${CARGO_VER}"; do
+            file="${pair%%:*}"; got="${pair##*:}"
+            if [[ "${got}" != "${EXPECTED}" ]]; then
+              echo "ERROR: ${file} version ${got} does not match tag ${EXPECTED}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Verify updater pubkey is configured
+        # Codex finding [1]: prevent shipping a release whose tauri.conf.json
+        # still has the placeholder pubkey. The updater would silently fail
+        # for every user.
+        run: |
+          set -euo pipefail
+          PUB="$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)"
+          if [[ -z "${PUB}" || "${PUB}" == "null" || "${PUB}" == REPLACE_WITH_* ]]; then
+            echo "ERROR: tauri.conf.json plugins.updater.pubkey is not set." >&2
+            echo "Generate with 'pnpm tauri signer generate' and commit the public key." >&2
+            exit 1
+          fi
+          if [[ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]]; then
+            echo "ERROR: TAURI_SIGNING_PRIVATE_KEY secret is not set." >&2
+            exit 1
+          fi
+
+      - name: Install Node + pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust toolchain (pinned)
+        # Pin to a specific stable so a Rust release doesn't silently
+        # change codegen between v0.X and v0.X+1 of Kapture. Bump
+        # deliberately when MSRV / dependencies require it.
+        uses: dtolnay/rust-toolchain@1.86.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install Homebrew deps
+        # The runner ships current openssl@3 / zstd / cmake. We don't pin
+        # versions because the relocation step bundles whichever the runner
+        # gives us; the resulting .app links them at @rpath. Variability is
+        # acceptable as long as the bundled dylib is what the user runs.
+        # If reproducibility ever matters, switch to a Brewfile.lock.
+        run: brew install openssl@3 zstd cmake
+
+      - name: pnpm install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build forked librdkafka
+        run: pnpm librdkafka:build
+
+      - name: Tauri build (release, no updater artifact yet)
+        env:
+          # We sign manually after relocation; don't let Tauri sign the
+          # un-relocated .app.
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: pnpm tauri build --bundles app
+
+      - name: Relocate dylibs into .app/Frameworks
+        # The script itself fails (set -e) if codesign or install_name_tool
+        # fails. It also rejects any leftover non-system absolute path.
+        env:
+          # Real Developer ID Application identity if configured. Otherwise
+          # the script falls back to ad-hoc and emits a WARN. Production
+          # releases must set this secret.
+          CODESIGN_ID: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION || '-' }}
+        run: |
+          chmod +x tools/relocate-macos-dylibs.sh
+          tools/relocate-macos-dylibs.sh
+
+      - name: Notarize (Apple)
+        # Skipped if the Apple credentials are not provided. Releases
+        # without notarization are still installable but Gatekeeper will
+        # show a warning to the user. Codex finding [12].
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP_PATH="src-tauri/target/release/bundle/macos/Kapture.app"
+          ZIP="${APP_PATH%.app}-notarize.zip"
+          /usr/bin/ditto -c -k --keepParent "${APP_PATH}" "${ZIP}"
+          xcrun notarytool submit "${ZIP}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          xcrun stapler staple "${APP_PATH}"
+          rm -f "${ZIP}"
+
+      - name: Repackage and sign updater artifact
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BUNDLE_DIR="src-tauri/target/release/bundle/macos"
+          ARTIFACT="${BUNDLE_DIR}/Kapture_${{ steps.meta.outputs.version }}_aarch64.app.tar.gz"
+
+          tar -czf "${ARTIFACT}" -C "${BUNDLE_DIR}" Kapture.app
+          # `tauri signer sign` reads the private key from env, writes
+          # <file>.sig next to the input.
+          pnpm tauri signer sign --no-confirm "${ARTIFACT}"
+          echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
+
+      - name: Generate latest.json manifest
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.meta.outputs.version }}"
+          ARTIFACT_BASENAME="$(basename "${ARTIFACT}")"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DOWNLOAD_BASE="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}"
+          NOTES_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.meta.outputs.tag }}"
+          # tauri-plugin-updater expects the .sig file's contents verbatim
+          # (it parses the minisign block including comments). jq's
+          # --rawfile preserves newlines correctly.
+          jq -n \
+            --arg version  "${VERSION}" \
+            --arg pub_date "${PUB_DATE}" \
+            --arg notes    "See release notes at ${NOTES_URL}" \
+            --rawfile sig  "${ARTIFACT}.sig" \
+            --arg url      "${DOWNLOAD_BASE}/${ARTIFACT_BASENAME}" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $sig, url: $url }
+              }
+            }' > latest.json
+          cat latest.json
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Kapture ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            ${{ env.ARTIFACT }}
+            ${{ env.ARTIFACT }}.sig
+            latest.json
