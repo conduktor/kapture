@@ -122,6 +122,21 @@ class Parser {
       if (next === "(") {
         return this.parseTupleBody(ident);
       }
+      if (next === '"' && (ident === "b" || ident === "r" || ident === "br" || ident === "c")) {
+        // Rust prefixed string literal: byte-string `b"…"`, raw
+        // `r"…"`, byte-raw `br"…"`, cstring `c"…"`. Parse the inner
+        // string body and reattach the prefix so the rendered value
+        // is unambiguous (`b"\0\x03…"` reads differently from a
+        // regular UTF-8 string). Use a primitive so the value
+        // renders verbatim — the render path adds quotes around
+        // `kind: string` values which would double-up here.
+        const inner = this.parseString();
+        const innerValue = inner.kind === "string" ? inner.value : "";
+        return {
+          kind: "primitive",
+          text: `${ident}"${escapeForDisplay(innerValue)}"`,
+        };
+      }
       // Bare identifier (None, true, false, NaN, …)
       return { kind: "primitive", text: ident };
     }
@@ -297,6 +312,38 @@ class Parser {
     }
     return { kind: "primitive", text: this.src.slice(start, this.pos) };
   }
+}
+
+/**
+ * Re-escape unprintable bytes back into Rust-style escapes for
+ * display. Used after parseString has folded `\0`, `\xNN`, `\n`, …
+ * into the actual byte values — for byte-string literals we want to
+ * show the original escaped form so the value stays single-line
+ * and unambiguous against control / non-printable bytes.
+ */
+function escapeForDisplay(raw: string): string {
+  let out = "";
+  for (let i = 0; i < raw.length; i += 1) {
+    const code = raw.charCodeAt(i);
+    if (code === 0x5c) {
+      // backslash
+      out += "\\\\";
+    } else if (code === 0x22) {
+      // quote
+      out += '\\"';
+    } else if (code === 0x0a) {
+      out += "\\n";
+    } else if (code === 0x0d) {
+      out += "\\r";
+    } else if (code === 0x09) {
+      out += "\\t";
+    } else if (code < 0x20 || code === 0x7f) {
+      out += `\\x${code.toString(16).padStart(2, "0")}`;
+    } else {
+      out += raw[i] ?? "";
+    }
+  }
+  return out;
 }
 
 /**
