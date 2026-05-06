@@ -28,7 +28,11 @@ use tracing::warn;
 
 use crate::correlator::ProtoCorrelator;
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
+use crate::proxy_handle::RecordSink;
 use crate::proxy_provisioner::BrokerProvisioner;
+use crate::proxy_records::{
+    extract_from_fetch_response, extract_from_produce_request, extracted_to_captured,
+};
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
 /// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
@@ -273,6 +277,7 @@ pub async fn run_pump_with_rewrite(
     correlator: Arc<ProtoCorrelator>,
     corr_map: Arc<CorrelationMap>,
     provisioner: Arc<dyn BrokerProvisioner>,
+    record_sink: RecordSink,
 ) -> io::Result<()> {
     let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
@@ -290,7 +295,15 @@ pub async fn run_pump_with_rewrite(
                     &bytes,
                     &corr_map,
                 )?;
+                let req_api_key = i16::try_from(event.api_key).unwrap_or(-1);
+                let req_api_version = i16::try_from(event.api_version).unwrap_or(-1);
                 correlator.record_event(&event);
+                if req_api_key == 0 {
+                    // Produce request — extract records before forwarding.
+                    for rec in extract_from_produce_request(req_api_version, &bytes) {
+                        record_sink(extracted_to_captured(rec, conn_id.0));
+                    }
+                }
                 upstream_framed.send(bytes).await?;
             }
             // Upstream → client (with rewrite)
@@ -307,6 +320,15 @@ pub async fn run_pump_with_rewrite(
                 let api_key = i16::try_from(event.api_key).unwrap_or(-1);
                 let api_version = i16::try_from(event.api_version).unwrap_or(-1);
                 correlator.record_event(&event);
+                if api_key == 1 {
+                    // Fetch response — extract records before forwarding.
+                    // `bytes` is the codec output (no wire size prefix);
+                    // it starts at the ResponseHeader, which is what
+                    // `extract_from_fetch_response` expects.
+                    for rec in extract_from_fetch_response(api_version, &bytes) {
+                        record_sink(extracted_to_captured(rec, conn_id.0));
+                    }
+                }
 
                 let forward = if api_key >= 0 {
                     match crate::proxy_rewrite::rewrite_response(
@@ -728,7 +750,8 @@ mod tests {
             upstream: upstream_addr.to_string(),
             listen_port: 0, // OS assigns
         };
-        let handle = ProxyHandle::start(cfg, Arc::clone(&correlator))
+        let no_op_sink: crate::proxy_handle::RecordSink = Arc::new(|_msg| {});
+        let handle = ProxyHandle::start(cfg, Arc::clone(&correlator), no_op_sink)
             .await
             .unwrap();
         let listen_addr = handle.local_addr();
@@ -785,6 +808,7 @@ mod tests {
         let broker_map_for_test = Arc::clone(&broker_map);
 
         let provisioner: Arc<dyn BrokerProvisioner> = broker_map;
+        let no_op_sink: crate::proxy_handle::RecordSink = Arc::new(|_msg| {});
         let pump_task = tokio::spawn(async move {
             let (client_sock, _) = client_listener.accept().await.unwrap();
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
@@ -795,6 +819,7 @@ mod tests {
                 correlator,
                 corr_map,
                 provisioner,
+                no_op_sink,
             )
             .await
             .unwrap();

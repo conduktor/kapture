@@ -22,7 +22,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use kapture_lib::example_api::{ProtoCorrelator, ProtoDirection, ProxyConfig, ProxyHandle};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use kapture_lib::example_api::{
+    CapturedMessage, ProtoCorrelator, ProtoDirection, ProxyConfig, ProxyHandle, RecordSink,
+};
 use tokio::time::{interval, MissedTickBehavior};
 use tracing_subscriber::EnvFilter;
 
@@ -83,7 +87,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let correlator = Arc::new(ProtoCorrelator::new());
     let cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
-    let handle = ProxyHandle::start(cfg, Arc::clone(&correlator)).await?;
+    let captured_count = Arc::new(AtomicUsize::new(0));
+    let captured_count_for_sink = Arc::clone(&captured_count);
+    let sink: RecordSink = Arc::new(move |msg: CapturedMessage| {
+        captured_count_for_sink.fetch_add(1, Ordering::Relaxed);
+        println!(
+            "RECORD topic={} partition={} offset={} key={:?} size={}",
+            msg.topic, msg.partition, msg.offset, msg.key, msg.size_bytes,
+        );
+    });
+    let handle = ProxyHandle::start(cfg, Arc::clone(&correlator), sink).await?;
     println!(
         "proxy_smoke: bootstrap listener bound at {}",
         handle.local_addr()
@@ -133,8 +146,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     handle.stop().await;
     let final_summaries = correlator.summaries(500);
     println!(
-        "proxy_smoke: stopped. total frames observed: {}",
-        final_summaries.len()
+        "proxy_smoke: stopped. total frames observed: {} | captured {} messages",
+        final_summaries.len(),
+        captured_count.load(Ordering::Relaxed),
     );
     Ok(())
 }

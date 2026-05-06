@@ -1,0 +1,548 @@
+//! Extract Kafka records out of Produce request bodies and Fetch
+//! response bodies tapped by the proxy pump, and turn them into
+//! `CapturedMessage` instances suitable for the Messages tab.
+//!
+//! Phase 1.5 of proxy mode: Wireshark-style capture only — never
+//! mutates the wire bytes, never blocks the pump on parse errors,
+//! and silently drops anything it can't decode (returns an empty
+//! `Vec`). The forwarded frame is always the original.
+//!
+//! The `frame` slices fed to these functions are the codec's per-frame
+//! output: i.e. the body bytes WITHOUT the 4-byte length prefix the
+//! length-delimited codec already stripped on the read side. The
+//! request/response header is still in the slice and gets decoded out
+//! before reaching the typed message body.
+
+use bytes::Bytes;
+use chrono::{TimeZone, Utc};
+use kafka_protocol::messages::{
+    ApiKey, FetchResponse, ProduceRequest, RequestHeader, ResponseHeader,
+};
+use kafka_protocol::protocol::{Decodable, HeaderVersion};
+use kafka_protocol::records::RecordBatchDecoder;
+use uuid::Uuid;
+
+use crate::decode::{decode_payload, render_hex};
+use crate::message::{CapturedMessage, KafkaHeader};
+
+/// One Kafka record extracted from a Produce request or a Fetch
+/// response. Topic + partition come from the surrounding wire envelope;
+/// `offset` / `timestamp_ms` come from the record batch itself when
+/// available (Fetch responses always have real offsets; Produce
+/// requests always have `-1` because the broker hasn't assigned one
+/// yet).
+#[derive(Debug, Clone)]
+pub struct ExtractedRecord {
+    pub topic: String,
+    pub partition: i32,
+    /// `-1` for Produce-side records — the broker assigns it.
+    pub offset: i64,
+    /// `0` if the record carries no timestamp (legacy / unset).
+    pub timestamp_ms: i64,
+    pub key: Option<Bytes>,
+    pub value: Option<Bytes>,
+    pub headers: Vec<(String, Option<Bytes>)>,
+}
+
+/// Decode the Produce request body sitting in `frame` and pull every
+/// record out. Returns an empty `Vec` on any parse / decode failure —
+/// we never want a malformed Produce frame to bubble up and kill the
+/// proxy pump.
+#[must_use]
+pub fn extract_from_produce_request(version: i16, frame: &[u8]) -> Vec<ExtractedRecord> {
+    extract_from_produce_request_inner(version, frame).unwrap_or_default()
+}
+
+fn extract_from_produce_request_inner(version: i16, frame: &[u8]) -> Option<Vec<ExtractedRecord>> {
+    let mut buf = Bytes::copy_from_slice(frame);
+    let header_version = ProduceRequest::header_version(version);
+    let _hdr = RequestHeader::decode(&mut buf, header_version).ok()?;
+    let req = ProduceRequest::decode(&mut buf, version).ok()?;
+
+    let mut out = Vec::new();
+    for topic in &req.topic_data {
+        let topic_name = topic.name.0.to_string();
+        for partition in &topic.partition_data {
+            let Some(records_bytes) = &partition.records else {
+                continue;
+            };
+            push_records(
+                &topic_name,
+                partition.index,
+                records_bytes.clone(),
+                &mut out,
+            );
+        }
+    }
+    Some(out)
+}
+
+/// Decode the Fetch response body sitting in `frame` and pull every
+/// record out. Same error semantics as `extract_from_produce_request`.
+#[must_use]
+pub fn extract_from_fetch_response(version: i16, frame: &[u8]) -> Vec<ExtractedRecord> {
+    extract_from_fetch_response_inner(version, frame).unwrap_or_default()
+}
+
+fn extract_from_fetch_response_inner(version: i16, frame: &[u8]) -> Option<Vec<ExtractedRecord>> {
+    let mut buf = Bytes::copy_from_slice(frame);
+    // Fetch v0-v11: header v0 (no tagged fields). v12+: header v1.
+    let header_version = ApiKey::Fetch.response_header_version(version);
+    let _hdr = ResponseHeader::decode(&mut buf, header_version).ok()?;
+    let resp = FetchResponse::decode(&mut buf, version).ok()?;
+
+    let mut out = Vec::new();
+    for topic in &resp.responses {
+        let topic_name = topic.topic.0.to_string();
+        for partition in &topic.partitions {
+            let Some(records_bytes) = &partition.records else {
+                continue;
+            };
+            if records_bytes.is_empty() {
+                continue;
+            }
+            push_records(
+                &topic_name,
+                partition.partition_index,
+                records_bytes.clone(),
+                &mut out,
+            );
+        }
+    }
+    Some(out)
+}
+
+/// Decode every `RecordBatch` in `records_bytes` and push the
+/// flattened `ExtractedRecord` list onto `out`. Decode failures here
+/// are swallowed — the wire bytes are always forwarded verbatim by the
+/// caller, so partial extraction (some records, then a malformed
+/// batch) is acceptable.
+fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec<ExtractedRecord>) {
+    let mut buf = records_bytes;
+    let Ok(batches) = RecordBatchDecoder::decode_all(&mut buf) else {
+        return;
+    };
+    for batch in batches {
+        for rec in batch.records {
+            let headers = rec
+                .headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            out.push(ExtractedRecord {
+                topic: topic.to_owned(),
+                partition,
+                offset: rec.offset,
+                timestamp_ms: rec.timestamp,
+                key: rec.key,
+                value: rec.value,
+                headers,
+            });
+        }
+    }
+}
+
+/// Build a `CapturedMessage` from one `ExtractedRecord`. The `conn_id`
+/// is currently dropped on the floor — `CapturedMessage` doesn't have
+/// a connection slot yet, and Phase 1.5 explicitly defers wiring one
+/// in (the per-broker_id paint in client mode is the librdkafka-only
+/// concept). The id is a fresh v4 UUID.
+#[must_use]
+pub fn extracted_to_captured(rec: ExtractedRecord, _conn_id: u64) -> CapturedMessage {
+    let value_bytes: Option<&[u8]> = rec.value.as_deref();
+    let key = rec
+        .key
+        .as_deref()
+        .and_then(|bytes| std::str::from_utf8(bytes).ok().map(ToOwned::to_owned));
+    let raw_hex = value_bytes.map_or_else(String::new, render_hex);
+    let size_bytes = value_bytes.map_or(0, <[u8]>::len);
+    let timestamp = if rec.timestamp_ms > 0 {
+        Utc.timestamp_millis_opt(rec.timestamp_ms)
+            .single()
+            .map_or_else(
+                || Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                |dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            )
+    } else {
+        Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    };
+
+    let headers = rec
+        .headers
+        .into_iter()
+        .map(|(k, v)| KafkaHeader {
+            key: k,
+            value: v
+                .as_deref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    CapturedMessage {
+        id: Uuid::new_v4().to_string(),
+        timestamp,
+        topic: rec.topic,
+        partition: rec.partition,
+        offset: rec.offset,
+        key,
+        schema_name: None,
+        schema_id: None,
+        size_bytes,
+        headers,
+        payload: decode_payload(value_bytes),
+        raw_hex,
+        fetch: None,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    use bytes::BytesMut;
+    use kafka_protocol::indexmap::IndexMap;
+    use kafka_protocol::messages::fetch_response::{FetchableTopicResponse, PartitionData};
+    use kafka_protocol::messages::produce_request::{PartitionProduceData, TopicProduceData};
+    use kafka_protocol::messages::{
+        ApiKey, FetchResponse, ProduceRequest, RequestHeader, ResponseHeader, TopicName,
+    };
+    use kafka_protocol::protocol::{Encodable, HeaderVersion, StrBytes};
+    use kafka_protocol::records::{
+        Compression, Record, RecordBatchEncoder, RecordEncodeOptions, TimestampType,
+    };
+
+    fn make_record(offset: i64, key: &[u8], value: &[u8]) -> Record {
+        Record {
+            transactional: false,
+            control: false,
+            partition_leader_epoch: 0,
+            producer_id: -1,
+            producer_epoch: -1,
+            timestamp_type: TimestampType::Creation,
+            offset,
+            sequence: i32::try_from(offset).unwrap_or(0),
+            timestamp: 1_700_000_000_000,
+            key: Some(Bytes::copy_from_slice(key)),
+            value: Some(Bytes::copy_from_slice(value)),
+            headers: IndexMap::new(),
+        }
+    }
+
+    fn encode_record_batch(records: &[Record]) -> Bytes {
+        let mut buf = BytesMut::new();
+        let opts = RecordEncodeOptions {
+            version: 2,
+            compression: Compression::None,
+        };
+        RecordBatchEncoder::encode(&mut buf, records.iter(), &opts).unwrap();
+        buf.freeze()
+    }
+
+    fn build_produce_request_bytes(
+        version: i16,
+        topic: &str,
+        partition_records: &[(i32, Vec<Record>)],
+    ) -> Vec<u8> {
+        let mut req = ProduceRequest::default();
+        req.transactional_id = None;
+        req.acks = -1;
+        req.timeout_ms = 30_000;
+        let mut topic_data = TopicProduceData::default();
+        topic_data.name = TopicName(StrBytes::from_string(topic.to_owned()));
+        topic_data.partition_data = partition_records
+            .iter()
+            .map(|(idx, records)| {
+                let mut p = PartitionProduceData::default();
+                p.index = *idx;
+                p.records = Some(encode_record_batch(records));
+                p
+            })
+            .collect();
+        req.topic_data = vec![topic_data];
+
+        let mut out = BytesMut::new();
+        let header_version = ProduceRequest::header_version(version);
+        let mut header = RequestHeader::default();
+        header.request_api_key = ApiKey::Produce as i16;
+        header.request_api_version = version;
+        header.correlation_id = 7;
+        header.client_id = Some(StrBytes::from_static_str("test"));
+        header.encode(&mut out, header_version).unwrap();
+        req.encode(&mut out, version).unwrap();
+        out.to_vec()
+    }
+
+    fn build_fetch_response_bytes(
+        version: i16,
+        topic: &str,
+        partition: i32,
+        records: &[Record],
+    ) -> Vec<u8> {
+        let mut resp = FetchResponse::default();
+        resp.throttle_time_ms = 0;
+        resp.error_code = 0;
+        resp.session_id = 0;
+        let mut topic_resp = FetchableTopicResponse::default();
+        topic_resp.topic = TopicName(StrBytes::from_string(topic.to_owned()));
+        let mut p = PartitionData::default();
+        p.partition_index = partition;
+        p.error_code = 0;
+        p.high_watermark = i64::try_from(records.len()).unwrap_or(0);
+        p.last_stable_offset = p.high_watermark;
+        p.log_start_offset = 0;
+        p.records = Some(encode_record_batch(records));
+        topic_resp.partitions = vec![p];
+        resp.responses = vec![topic_resp];
+
+        let header_version = ApiKey::Fetch.response_header_version(version);
+        let mut out = BytesMut::new();
+        ResponseHeader::default()
+            .encode(&mut out, header_version)
+            .unwrap();
+        resp.encode(&mut out, version).unwrap();
+        out.to_vec()
+    }
+
+    #[test]
+    fn extract_from_produce_request_returns_records_per_topic_partition() {
+        let p0_records = vec![
+            make_record(0, b"k0", b"v0"),
+            make_record(1, b"k1", b"v1"),
+            make_record(2, b"k2", b"v2"),
+        ];
+        let p1_records = vec![
+            make_record(0, b"k3", b"v3"),
+            make_record(1, b"k4", b"v4"),
+            make_record(2, b"k5", b"v5"),
+        ];
+        let bytes =
+            build_produce_request_bytes(9, "records-test", &[(0, p0_records), (1, p1_records)]);
+
+        let extracted = extract_from_produce_request(9, &bytes);
+        assert_eq!(extracted.len(), 6);
+        let p0: Vec<_> = extracted.iter().filter(|r| r.partition == 0).collect();
+        let p1: Vec<_> = extracted.iter().filter(|r| r.partition == 1).collect();
+        assert_eq!(p0.len(), 3);
+        assert_eq!(p1.len(), 3);
+        assert_eq!(p0[0].topic, "records-test");
+        assert_eq!(p0[0].key.as_deref(), Some(&b"k0"[..]));
+        assert_eq!(p0[0].value.as_deref(), Some(&b"v0"[..]));
+        assert_eq!(p1[2].key.as_deref(), Some(&b"k5"[..]));
+    }
+
+    #[test]
+    fn extract_from_fetch_response_returns_records() {
+        let records: Vec<_> = (0u8..5)
+            .map(|i| make_record(i64::from(i), &[b'k', b'0' + i], &[b'v', b'0' + i]))
+            .collect();
+        // Fetch v13+ replaces the topic-name field with topic_id (UUID)
+        // so the topic-name surfaced from a v13 response would be empty.
+        // We use v12 here: last version where the topic name is on the
+        // wire. The proxy still works on v13 — it just emits records
+        // with an empty topic field.
+        let bytes = build_fetch_response_bytes(12, "records-test", 0, &records);
+        let extracted = extract_from_fetch_response(12, &bytes);
+        assert_eq!(extracted.len(), 5);
+        for (i, rec) in extracted.iter().enumerate() {
+            assert_eq!(rec.topic, "records-test");
+            assert_eq!(rec.partition, 0);
+            assert_eq!(rec.offset, i64::try_from(i).unwrap());
+        }
+    }
+
+    #[test]
+    fn extract_from_produce_request_handles_missing_records() {
+        // ProduceRequest with one topic-partition whose records field is None.
+        let mut req = ProduceRequest::default();
+        req.transactional_id = None;
+        req.acks = -1;
+        req.timeout_ms = 30_000;
+        let mut t = TopicProduceData::default();
+        t.name = TopicName(StrBytes::from_string("missing".to_owned()));
+        let mut p = PartitionProduceData::default();
+        p.index = 0;
+        p.records = None;
+        t.partition_data = vec![p];
+        req.topic_data = vec![t];
+
+        let version = 9_i16;
+        let mut out = BytesMut::new();
+        let header_version = ProduceRequest::header_version(version);
+        let mut header = RequestHeader::default();
+        header.request_api_key = ApiKey::Produce as i16;
+        header.request_api_version = version;
+        header.correlation_id = 1;
+        header.client_id = Some(StrBytes::from_static_str("t"));
+        header.encode(&mut out, header_version).unwrap();
+        req.encode(&mut out, version).unwrap();
+
+        let extracted = extract_from_produce_request(version, &out);
+        assert!(extracted.is_empty());
+    }
+
+    #[test]
+    fn extract_garbage_returns_empty() {
+        // Must not panic on bogus input.
+        assert!(extract_from_produce_request(9, &[0u8; 4]).is_empty());
+        assert!(extract_from_fetch_response(13, &[0u8; 4]).is_empty());
+        assert!(extract_from_produce_request(9, &[]).is_empty());
+        assert!(extract_from_fetch_response(13, &[]).is_empty());
+    }
+
+    #[test]
+    fn extracted_to_captured_preserves_offset_and_headers() {
+        let headers = vec![
+            ("h1".to_owned(), Some(Bytes::from_static(b"v1"))),
+            ("h2".to_owned(), None),
+        ];
+        let rec = ExtractedRecord {
+            topic: "t".to_owned(),
+            partition: 7,
+            offset: 42,
+            timestamp_ms: 1_700_000_000_000,
+            key: Some(Bytes::from_static(b"my-key")),
+            value: Some(Bytes::from_static(b"\"hello\"")),
+            headers,
+        };
+        let captured = extracted_to_captured(rec, 99);
+        assert_eq!(captured.topic, "t");
+        assert_eq!(captured.partition, 7);
+        assert_eq!(captured.offset, 42);
+        assert_eq!(captured.key.as_deref(), Some("my-key"));
+        assert_eq!(captured.size_bytes, 7);
+        assert_eq!(captured.headers.len(), 2);
+        assert_eq!(captured.headers[0].key, "h1");
+        assert_eq!(captured.headers[0].value, "v1");
+        assert_eq!(captured.headers[1].key, "h2");
+        assert_eq!(captured.headers[1].value, "");
+        assert!(captured.fetch.is_none());
+        assert!(!captured.id.is_empty());
+        assert!(!captured.timestamp.is_empty());
+    }
+
+    /// End-to-end pump test: drive a real `ProduceRequest v9` (with one
+    /// topic, one partition, two records) through `run_pump_with_rewrite`
+    /// and assert the `record_sink` received both records.
+    #[tokio::test]
+    async fn pump_extracts_records_from_produce_request_to_sink() {
+        use std::sync::Arc;
+
+        use bytes::Bytes;
+        use futures::{SinkExt, StreamExt};
+        use parking_lot::Mutex as PMutex;
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::{TcpListener, TcpStream};
+
+        use crate::proxy::{
+            framed_kafka, run_pump_with_rewrite, BrokerMap, ConnectionId, CorrelationMap,
+        };
+        use crate::proxy_handle::RecordSink;
+        use crate::proxy_provisioner::BrokerProvisioner;
+
+        // Fake upstream: drains one frame and replies with a stub
+        // (4-byte corr_id, then a single zero byte) so the pump's
+        // response side has something to forward.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (sock, _) = upstream.accept().await.unwrap();
+            let mut framed = framed_kafka(sock);
+            let _req = framed.next().await.unwrap().unwrap();
+            let mut reply = BytesMut::new();
+            reply.extend_from_slice(&7i32.to_be_bytes());
+            reply.extend_from_slice(&[0u8]);
+            framed.send(reply.freeze()).await.unwrap();
+        });
+
+        let client_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_addr = client_listener.local_addr().unwrap();
+        let upstream_target = upstream_addr.to_string();
+
+        let correlator = Arc::new(crate::correlator::ProtoCorrelator::new());
+        let corr_map = Arc::new(CorrelationMap::default());
+        let broker_map = Arc::new(BrokerMap::new());
+        let provisioner: Arc<dyn BrokerProvisioner> = broker_map;
+
+        let captured: Arc<PMutex<Vec<CapturedMessage>>> = Arc::new(PMutex::new(Vec::new()));
+        let captured_for_sink = Arc::clone(&captured);
+        let sink: RecordSink = Arc::new(move |msg: CapturedMessage| {
+            captured_for_sink.lock().push(msg);
+        });
+
+        let pump_task = tokio::spawn(async move {
+            let (client_sock, _) = client_listener.accept().await.unwrap();
+            let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
+            run_pump_with_rewrite(
+                ConnectionId(42),
+                client_sock,
+                upstream_sock,
+                correlator,
+                corr_map,
+                provisioner,
+                sink,
+            )
+            .await
+            .unwrap();
+        });
+
+        // Build a Produce v9 request with one topic / one partition /
+        // two records.
+        let records = vec![
+            Record {
+                transactional: false,
+                control: false,
+                partition_leader_epoch: 0,
+                producer_id: -1,
+                producer_epoch: -1,
+                timestamp_type: TimestampType::Creation,
+                offset: 0,
+                sequence: 0,
+                timestamp: 1_700_000_000_000,
+                key: Some(Bytes::from_static(b"k0")),
+                value: Some(Bytes::from_static(b"v0")),
+                headers: IndexMap::new(),
+            },
+            Record {
+                transactional: false,
+                control: false,
+                partition_leader_epoch: 0,
+                producer_id: -1,
+                producer_epoch: -1,
+                timestamp_type: TimestampType::Creation,
+                offset: 1,
+                sequence: 1,
+                timestamp: 1_700_000_000_001,
+                key: Some(Bytes::from_static(b"k1")),
+                value: Some(Bytes::from_static(b"v1")),
+                headers: IndexMap::new(),
+            },
+        ];
+        let frame_body = build_produce_request_bytes(9, "pump-test", &[(0, records)]);
+
+        let mut client = TcpStream::connect(client_addr).await.unwrap();
+        let len = u32::try_from(frame_body.len()).unwrap();
+        client.write_all(&len.to_be_bytes()).await.unwrap();
+        client.write_all(&frame_body).await.unwrap();
+
+        upstream_task.await.unwrap();
+        // Drain the upstream reply so the pump's response-side select
+        // arm observes the frame and (for non-Fetch) just forwards it.
+        let mut framed_client = framed_kafka(client);
+        let _ = framed_client.next().await;
+
+        // Give the sink a tick to flush.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let snap = captured.lock().clone();
+        assert_eq!(snap.len(), 2, "expected 2 records, got {snap:?}");
+        for (i, msg) in snap.iter().enumerate() {
+            assert_eq!(msg.topic, "pump-test");
+            assert_eq!(msg.partition, 0);
+            assert_eq!(msg.key.as_deref(), Some(if i == 0 { "k0" } else { "k1" }));
+        }
+
+        pump_task.abort();
+    }
+}

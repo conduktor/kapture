@@ -14,6 +14,7 @@ mod proxy;
 mod proxy_broker_map;
 mod proxy_handle;
 mod proxy_provisioner;
+mod proxy_records;
 mod proxy_rewrite;
 mod ring_buffer;
 mod schema_registry;
@@ -27,9 +28,10 @@ mod state;
 /// part of any external contract.
 pub mod example_api {
     pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
+    pub use crate::message::CapturedMessage;
     pub use crate::proto_hook::ProtoDirection;
     pub use crate::proxy::ProxyConfig;
-    pub use crate::proxy_handle::ProxyHandle;
+    pub use crate::proxy_handle::{ProxyHandle, RecordSink};
 }
 
 use std::sync::Arc;

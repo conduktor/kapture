@@ -22,11 +22,17 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::correlator::ProtoCorrelator;
+use crate::message::CapturedMessage;
 use crate::proxy::{
     next_connection_id, run_pump_with_rewrite, BrokerMap, CorrelationMap, ProxyConfig,
 };
 use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
+
+/// Sink for `CapturedMessage` instances extracted from Produce
+/// requests / Fetch responses traversing the proxy. Invoked
+/// synchronously from the per-connection pump — must not block.
+pub type RecordSink = Arc<dyn Fn(CapturedMessage) + Send + Sync + 'static>;
 
 /// Shared proxy state. Wrapped in an `Arc` by `ProxyHandle` so the
 /// per-listener accept loops AND the rewriter (via
@@ -45,6 +51,7 @@ pub struct ProxyInner {
     bootstrap_upstream: String,
     correlator: Arc<ProtoCorrelator>,
     broker_map: Arc<BrokerMap>,
+    record_sink: RecordSink,
     /// Serialises lazy listener provisioning so a discovered broker is
     /// inserted into `BrokerMap` and has its accept loop spawned as one
     /// cancellation-safe operation.
@@ -177,6 +184,7 @@ fn spawn_accept_loop(
 ) -> JoinHandle<()> {
     let mut stop_rx = inner.stop_tx.subscribe();
     let correlator = Arc::clone(&inner.correlator);
+    let record_sink = Arc::clone(&inner.record_sink);
     let provisioner: Arc<dyn BrokerProvisioner> = inner.clone();
 
     tokio::spawn(async move {
@@ -198,6 +206,7 @@ fn spawn_accept_loop(
                                 let corr_map = Arc::new(CorrelationMap::default());
                                 let provisioner = Arc::clone(&provisioner);
                                 let pump_inner = Arc::clone(&inner);
+                                let record_sink = Arc::clone(&record_sink);
                                 let (start_tx, start_rx) = oneshot::channel();
                                 let task = tokio::spawn(async move {
                                     let _ = start_rx.await;
@@ -217,6 +226,7 @@ fn spawn_accept_loop(
                                     correlator,
                                     corr_map,
                                     provisioner,
+                                    record_sink,
                                 )
                                 .await;
                                     if let Err(err) = result {
@@ -246,7 +256,11 @@ impl ProxyHandle {
     /// # Errors
     /// - `InvalidInput` if `config.upstream` doesn't parse as `host:port`.
     /// - Underlying `io::Error` if the listener bind fails.
-    pub async fn start(config: ProxyConfig, correlator: Arc<ProtoCorrelator>) -> io::Result<Self> {
+    pub async fn start(
+        config: ProxyConfig,
+        correlator: Arc<ProtoCorrelator>,
+        record_sink: RecordSink,
+    ) -> io::Result<Self> {
         let (host, port) = parse_host_port(&config.upstream)?;
 
         let listener = TcpListener::bind(config.listen_addr()).await?;
@@ -265,6 +279,7 @@ impl ProxyHandle {
             bootstrap_upstream: config.upstream.clone(),
             correlator,
             broker_map,
+            record_sink,
             provision_lock: TokioMutex::new(()),
             weak_self: Mutex::new(Weak::new()),
         });
@@ -464,7 +479,8 @@ mod tests {
         // Start the proxy pointing at the bootstrap.
         let correlator = Arc::new(ProtoCorrelator::new());
         let cfg = ProxyConfig::new(bootstrap_addr.to_string(), 0);
-        let handle = ProxyHandle::start(cfg, Arc::clone(&correlator))
+        let no_op_sink: RecordSink = Arc::new(|_msg| {});
+        let handle = ProxyHandle::start(cfg, Arc::clone(&correlator), no_op_sink)
             .await
             .unwrap();
         let listen_addr = handle.local_addr();

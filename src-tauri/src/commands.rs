@@ -426,7 +426,17 @@ pub async fn start_proxy(
 
     let correlator = Arc::new(ProtoCorrelator::new());
     let cfg = crate::proxy::ProxyConfig::new(trimmed_upstream.clone(), listen_port);
-    let handle = match crate::proxy::ProxyHandle::start(cfg, Arc::clone(&correlator)).await {
+    let buffer = Arc::clone(&state.buffer);
+    let filter = Arc::clone(&state.filter);
+    let app_for_messages = app.clone();
+    let sink: crate::proxy_handle::RecordSink = Arc::new(move |message| {
+        buffer.push(message.clone());
+        let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
+        if pass {
+            let _ = app_for_messages.emit("kapture:message", &message);
+        }
+    });
+    let handle = match crate::proxy::ProxyHandle::start(cfg, Arc::clone(&correlator), sink).await {
         Ok(h) => h,
         Err(err) => {
             state.release_capture_slot();
