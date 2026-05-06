@@ -328,10 +328,12 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Match grid template to the columns in ProtoList. */
+/* Match grid template to the columns in ProtoList. The ts column needs
+ * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
+ * suffix from `slice(11, 26)` actually fits without an ellipsis. */
 section.msglist[aria-label="Protocol frames"] .msglist__head,
 section.msglist[aria-label="Protocol frames"] .msglist__row {
-  grid-template-columns: 110px 30px 130px 36px 60px 90px 70px 70px;
+  grid-template-columns: 140px 30px 130px 36px 60px 90px 70px 70px;
 }
 .proto__col--dir {
   text-align: center;
@@ -352,6 +354,35 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 .proto__col--broker,
 .proto__col--v {
   text-align: right;
+}
+
+/* Pair highlight: when a frame is selected, its request/response
+ * partner (same corrId+brokerId, opposite dir) gets a dashed accent
+ * border on the left so the eye can pair them across rows. */
+.msglist__row.is-paired {
+  background: rgba(79, 70, 229, 0.04);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.msglist__row.is-selected {
+  /* Override `is-paired` left-border so the selected row keeps a solid
+   * fill instead of competing with the pair accent. */
+  box-shadow: none;
+}
+
+/* Pretty-printed Debug output of the decoded frame body (kafka-protocol). */
+.proto-decoded {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre;
 }
 
 /* Hex view inside the protocol detail panel */

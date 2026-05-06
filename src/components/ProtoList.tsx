@@ -12,6 +12,8 @@ interface Props {
 interface RowProps {
   frames: ProtoFrame[];
   selectedId: string | null;
+  /** Id of the request/response pair partner of the selected frame. */
+  pairedId: string | null;
   onSelect: (id: string) => void;
 }
 
@@ -22,9 +24,33 @@ const ROW_HEIGHT = 24;
 // response is left to the eye for now (same corr_id + broker_id) — backend
 // pairing is a follow-up.
 export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element {
+  // Find the request/response partner of the selected frame: same
+  // (corrId, brokerId) but opposite direction. Wireshark's "Follow
+  // stream" applied to a single Kafka exchange. Returns null when the
+  // pair hasn't been observed yet (mid-flight request, or response
+  // whose request has scrolled out of the ring buffer).
+  const pairedId = useMemo<string | null>(() => {
+    if (selectedId === null) {
+      return null;
+    }
+    const sel = frames.find((f) => f.id === selectedId);
+    if (!sel) {
+      return null;
+    }
+    const opposite = sel.direction === "send" ? "recv" : "send";
+    const match = frames.find(
+      (f) =>
+        f.id !== sel.id &&
+        f.direction === opposite &&
+        f.corrId === sel.corrId &&
+        f.brokerId === sel.brokerId,
+    );
+    return match?.id ?? null;
+  }, [frames, selectedId]);
+
   const rowProps = useMemo<RowProps>(
-    () => ({ frames, selectedId, onSelect }),
-    [frames, selectedId, onSelect],
+    () => ({ frames, selectedId, pairedId, onSelect }),
+    [frames, selectedId, pairedId, onSelect],
   );
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const onKeyDown = useCallback(
@@ -96,6 +122,7 @@ function ProtoRow({
   style,
   frames,
   selectedId,
+  pairedId,
   onSelect,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const frame = frames[index];
@@ -103,6 +130,7 @@ function ProtoRow({
     return null;
   }
   const isSelected = selectedId === frame.id;
+  const isPaired = pairedId === frame.id;
   // Trim to time-of-day for the list; full timestamp is in the detail view.
   // Backend emits RFC3339 with microseconds → keep HH:MM:SS.ffffff.
   const ts = frame.timestamp.slice(11, 26);
@@ -110,7 +138,7 @@ function ProtoRow({
     <button
       type="button"
       style={style}
-      className={`msglist__row${isSelected ? " is-selected" : ""}`}
+      className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}`}
       onClick={() => {
         onSelect(frame.id);
       }}

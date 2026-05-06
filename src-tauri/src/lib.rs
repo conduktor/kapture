@@ -8,6 +8,7 @@ mod filter;
 mod mcp;
 mod message;
 mod profiles;
+mod proto_decode;
 mod proto_hook;
 mod ring_buffer;
 mod schema_registry;

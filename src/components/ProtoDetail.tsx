@@ -41,9 +41,17 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {rows.length > 0 ? (
+      {frame.decoded ? (
         <details className="layer" open>
-          <summary className="layer__title">payload — hex view (phase 2a)</summary>
+          <summary className="layer__title">decoded ({frame.apiName})</summary>
+          <div className="layer__body">
+            <pre className="proto-decoded">{frame.decoded}</pre>
+          </div>
+        </details>
+      ) : null}
+      {rows.length > 0 ? (
+        <details className="layer" {...(frame.decoded ? {} : { open: true })}>
+          <summary className="layer__title">payload — hex view</summary>
           <div className="layer__body">
             <pre className="proto-hex">
               {rows.map((row, i) => (
@@ -54,10 +62,6 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
                 </span>
               ))}
             </pre>
-            <p className="muted" style={{ marginTop: 8 }}>
-              Phase 2b will decode this into typed fields per ApiKey/Version using the{" "}
-              <code>kafka-protocol</code> crate.
-            </p>
           </div>
         </details>
       ) : null}

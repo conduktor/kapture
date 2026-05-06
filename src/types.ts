@@ -39,6 +39,13 @@ export interface ProtoFrame {
   rttMs: number;
   /** Lowercase hex of the captured prefix. Empty when capture was 0 bytes. */
   payloadHex: string;
+  /**
+   * Pretty-printed Debug of the decoded request/response body via the
+   * `kafka-protocol` crate, when the api_key is in our supported set.
+   * `null` for APIs we don't decode yet — the UI then falls back to
+   * the raw hex view.
+   */
+  decoded: string | null;
 }
 
 export interface KafkaMessage {

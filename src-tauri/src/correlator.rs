@@ -25,6 +25,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::proto_decode;
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
 
 const FETCH_API_KEY: i32 = 1;
@@ -74,6 +75,11 @@ pub struct ProtoFrame {
     /// Lowercase hex of the captured prefix. Empty when `captured == 0`.
     /// At ~64 KiB cap → ~128 KiB of hex per frame in the worst case.
     pub payload_hex: String,
+    /// Pretty-printed `Debug` of the decoded request/response body, when
+    /// the `api_key` is in our supported set. `None` for APIs we don't
+    /// have a `kafka-protocol` decode arm for, when the bytes are
+    /// truncated past the body, or when the header parse fails.
+    pub decoded: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -108,6 +114,22 @@ impl ProtoCorrelator {
         // (1) Frames ring buffer: every event, both directions.
         {
             let captured = event.payload.len();
+            // Decode synchronously here. proto_decode::decode_frame is
+            // bounded by the captured prefix (≤ 64 KiB) so even Fetch
+            // responses stay sub-ms. Anything we don't have a decoder
+            // arm for returns None and the UI falls back to the hex
+            // view.
+            let decoded = if event.payload.is_empty() {
+                None
+            } else {
+                let api_version = i16::try_from(event.api_version).unwrap_or(0);
+                proto_decode::decode_frame(
+                    event.api_key,
+                    api_version,
+                    event.direction,
+                    &event.payload,
+                )
+            };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
                 timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
@@ -121,6 +143,7 @@ impl ProtoCorrelator {
                 captured,
                 rtt_ms: event.rtt_ms,
                 payload_hex: hex::encode(&event.payload),
+                decoded,
             };
             let mut frames = self.frames.lock();
             frames.push_back(frame);
