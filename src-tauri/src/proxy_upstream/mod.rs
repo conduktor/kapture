@@ -6,9 +6,11 @@
 //! speaks plaintext+no-SASL, the proxy must perform the SASL handshake
 //! itself with credentials configured by the Kapture user.
 //!
-//! Step 1 (this module): plain-TCP upstream + SASL=PLAIN only. TLS and
-//! SCRAM are deferred to later steps. Wiring into the connection pump
-//! is also a later step — for now this is a self-contained primitive.
+//! Steps 1-2 (this module + `tls`): TCP or TLS upstream + SASL=PLAIN.
+//! TLS uses tokio-rustls client-side (system roots, optional user CA,
+//! optional hostname-verification bypass — see `tls::UpstreamTlsConfig`).
+//! SCRAM is deferred. Wiring into the connection pump is also a later
+//! step — for now this is a self-contained primitive.
 //!
 //! Wire format reminder. A Kafka request frame is
 //! `[size: i32 BE] [request_header (version-dependent)] [request_body]`.
@@ -23,13 +25,20 @@
 // public types live behind `dead_code`.
 #![allow(dead_code)]
 
+mod tls;
+
+#[cfg(test)]
+pub mod test_support;
+
+pub use tls::UpstreamTlsConfig;
+
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::{
     ApiKey, ApiVersionsRequest, ApiVersionsResponse, RequestHeader, ResponseHeader,
     SaslAuthenticateRequest, SaslAuthenticateResponse, SaslHandshakeRequest, SaslHandshakeResponse,
 };
 use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 /// Modern API versions chosen here. v0 `ApiVersions` keeps the request
@@ -84,6 +93,15 @@ impl std::fmt::Debug for UpstreamSaslConfig {
     }
 }
 
+/// Trait alias bundling the bounds we need from the returned upstream
+/// stream. Implemented for any type already satisfying the bounds.
+pub trait AsyncIo: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> AsyncIo for T {}
+
+/// Type-erased async stream returned by [`open_upstream`]. Either a
+/// raw `TcpStream` (no TLS) or a `tokio_rustls::client::TlsStream`.
+pub type UpstreamStream = Box<dyn AsyncIo>;
+
 /// Errors surfaced to the caller of [`open_upstream`].
 ///
 /// Each handshake step has its own variant so the pump can log the
@@ -97,6 +115,14 @@ pub enum UpstreamConnectError {
         port: u16,
         err: std::io::Error,
     },
+    #[error("tls handshake to {host}:{port} failed: {err}")]
+    TlsHandshake {
+        host: String,
+        port: u16,
+        err: String,
+    },
+    #[error("tls config error: {0}")]
+    TlsConfig(String),
     #[error("api_versions exchange failed: {0}")]
     ApiVersions(String),
     #[error("sasl_handshake exchange failed: {0}")]
@@ -127,13 +153,23 @@ pub enum UpstreamConnectError {
 pub async fn open_upstream(
     host: &str,
     port: u16,
+    tls: Option<&UpstreamTlsConfig>,
     sasl: Option<&UpstreamSaslConfig>,
-) -> Result<TcpStream, UpstreamConnectError> {
-    let mut stream = connect_tcp(host, port).await?;
-    if let Some(cfg) = sasl {
-        run_sasl_handshake(&mut stream, cfg).await?;
+) -> Result<UpstreamStream, UpstreamConnectError> {
+    let tcp = connect_tcp(host, port).await?;
+    if let Some(tls_cfg) = tls {
+        let mut tls_stream = tls::wrap_tls(tcp, host, port, tls_cfg).await?;
+        if let Some(sasl_cfg) = sasl {
+            run_sasl_handshake(&mut tls_stream, sasl_cfg).await?;
+        }
+        Ok(Box::new(tls_stream))
+    } else {
+        let mut stream = tcp;
+        if let Some(sasl_cfg) = sasl {
+            run_sasl_handshake(&mut stream, sasl_cfg).await?;
+        }
+        Ok(Box::new(stream))
     }
-    Ok(stream)
 }
 
 async fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, UpstreamConnectError> {
@@ -161,10 +197,13 @@ async fn connect_to<A: ToSocketAddrs>(addr: A) -> std::io::Result<TcpStream> {
     Ok(stream)
 }
 
-async fn run_sasl_handshake(
-    stream: &mut TcpStream,
+async fn run_sasl_handshake<S>(
+    stream: &mut S,
     cfg: &UpstreamSaslConfig,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     // Step 1: ApiVersions. Lets the broker advertise its supported
     // versions; we don't act on the response yet but the broker
     // expects this exchange before SASL on most modern Kafka
@@ -204,10 +243,10 @@ fn build_auth_bytes(cfg: &UpstreamSaslConfig) -> Bytes {
     }
 }
 
-async fn send_api_versions(
-    stream: &mut TcpStream,
-    corr_id: i32,
-) -> Result<(), UpstreamConnectError> {
+async fn send_api_versions<S>(stream: &mut S, corr_id: i32) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let header = make_request_header(ApiKey::ApiVersions, API_VERSIONS_VERSION, corr_id);
     let body = ApiVersionsRequest::default();
     let frame = encode_request(
@@ -221,10 +260,13 @@ async fn send_api_versions(
     Ok(())
 }
 
-async fn recv_api_versions(
-    stream: &mut TcpStream,
+async fn recv_api_versions<S>(
+    stream: &mut S,
     expected_corr_id: i32,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let frame = read_kafka_frame(stream).await?;
     let mut buf = Bytes::from(frame);
     let header_version = ApiKey::ApiVersions.response_header_version(API_VERSIONS_VERSION);
@@ -247,11 +289,14 @@ async fn recv_api_versions(
     Ok(())
 }
 
-async fn send_sasl_handshake(
-    stream: &mut TcpStream,
+async fn send_sasl_handshake<S>(
+    stream: &mut S,
     corr_id: i32,
     mechanism: UpstreamSaslMechanism,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let header = make_request_header(ApiKey::SaslHandshake, SASL_HANDSHAKE_VERSION, corr_id);
     let mut body = SaslHandshakeRequest::default();
     body.mechanism = StrBytes::from_static_str(mechanism.label());
@@ -266,11 +311,14 @@ async fn send_sasl_handshake(
     Ok(())
 }
 
-async fn recv_sasl_handshake(
-    stream: &mut TcpStream,
+async fn recv_sasl_handshake<S>(
+    stream: &mut S,
     expected_corr_id: i32,
     mechanism: UpstreamSaslMechanism,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let frame = read_kafka_frame(stream).await?;
     let mut buf = Bytes::from(frame);
     let header_version = ApiKey::SaslHandshake.response_header_version(SASL_HANDSHAKE_VERSION);
@@ -299,11 +347,14 @@ async fn recv_sasl_handshake(
     Ok(())
 }
 
-async fn send_sasl_authenticate(
-    stream: &mut TcpStream,
+async fn send_sasl_authenticate<S>(
+    stream: &mut S,
     corr_id: i32,
     auth_bytes: Bytes,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let header = make_request_header(ApiKey::SaslAuthenticate, SASL_AUTHENTICATE_VERSION, corr_id);
     let mut body = SaslAuthenticateRequest::default();
     body.auth_bytes = auth_bytes;
@@ -318,10 +369,13 @@ async fn send_sasl_authenticate(
     Ok(())
 }
 
-async fn recv_sasl_authenticate(
-    stream: &mut TcpStream,
+async fn recv_sasl_authenticate<S>(
+    stream: &mut S,
     expected_corr_id: i32,
-) -> Result<(), UpstreamConnectError> {
+) -> Result<(), UpstreamConnectError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let frame = read_kafka_frame(stream).await?;
     let mut buf = Bytes::from(frame);
     let header_version =
@@ -382,7 +436,10 @@ fn encode_request<B: Encodable>(
 /// Read one Kafka wire frame: 4-byte BE length prefix followed by
 /// exactly that many body bytes. Frame size is capped at
 /// [`MAX_RESPONSE_FRAME_BYTES`] to mirror `framed_kafka`'s ceiling.
-async fn read_kafka_frame(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+async fn read_kafka_frame<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -398,7 +455,10 @@ async fn read_kafka_frame(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 }
 
 /// Write one Kafka wire frame: 4-byte BE length prefix + body.
-async fn write_kafka_frame(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+async fn write_kafka_frame<S>(stream: &mut S, body: &[u8]) -> std::io::Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let len = u32::try_from(body.len()).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -416,89 +476,14 @@ async fn write_kafka_frame(stream: &mut TcpStream, body: &[u8]) -> std::io::Resu
 #[allow(clippy::expect_used)]
 #[allow(clippy::panic)]
 mod tests {
+    use super::test_support::{
+        build_api_versions_response, build_sasl_authenticate_response,
+        build_sasl_handshake_response, decode_request_header, server_read_frame,
+        server_write_frame,
+    };
     use super::*;
 
-    use bytes::BytesMut;
     use tokio::net::TcpListener;
-
-    /// Server-side mirror of the production helpers — used by the fake
-    /// broker to read client requests and shove fixture responses back.
-    async fn server_read_frame(sock: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
-        let mut len = [0u8; 4];
-        sock.read_exact(&mut len).await?;
-        let n = u32::from_be_bytes(len) as usize;
-        let mut body = vec![0u8; n];
-        sock.read_exact(&mut body).await?;
-        Ok(body)
-    }
-
-    async fn server_write_frame(
-        sock: &mut tokio::net::TcpStream,
-        body: &[u8],
-    ) -> std::io::Result<()> {
-        let n = u32::try_from(body.len()).unwrap();
-        sock.write_all(&n.to_be_bytes()).await?;
-        sock.write_all(body).await?;
-        sock.flush().await
-    }
-
-    fn encode_response<B: Encodable>(
-        header: &ResponseHeader,
-        header_version: i16,
-        body: &B,
-        body_version: i16,
-    ) -> Vec<u8> {
-        let mut out = BytesMut::with_capacity(128);
-        header.encode(&mut out, header_version).unwrap();
-        body.encode(&mut out, body_version).unwrap();
-        out.to_vec()
-    }
-
-    fn build_api_versions_response(corr_id: i32) -> Vec<u8> {
-        let mut header = ResponseHeader::default();
-        header.correlation_id = corr_id;
-        let header_version = ApiKey::ApiVersions.response_header_version(API_VERSIONS_VERSION);
-        let mut body = ApiVersionsResponse::default();
-        body.error_code = 0;
-        encode_response(&header, header_version, &body, API_VERSIONS_VERSION)
-    }
-
-    fn build_sasl_handshake_response(corr_id: i32, error_code: i16) -> Vec<u8> {
-        let mut header = ResponseHeader::default();
-        header.correlation_id = corr_id;
-        let header_version = ApiKey::SaslHandshake.response_header_version(SASL_HANDSHAKE_VERSION);
-        let mut body = SaslHandshakeResponse::default();
-        body.error_code = error_code;
-        body.mechanisms = vec![StrBytes::from_static_str("PLAIN")];
-        encode_response(&header, header_version, &body, SASL_HANDSHAKE_VERSION)
-    }
-
-    fn build_sasl_authenticate_response(corr_id: i32, error_code: i16) -> Vec<u8> {
-        let mut header = ResponseHeader::default();
-        header.correlation_id = corr_id;
-        let header_version =
-            ApiKey::SaslAuthenticate.response_header_version(SASL_AUTHENTICATE_VERSION);
-        let mut body = SaslAuthenticateResponse::default();
-        body.error_code = error_code;
-        if error_code != 0 {
-            body.error_message = Some(StrBytes::from_static_str("nope"));
-        }
-        encode_response(&header, header_version, &body, SASL_AUTHENTICATE_VERSION)
-    }
-
-    /// Decode the request frame the client sent us, returning the
-    /// header plus the remaining body bytes. `api_version` drives the
-    /// header shape (flexible vs not).
-    fn decode_request_header(
-        frame: &[u8],
-        api_key: ApiKey,
-        api_version: i16,
-    ) -> (RequestHeader, Bytes) {
-        let mut buf = Bytes::copy_from_slice(frame);
-        let header_version = api_key.request_header_version(api_version);
-        let header = RequestHeader::decode(&mut buf, header_version).unwrap();
-        (header, buf)
-    }
 
     /// No SASL → straight TCP connect, zero protocol bytes on the wire.
     /// We assert that by binding a listener that accepts the connection
@@ -522,7 +507,7 @@ mod tests {
             matches!(read, Err(_) | Ok(Ok(0)))
         });
 
-        let stream = open_upstream("127.0.0.1", port, None).await.unwrap();
+        let stream = open_upstream("127.0.0.1", port, None, None).await.unwrap();
         // Drop closes the socket; lets the server task observe EOF.
         drop(stream);
         let no_bytes = server.await.unwrap();
@@ -604,7 +589,9 @@ mod tests {
             username: "alice".to_owned(),
             password: "s3cret".to_owned(),
         };
-        let mut stream = open_upstream("127.0.0.1", port, Some(&cfg)).await.unwrap();
+        let mut stream = open_upstream("127.0.0.1", port, None, Some(&cfg))
+            .await
+            .unwrap();
 
         let mut buf = [0u8; 1];
         stream.read_exact(&mut buf).await.unwrap();
@@ -643,15 +630,13 @@ mod tests {
             username: "alice".to_owned(),
             password: "s3cret".to_owned(),
         };
-        let err = open_upstream("127.0.0.1", port, Some(&cfg))
-            .await
-            .unwrap_err();
-        match err {
-            UpstreamConnectError::SaslHandshake(msg) => {
+        match open_upstream("127.0.0.1", port, None, Some(&cfg)).await {
+            Ok(_) => panic!("expected SaslHandshake error, got Ok"),
+            Err(UpstreamConnectError::SaslHandshake(msg)) => {
                 assert!(msg.contains("33"), "msg = {msg}");
                 assert!(msg.contains("PLAIN"), "msg = {msg}");
             }
-            other => panic!("expected SaslHandshake, got {other:?}"),
+            Err(other) => panic!("expected SaslHandshake, got {other:?}"),
         }
     }
 
@@ -694,14 +679,12 @@ mod tests {
             username: "alice".to_owned(),
             password: "s3cret".to_owned(),
         };
-        let err = open_upstream("127.0.0.1", port, Some(&cfg))
-            .await
-            .unwrap_err();
-        match err {
-            UpstreamConnectError::SaslAuthenticate(msg) => {
+        match open_upstream("127.0.0.1", port, None, Some(&cfg)).await {
+            Ok(_) => panic!("expected SaslAuthenticate error, got Ok"),
+            Err(UpstreamConnectError::SaslAuthenticate(msg)) => {
                 assert!(msg.contains("58"), "msg = {msg}");
             }
-            other => panic!("expected SaslAuthenticate, got {other:?}"),
+            Err(other) => panic!("expected SaslAuthenticate, got {other:?}"),
         }
     }
 
@@ -714,13 +697,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
 
-        let err = open_upstream("127.0.0.1", port, None).await.unwrap_err();
-        match err {
-            UpstreamConnectError::Connect {
+        match open_upstream("127.0.0.1", port, None, None).await {
+            Ok(_) => panic!("expected Connect error, got Ok"),
+            Err(UpstreamConnectError::Connect {
                 host,
                 port: p,
                 err: io_err,
-            } => {
+            }) => {
                 assert_eq!(host, "127.0.0.1");
                 assert_eq!(p, port);
                 // ECONNREFUSED on Unix; on rare CI flake it might be
@@ -728,7 +711,7 @@ mod tests {
                 // by checking we have a non-empty kind label.
                 let _ = io_err.kind();
             }
-            other => panic!("expected Connect, got {other:?}"),
+            Err(other) => panic!("expected Connect, got {other:?}"),
         }
     }
 }

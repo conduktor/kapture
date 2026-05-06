@@ -53,6 +53,10 @@ axum = "0.8"
 tower = "0.5"
 schemars = "1"
 subtle = "2"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
 
 [target."cfg(not(any(target_os = \"android\", target_os = \"ios\")))".dependencies]
 tauri-plugin-updater = "2"
@@ -60,6 +64,7 @@ tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = "0.13"
 
 [lints.rust]
 # Forbid is too strong: the proto_hook module wraps a C FFI from our
