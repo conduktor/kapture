@@ -1269,23 +1269,39 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 .field--filterable {
   cursor: pointer;
 }
+/* Lightweight section grouping: title sits inline on a horizontal
+ * rule (`──── Upstream ────────────`) — no boxed container. The
+ * fieldset only exists for semantic form grouping, not for a visual
+ * border. */
 .dialog__section {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 12px 14px;
-  margin: 0 0 16px;
+  border: 0;
+  padding: 0;
+  margin: 14px 0 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   min-width: 0;
 }
+.dialog__section:first-of-type {
+  margin-top: 4px;
+}
 .dialog__section legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--text-muted);
-  padding: 0 6px;
+}
+.dialog__section legend::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
 }
 .dialog__field {
   display: flex;
