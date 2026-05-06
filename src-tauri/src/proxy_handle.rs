@@ -29,7 +29,9 @@ use crate::proxy::{
 use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_topic_ids::TopicIdMap;
-use crate::proxy_upstream::{open_upstream, UpstreamSaslConfig, UpstreamTlsConfig};
+use crate::proxy_upstream::{
+    open_upstream, resolve_server_name, UpstreamSaslConfig, UpstreamTlsConfig,
+};
 
 /// Sink for `CapturedMessage` instances extracted from Produce
 /// requests / Fetch responses traversing the proxy. Invoked
@@ -248,10 +250,18 @@ fn spawn_accept_loop(
                                                 return;
                                             }
                                         };
+                                    // Per-broker SNI fallback. If the user left
+                                    // server_name blank in the dialog, derive it
+                                    // from THIS broker's host — multi-broker
+                                    // clusters where each broker advertises its
+                                    // own DNS name still get the correct SNI.
+                                    let resolved_tls = upstream_tls
+                                        .as_ref()
+                                        .map(|cfg| resolve_server_name(&upstream_host, cfg));
                                     let upstream_sock = match open_upstream(
                                         &upstream_host,
                                         upstream_port,
-                                        upstream_tls.as_ref(),
+                                        resolved_tls.as_ref(),
                                         upstream_sasl.as_ref(),
                                     )
                                     .await

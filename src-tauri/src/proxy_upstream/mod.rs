@@ -33,6 +33,24 @@ pub mod test_support;
 
 pub use tls::UpstreamTlsConfig;
 
+/// Pure helper: produce a TLS config with `server_name` filled in for
+/// the given broker host. If the user left `server_name` blank in the
+/// dialog (the common case for Confluent Cloud, AWS MSK, etc. where the
+/// SNI matches the connect host), fall back to the broker's host. The
+/// caller passes per-broker `host` so multi-broker clusters where each
+/// broker advertises its own DNS name still get the correct SNI per
+/// connection. A trailing dot (FQDN form) is trimmed because rustls'
+/// `ServerName::try_from` rejects it.
+#[must_use]
+pub fn resolve_server_name(host: &str, tls: &UpstreamTlsConfig) -> UpstreamTlsConfig {
+    let mut out = tls.clone();
+    if out.server_name.trim().is_empty() {
+        let trimmed = host.trim_end_matches('.');
+        trimmed.clone_into(&mut out.server_name);
+    }
+    out
+}
+
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::{
     ApiKey, ApiVersionsRequest, ApiVersionsResponse, RequestHeader, ResponseHeader,
@@ -544,6 +562,39 @@ mod tests {
         server_write_frame,
     };
     use super::*;
+
+    #[test]
+    fn resolve_server_name_fills_when_empty() {
+        let cfg = UpstreamTlsConfig {
+            server_name: String::new(),
+            ca_path: None,
+            skip_hostname_verification: false,
+        };
+        let out = resolve_server_name("broker-1.kafka.example.com", &cfg);
+        assert_eq!(out.server_name, "broker-1.kafka.example.com");
+    }
+
+    #[test]
+    fn resolve_server_name_preserves_when_set() {
+        let cfg = UpstreamTlsConfig {
+            server_name: "explicit.sni".to_owned(),
+            ca_path: None,
+            skip_hostname_verification: false,
+        };
+        let out = resolve_server_name("connect.host", &cfg);
+        assert_eq!(out.server_name, "explicit.sni");
+    }
+
+    #[test]
+    fn resolve_server_name_trims_trailing_dot() {
+        let cfg = UpstreamTlsConfig {
+            server_name: String::new(),
+            ca_path: None,
+            skip_hostname_verification: false,
+        };
+        let out = resolve_server_name("fqdn.example.com.", &cfg);
+        assert_eq!(out.server_name, "fqdn.example.com");
+    }
 
     use tokio::net::TcpListener;
 
