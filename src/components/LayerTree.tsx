@@ -247,7 +247,7 @@ function FilterButton({
       title="Filter actions (== / != / AND)"
       aria-label="Filter actions"
     >
-      ⛶
+      ⌄
     </button>
   );
 }

@@ -379,22 +379,35 @@ body,
   word-break: break-all;
 }
 .field__filter {
-  opacity: 0;
-  transition: opacity 0.12s;
-  background: transparent;
+  /* Idle: faint hint of an affordance. Hover: fully visible. Matches
+     the ⌄ chevron style used in the message list so the same pattern
+     reads consistently across the app. */
+  opacity: 0.35;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 3px;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0 5px;
-  font-size: 10px;
+  padding: 0;
+  font-size: 11px;
   line-height: 1;
   height: 16px;
   width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .field:hover .field__filter,
 .token-row:hover .field__filter {
   opacity: 1;
+}
+.field:hover {
+  background: var(--bg-hover);
+  border-radius: 3px;
 }
 .field__filter:hover {
   background: var(--accent);
