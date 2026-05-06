@@ -615,12 +615,7 @@ export function ConnectionDialog({
               testResult.ok ? "dialog__test-result dialog__test-result--ok" : "dialog__error"
             }
           >
-            {testResult.ok ? "✓ " : "✗ "}
-            {testResult.message}
-            {testResult.ok ? ` · ${Math.round(testResult.latencyMs)} ms` : ""}
-            {testResult.ok && testResult.apiVersionsCount !== null
-              ? ` · ${testResult.apiVersionsCount} APIs supported`
-              : ""}
+            {testResult.ok ? "✓ OK" : `✗ ${testResult.message}`}
           </p>
         ) : null}
         {profileNameInput !== null ? (

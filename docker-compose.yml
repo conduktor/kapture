@@ -64,6 +64,14 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # Enable Share Groups (KIP-932 / KIP-994). The share coordinator
+      # state topic must be auto-creatable on a single-broker dev
+      # cluster — otherwise the share consumer hangs on ApiVersions
+      # + DescribeTopicPartitions waiting for `__share_group_state`.
+      KAFKA_GROUP_COORDINATOR_REBALANCE_PROTOCOLS: "classic,consumer,share"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: "1"
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_NUM_PARTITIONS: "1"
       CLUSTER_ID: "kapture-dev-cluster"
     ports:
       - "29092:29092" # Kafka API
