@@ -216,15 +216,9 @@ export function ProtoList({
         </span>
         <span
           className="proto__col proto__col--broker"
-          title="Connection ID — unique per TCP connection accepted by the proxy. Group rows with the same conn to see one client session."
+          title="Connection ID · Correlation ID — the pair (conn, corr) is the unique key that pairs one request with its one response. Filter button targets conn (groups a client session); for corr-only, type `corrId == N` in the DSL above."
         >
-          conn
-        </span>
-        <span
-          className="proto__col proto__col--corr"
-          title="Correlation ID — pairs a request with its response on the same connection."
-        >
-          corr
+          conn·corr
         </span>
         <span
           className="proto__col proto__col--rtt"
@@ -492,17 +486,10 @@ function ProtoRow({
         value={frame.connectionId}
         onAdd={onAddPredicate}
         filter={filter}
+        title="Click = / ≠ to filter on this connection. The number after · is the correlation id."
       >
         {frame.connectionId}
-      </FilterableCell>
-      <FilterableCell
-        className="proto__col proto__col--corr"
-        kind="corrId"
-        value={frame.corrId}
-        onAdd={onAddPredicate}
-        filter={filter}
-      >
-        {frame.corrId}
+        <span className="proto__corr-suffix">·{frame.corrId}</span>
       </FilterableCell>
       <span className="proto__col proto__col--rtt">
         {frame.direction === "recv" ? (

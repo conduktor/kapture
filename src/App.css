@@ -307,7 +307,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
       20px 180px minmax(180px, 1fr) minmax(0, 70px)
-      minmax(0, 60px) minmax(0, 90px);
+      minmax(0, 120px);
   }
 }
 @container (max-width: 620px) {
@@ -318,7 +318,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
       20px 180px minmax(180px, 1fr)
-      minmax(0, 60px) minmax(0, 90px);
+      minmax(0, 120px);
   }
 }
 @container (max-width: 500px) {
@@ -329,7 +329,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
       20px minmax(140px, 1fr)
-      minmax(0, 60px) minmax(0, 90px);
+      minmax(0, 120px);
   }
 }
 .msglist__virtual {
@@ -394,7 +394,8 @@ section.msglist[aria-label="Protocol frames"] {
 }
 .proto__ts-delta,
 .proto__api-ver,
-.proto__rtt-unit {
+.proto__rtt-unit,
+.proto__corr-suffix {
   color: var(--text-faint);
   font-size: 11px;
   margin-left: 4px;
@@ -417,7 +418,7 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
    * carried it. */
   grid-template-columns:
     20px 180px minmax(180px, 1fr) minmax(0, 70px)
-    minmax(0, 60px) minmax(0, 90px) minmax(0, 70px);
+    minmax(0, 120px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
  * `proto__col` already declares `overflow: hidden` (ellipsis), but the
@@ -443,15 +444,13 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 .proto__col--size {
   text-align: right;
 }
-.proto__col--corr,
 .proto__col--broker {
   text-align: center;
 }
 /* When the column is wrapped by a FilterableCell (inline-flex), the
  * column's `text-align: center` only positions the wrapper, not its
  * inner content. Force the wrapper to center its own children too so
- * the conn/corr numbers visibly sit in the middle of the column. */
-.proto__col--corr.proto-cell--filterable,
+ * the conn·corr tuple visibly sits in the middle of the column. */
 .proto__col--broker.proto-cell--filterable {
   justify-content: center;
 }
