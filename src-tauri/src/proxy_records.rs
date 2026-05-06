@@ -222,7 +222,8 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
 
     // Truncate u64 → i32 the same way `build_proto_event` does so the
     // `connection_id` on the ProtoFrame and on the CapturedMessage
-    // line up for the same TCP connection.
+    // line up for the same TCP connection. The mask bounds the result
+    // to 0..=i32::MAX, so the try_from cannot fail in practice.
     let connection_id = i32::try_from(conn_id & 0x7FFF_FFFF).unwrap_or(i32::MAX);
 
     CapturedMessage {

@@ -388,6 +388,10 @@ pub fn build_proto_event(
     let mut payload = Vec::with_capacity(body_take + 4);
     payload.extend_from_slice(&body_len_i32.to_be_bytes());
     payload.extend_from_slice(&frame[..body_take]);
+    // Mask to the positive i32 range (0..=i32::MAX) so the truncation
+    // is lossless within that range and `try_from` cannot fail. The
+    // `unwrap_or(i32::MAX)` is unreachable but satisfies clippy's
+    // `unwrap_used` deny without a panic path.
     let connection_id = i32::try_from(conn_id.0 & 0x7FFF_FFFF).unwrap_or(i32::MAX);
 
     let event = match dir {
@@ -666,9 +670,11 @@ mod tests {
     #[test]
     fn build_proto_event_redacts_sasl_authenticate_request_payload() {
         // Build a SaslAuthenticate (api_key=36) v2 request frame whose
-        // body carries a PLAIN credential `\0alice\0alice-secret`.
+        // body carries a PLAIN credential. Neutral fixture string —
+        // never reuse Phase 3 docker-compose credentials in test
+        // sources (codex v2 LOW finding 5).
         let map = CorrelationMap::default();
-        let secret = b"\0alice\0alice-secret";
+        let secret = b"\0fixture-user\0fixture-secret";
         let mut frame = Vec::new();
         frame.extend_from_slice(&36i16.to_be_bytes()); // api_key
         frame.extend_from_slice(&2i16.to_be_bytes()); // api_version
@@ -696,8 +702,8 @@ mod tests {
         );
         assert!(!event
             .payload
-            .windows(b"alice-secret".len())
-            .any(|w| w == b"alice-secret"));
+            .windows(b"fixture-secret".len())
+            .any(|w| w == b"fixture-secret"));
     }
 
     #[test]

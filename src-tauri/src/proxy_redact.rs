@@ -67,7 +67,9 @@ mod tests {
         // SaslAuthenticate v2 request frame:
         //   [4-byte size prefix] | header (api_key=36, ver=2, corr=7,
         //   client_id="kc", tagged=0) | auth_bytes credential...
-        let secret = b"\0alice\0alice-secret-12345";
+        // Neutral fixture string — never reuse Phase 3 docker-compose
+        // credentials in test sources (codex v2 LOW finding 5).
+        let secret = b"\0fixture-user\0fixture-secret-12345";
         let mut frame_body = Vec::new();
         frame_body.extend_from_slice(&36i16.to_be_bytes()); // api_key
         frame_body.extend_from_slice(&2i16.to_be_bytes()); // version
@@ -103,8 +105,8 @@ mod tests {
         // No substring of the credential leaks anywhere.
         assert!(!redacted.windows(secret.len()).any(|w| w == secret));
         assert!(!redacted
-            .windows(b"alice-secret".len())
-            .any(|w| w == b"alice-secret"));
+            .windows(b"fixture-secret".len())
+            .any(|w| w == b"fixture-secret"));
     }
 
     #[test]
