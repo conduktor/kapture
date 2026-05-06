@@ -477,6 +477,9 @@ function ProtoRow({
         filter={filter}
       >
         {frame.apiName}
+        <span className="proto__api-suffix">
+          {frame.direction === "send" ? "Request" : "Response"}
+        </span>
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
       </FilterableCell>
       <span className="proto__col proto__col--size">{frame.size}b</span>

@@ -400,6 +400,13 @@ section.msglist[aria-label="Protocol frames"] {
   font-size: 11px;
   margin-left: 4px;
 }
+/* Request|Response suffix on the API column. Slightly muted so the
+ * api name itself stays the primary signal, but readable enough that
+ * the direction is legible even when scanning fast. */
+.proto__api-suffix {
+  color: var(--text-muted);
+  font-weight: 400;
+}
 /* Match grid template to the columns in ProtoList. The ts column needs
  * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
  * suffix from `slice(11, 26)` actually fits without an ellipsis. The
