@@ -31,6 +31,16 @@
 //!  * `kafka_list_profiles` — saved profile metadata, no secrets
 //!  * `kafka_inspect_message` — full layer details for a single id
 //!  * `kafka_connect_profile` / `kafka_disconnect` — capture lifecycle
+//!
+//! ### Resource surface (read-only views)
+//!
+//!  * `kapture://stats/current`    — same payload as `kafka_stats`
+//!  * `kapture://messages/recent`  — same payload as `kafka_snapshot` capped
+//!    at the server hard limit, filter applied
+//!
+//! Resources mirror tools intentionally: agents that subscribe (clients that
+//! cache or poll resources) get the same view as agents that call tools, so a
+//! human and an agent never disagree about what the capture currently shows.
 
 #![allow(clippy::too_many_lines)]
 
@@ -44,12 +54,18 @@ use axum::http::{Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::ErrorData;
+use rmcp::handler::server::ServerHandler;
+use rmcp::model::{
+    AnnotateAble, ErrorData, ListResourcesResult, PaginatedRequestParams, RawResource,
+    ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+    ServerInfo,
+};
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::tower::{
     StreamableHttpServerConfig, StreamableHttpService,
 };
-use rmcp::{tool, tool_router, Json};
+use rmcp::{tool, tool_handler, tool_router, Json};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -157,7 +173,12 @@ struct AckResponse {
     detail: String,
 }
 
-#[tool_router(server_handler = true)]
+// Resource URIs. Kept as constants so the list_resources entries and the
+// read_resource match arms can never drift out of sync.
+const RESOURCE_STATS_URI: &str = "kapture://stats/current";
+const RESOURCE_MESSAGES_URI: &str = "kapture://messages/recent";
+
+#[tool_router]
 impl KaptureMcp {
     #[tool(description = "Return ring-buffer + throughput stats for the active capture.")]
     fn kafka_stats(&self, _: Parameters<EmptyParams>) -> Result<Json<StatsResponse>, ErrorData> {
@@ -365,6 +386,84 @@ impl KaptureMcp {
                 detail: "no active capture".into(),
             })),
         }
+    }
+}
+
+#[tool_handler]
+impl ServerHandler for KaptureMcp {
+    fn get_info(&self) -> ServerInfo {
+        // Deliberately bare `enable_resources()` — we DO NOT advertise
+        // `subscribe` (no push channel implemented) nor `listChanged` (the
+        // resource list is static; only the *content* changes as messages
+        // flow). Agents poll read_resource at their own cadence; the bearer
+        // token middleware is the rate gate.
+        ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_instructions(
+            "Kapture — Wireshark-for-Kafka. Tools steer the live capture; \
+             resources expose read-only views of the same data.",
+        )
+    }
+
+    async fn list_resources(
+        &self,
+        _params: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        // No pagination: only two resources, both fit in a single page.
+        let stats = RawResource::new(RESOURCE_STATS_URI, "Capture stats")
+            .with_description(
+                "Current ring-buffer stats + throughput. Same payload as \
+                 the kafka_stats tool.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation();
+        let messages = RawResource::new(RESOURCE_MESSAGES_URI, "Recent messages")
+            .with_description(
+                "Up to the server hard limit of recent messages with the \
+                 active filter applied. Same payload as kafka_snapshot \
+                 called without an explicit limit.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation();
+        Ok(ListResourcesResult::with_all_items(vec![stats, messages]))
+    }
+
+    async fn read_resource(
+        &self,
+        params: ReadResourceRequestParams,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        // Reuse the exact tool implementations so resources and tools cannot
+        // drift. The tools take Parameters wrappers; we feed them the same
+        // empty / default params an agent would use.
+        let body = match params.uri.as_str() {
+            RESOURCE_STATS_URI => {
+                let Json(payload) = self.kafka_stats(Parameters(EmptyParams::default()))?;
+                serde_json::to_string(&payload)
+                    .map_err(|err| ErrorData::internal_error(err.to_string(), None))?
+            }
+            RESOURCE_MESSAGES_URI => {
+                let Json(payload) =
+                    self.kafka_snapshot(Parameters(SnapshotParams { limit: None }))?;
+                serde_json::to_string(&payload)
+                    .map_err(|err| ErrorData::internal_error(err.to_string(), None))?
+            }
+            other => {
+                return Err(ErrorData::invalid_params(
+                    format!("unknown resource URI: {other}"),
+                    None,
+                ));
+            }
+        };
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            body,
+            &params.uri,
+        )]))
     }
 }
 
