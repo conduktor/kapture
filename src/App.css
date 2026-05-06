@@ -447,6 +447,14 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 .proto__col--broker {
   text-align: center;
 }
+/* When the column is wrapped by a FilterableCell (inline-flex), the
+ * column's `text-align: center` only positions the wrapper, not its
+ * inner content. Force the wrapper to center its own children too so
+ * the conn/corr numbers visibly sit in the middle of the column. */
+.proto__col--corr.proto-cell--filterable,
+.proto__col--broker.proto-cell--filterable {
+  justify-content: center;
+}
 
 /* Hover-revealed ⊕/⊖ filter button on proto list cells. The icon sits
  * inline next to the cell content and only turns visible when the cell

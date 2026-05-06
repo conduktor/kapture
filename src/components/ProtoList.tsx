@@ -1,9 +1,7 @@
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
-  useState,
   type JSX,
   type KeyboardEvent,
   type MouseEvent,
@@ -322,9 +320,11 @@ interface FilterableCellProps {
 
 /**
  * Cell wrapper that reveals a tiny ⊕ filter button on hover. Click
- * opens a small popover with explicit "Filter ≡" (include) and
- * "Filter ≢" (exclude) options. Stops row-click propagation on the
- * button so filtering doesn't also select the row.
+ * adds an INCLUDE predicate; Alt/Option-click adds an EXCLUDE.
+ * (Earlier we tried a popover for explicit choices, but the proto list
+ * row uses overflow:hidden + react-window virtualization, which clips
+ * any absolutely-positioned popover content. The mod-key approach
+ * keeps the click discoverable via the button title.)
  */
 function FilterableCell({
   className,
@@ -334,103 +334,28 @@ function FilterableCell({
   value,
   onAdd,
 }: FilterableCellProps): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLSpanElement | null>(null);
-
-  // Close the popover when clicking outside or pressing Escape.
-  useEffect(() => {
-    if (!open) {
-      return undefined;
-    }
-    const onDocClick = (event: globalThis.MouseEvent): void => {
-      if (
-        wrapperRef.current &&
-        event.target instanceof Node &&
-        !wrapperRef.current.contains(event.target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKey = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   const onIconClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    setOpen((v) => !v);
+    const mode: ProtoFilterMode = event.altKey ? "exclude" : "include";
+    onAdd(kind as never, value as never, mode);
   };
-  const choose =
-    (mode: ProtoFilterMode) =>
-    (event: MouseEvent<HTMLButtonElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      onAdd(kind as never, value as never, mode);
-      setOpen(false);
-    };
-
-  const renderedValue = typeof value === "string" ? `"${value}"` : String(value);
-
   return (
     <span
-      ref={wrapperRef}
-      className={`${className} proto-cell--filterable${open ? " is-open" : ""}`}
-      title={title ?? "Click ⊕ to filter on this value"}
+      className={`${className} proto-cell--filterable`}
+      title={title ?? "Click ⊕ to filter • Alt/Option-click to exclude"}
     >
       <span className="proto-cell__content">{children}</span>
       <button
         type="button"
         className="proto-cell__filter"
         tabIndex={-1}
-        aria-haspopup="menu"
-        aria-expanded={open}
         aria-label="Filter on this value"
-        title="Filter on this value"
+        title="Click: include this value · Alt/Option-click: exclude"
         onClick={onIconClick}
       >
         ⊕
       </button>
-      {open ? (
-        <span
-          className="proto-cell__popover"
-          role="menu"
-          onClick={(event) => {
-            event.stopPropagation();
-          }}
-        >
-          <span className="proto-cell__popover-header">
-            <span className="proto-cell__popover-kind">{kind}</span>
-            <span className="proto-cell__popover-value">{renderedValue}</span>
-          </span>
-          <button
-            type="button"
-            role="menuitem"
-            className="proto-cell__popover-item proto-cell__popover-item--include"
-            onClick={choose("include")}
-          >
-            <span className="proto-cell__popover-icon">≡</span>
-            <span>Filter to this value</span>
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            className="proto-cell__popover-item proto-cell__popover-item--exclude"
-            onClick={choose("exclude")}
-          >
-            <span className="proto-cell__popover-icon">≢</span>
-            <span>Exclude this value</span>
-          </button>
-        </span>
-      ) : null}
     </span>
   );
 }
