@@ -35,6 +35,13 @@ export interface ProtoFrame {
   apiName: string;
   apiVersion: number;
   connectionId: number;
+  /**
+   * Local proxy listener port that owned the pump that emitted this
+   * frame. `0` when not attributable to a proxy listener (defensive
+   * default; no such code path exists today). Used by the BrokersTab
+   * to aggregate send/recv counters per broker.
+   */
+  localPort: number;
   corrId: number;
   /** True wire size. */
   size: number;

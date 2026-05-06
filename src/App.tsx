@@ -641,7 +641,7 @@ function App(): JSX.Element {
             ) : null}
           </div>
           {tab === "brokers" ? (
-            <BrokersTab proxyStatus={proxyStatusSummary} />
+            <BrokersTab proxyStatus={proxyStatusSummary} protoFrames={protoFrames} />
           ) : tab === "messages" ? (
             <div
               ref={panesRef}

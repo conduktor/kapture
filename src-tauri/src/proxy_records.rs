@@ -732,6 +732,7 @@ mod tests {
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
             run_pump_with_rewrite(
                 ConnectionId(42),
+                0,
                 client_sock,
                 upstream_sock,
                 correlator,

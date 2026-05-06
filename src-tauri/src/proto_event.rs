@@ -29,6 +29,12 @@ pub struct ProtoEvent {
     /// Per-TCP-connection id (truncated u64 → i32) of the proxy
     /// connection that carried this frame.
     pub connection_id: i32,
+    /// Local TCP listener port that owned the per-connection pump that
+    /// emitted this event. Used by the `BrokersTab` to aggregate
+    /// send/recv counts per upstream broker (one listener ↔ one
+    /// broker mapping). `0` when the emitter is not a proxy listener
+    /// (defensive default; no such code path exists today).
+    pub local_port: u16,
     pub payload_size: usize,
     pub rtt_ms: f64,
     /// Captured wire-payload prefix. Empty if the proxy elected not to

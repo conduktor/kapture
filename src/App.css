@@ -1553,7 +1553,9 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 }
 .brokers__table {
   display: grid;
-  grid-template-columns: max-content max-content 1fr max-content;
+  grid-template-columns:
+    max-content max-content 1fr max-content max-content minmax(80px, 1fr)
+    max-content;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-elevated);
@@ -1600,6 +1602,32 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 }
 .brokers__cell--upstream {
   color: var(--text);
+}
+.brokers__cell--count {
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+}
+.brokers__cell--load {
+  display: flex;
+  align-items: center;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.brokers__row--head > .brokers__cell--load {
+  /* Restore default grid alignment in the header. */
+  display: block;
+  padding-top: 6px !important;
+  padding-bottom: 6px !important;
+}
+.brokers__bar {
+  height: 6px;
+  width: 0;
+  background: var(--accent);
+  border-radius: 999px;
+  min-width: 2px;
+  transition: width 0.2s ease-out;
 }
 .brokers__badge {
   display: inline-block;

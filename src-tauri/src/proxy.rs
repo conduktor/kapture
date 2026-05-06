@@ -1,16 +1,13 @@
-//! Kapture proxy mode.
-//!
-//! A TCP intermediary that accepts Kafka client connections, forwards
-//! every byte to a real upstream broker, and taps each frame to the
-//! `ProtoCorrelator` so the Protocol tab shows the wire-level traffic
-//! of the *client*, not of Kapture itself. See `docs/specs/proxy-mode.md`.
-//!
-//! Phase 2 (in progress): the listener fleet grows on demand — the
-//! response rewriter calls `BrokerProvisioner::ensure` whenever it
-//! sees a new broker in a `Metadata` / `FindCoordinator` /
-//! `DescribeCluster` response, which in turn binds a local listener
-//! and spawns its accept loop. Bootstrap broker is pre-seeded into
-//! `BrokerMap` so its listener is reused on rewrite (no double-bind).
+//! Kapture proxy mode. A TCP intermediary that accepts Kafka client
+//! connections, forwards every byte to a real upstream broker, and
+//! taps each frame to the `ProtoCorrelator` so the Protocol tab shows
+//! the wire-level traffic of the *client*, not of Kapture itself.
+//! See `docs/specs/proxy-mode.md`. The listener fleet grows on demand
+//! — the response rewriter calls `BrokerProvisioner::ensure` whenever
+//! it sees a new broker in `Metadata` / `FindCoordinator` /
+//! `DescribeCluster` responses, binding a local listener and spawning
+//! its accept loop. Bootstrap broker is pre-seeded into `BrokerMap`
+//! so its listener is reused on rewrite (no double-bind).
 
 use std::collections::HashMap;
 use std::io;
@@ -37,14 +34,13 @@ use crate::proxy_records::{
 use crate::proxy_redact::{redact_sasl_authenticate_body, API_KEY_SASL_AUTHENTICATE};
 use crate::proxy_topic_ids::TopicIdMap;
 
-/// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
-/// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
-/// decoded body stays bounded across both client and proxy modes.
+/// Cap on `payload` we copy into the `ProtoEvent`. Bounds the
+/// Protocol tab's hex view + decoded body across modes.
 pub const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
 
-/// Maximum in-flight requests tracked per client TCP connection.
-/// Exceeding this closes the offending proxy connection instead of
-/// allowing an unbounded correlation map to grow until memory pressure.
+/// Max in-flight requests per TCP connection. Exceeding this closes
+/// the offending proxy connection instead of growing the correlation
+/// map unboundedly.
 pub const MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: usize = 8192;
 
 // Skeleton type for Phase 1 — wired into AppState/commands in later tasks
@@ -105,11 +101,9 @@ impl ProxyConfig {
 /// one `Bytes` per frame on the read side, and accepts a `Bytes` per
 /// frame on the write side (it prepends the length itself).
 ///
-/// Max frame size is 100 MiB. The Kafka default `socket.request.max.bytes`
-/// is 100 MiB, and Kafka brokers reject anything larger, so this is the
-/// effective wire ceiling. Anything bigger than that and a `kafkacat -L`
-/// against a 10k-topic cluster would still parse, while a malicious peer
-/// can't OOM us with a 4 GiB `len` field.
+/// Max frame is 100 MiB — Kafka's default `socket.request.max.bytes`
+/// and the effective wire ceiling. Bounds memory against malicious
+/// peers sending a 4 GiB `len` field.
 #[allow(dead_code)] // see note on `ProxyConfig`
 pub fn framed_kafka<S: AsyncRead + AsyncWrite + Unpin>(
     socket: S,
@@ -291,13 +285,10 @@ where
 /// coordinator addresses (`Metadata`, `FindCoordinator`,
 /// `DescribeCluster`) so the client's follow-up connections come back
 /// through Kapture's local listeners instead of bypassing us.
-///
-/// The correlator records the **original** bytes (Wireshark-style:
-/// "show me what was on the wire") — only the bytes forwarded to the
-/// client are rewritten.
-///
-/// On rewrite failure the original frame is forwarded verbatim and
-/// the error is logged at `warn!` — we never silently drop frames.
+/// Correlator sees the **original** bytes (Wireshark-style); only
+/// forwarded bytes are rewritten. On rewrite failure the original
+/// frame is forwarded verbatim and logged at `warn!` — frames are
+/// never silently dropped.
 ///
 /// # Errors
 /// Bubbles up `io::Error` from the underlying TCP read/write.
@@ -305,6 +296,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pump_with_rewrite<U>(
     conn_id: ConnectionId,
+    local_port: u16,
     client: TcpStream,
     upstream: U,
     correlator: Arc<ProtoCorrelator>,
@@ -329,6 +321,7 @@ where
                 let event = build_proto_event(
                     ProxyDirection::ClientToUpstream,
                     conn_id,
+                    local_port,
                     &bytes,
                     &corr_map,
                 )?;
@@ -351,6 +344,7 @@ where
                 let event = build_proto_event(
                     ProxyDirection::UpstreamToClient,
                     conn_id,
+                    local_port,
                     &bytes,
                     &corr_map,
                 )?;
@@ -404,22 +398,21 @@ where
 }
 
 /// Build the `ProtoEvent` for one tapped frame. On the request path,
-/// peek the header and stash it in `corr_map`. On the response path,
+/// peek the header and stash it in `corr_map`; on the response path,
 /// look up the matching request to recover `(api_key, api_version)`
-/// and RTT.
-///
-/// The `payload` field re-prepends the 4-byte big-endian size prefix
-/// (encoding the body length, i.e. `frame.len()`) so the existing
-/// `proto_decode::decode_frame` parser keeps working unchanged. The
-/// `payload_size` is the WIRE size including that prefix, matching
-/// the librdkafka FFI semantics. The `connection_id` field on the
-/// returned event is the proxy's per-TCP-connection id (truncated
-/// to i32) — the same slot that the rdkafka path fills with the
-/// librdkafka `broker_id`.
+/// and RTT. `payload` re-prepends the 4-byte BE size prefix so the
+/// existing `proto_decode::decode_frame` parser keeps working
+/// unchanged; `payload_size` is the WIRE size including that prefix.
+/// `connection_id` is the proxy's per-TCP-connection id (u64
+/// truncated to i32). `local_port` is the proxy listener port that
+/// owned the pump that produced this frame — stamped on the event so
+/// downstream views can aggregate per-broker without a connection→
+/// listener side-table.
 #[allow(dead_code)] // wired into the pump tap in Task 6
 pub fn build_proto_event(
     dir: ProxyDirection,
     conn_id: ConnectionId,
+    local_port: u16,
     frame: &[u8],
     corr_map: &CorrelationMap,
 ) -> io::Result<ProtoEvent> {
@@ -458,6 +451,7 @@ pub fn build_proto_event(
                 api_version: header.map_or(-1, |h| i32::from(h.api_version)),
                 corr_id: header.map_or(0, |h| h.corr_id),
                 connection_id,
+                local_port,
                 payload_size,
                 rtt_ms: 0.0,
                 payload: inspector_payload,
@@ -478,6 +472,7 @@ pub fn build_proto_event(
                 api_version: pending.map_or(-1, |p| i32::from(p.header.api_version)),
                 corr_id,
                 connection_id,
+                local_port,
                 payload_size,
                 rtt_ms,
                 payload,
@@ -647,6 +642,7 @@ mod tests {
         let event = build_proto_event(
             ProxyDirection::ClientToUpstream,
             ConnectionId(7),
+            9092,
             &frame,
             &map,
         )
@@ -660,6 +656,7 @@ mod tests {
         assert_eq!(event.api_version, 3);
         assert_eq!(event.corr_id, 99);
         assert_eq!(event.connection_id, 7);
+        assert_eq!(event.local_port, 9092);
         assert_eq!(event.payload_size, frame.len() + 4);
         let body_len = i32::try_from(frame.len()).unwrap();
         assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
@@ -689,6 +686,7 @@ mod tests {
         let event = build_proto_event(
             ProxyDirection::UpstreamToClient,
             ConnectionId(7),
+            9093,
             &frame,
             &map,
         )
@@ -702,6 +700,7 @@ mod tests {
         assert_eq!(event.api_version, 13);
         assert_eq!(event.corr_id, 42);
         assert_eq!(event.connection_id, 7);
+        assert_eq!(event.local_port, 9093);
         assert_eq!(event.payload_size, frame.len() + 4);
         let body_len = i32::try_from(frame.len()).unwrap();
         assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
@@ -731,6 +730,7 @@ mod tests {
         let event = build_proto_event(
             ProxyDirection::ClientToUpstream,
             ConnectionId(11),
+            0,
             &frame,
             &map,
         )
@@ -762,6 +762,7 @@ mod tests {
         let event = build_proto_event(
             ProxyDirection::ClientToUpstream,
             ConnectionId(12),
+            0,
             &frame,
             &map,
         )
@@ -784,6 +785,7 @@ mod tests {
         let event = build_proto_event(
             ProxyDirection::UpstreamToClient,
             ConnectionId(7),
+            0,
             &frame,
             &map,
         )
@@ -942,6 +944,7 @@ mod tests {
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
             run_pump_with_rewrite(
                 ConnectionId(1),
+                0,
                 client_sock,
                 upstream_sock,
                 correlator,

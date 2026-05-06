@@ -276,6 +276,7 @@ fn spawn_accept_loop(
                                 info!(conn = conn_id.0, peer = %peer, "proxy connection opened");
                                 let result = run_pump_with_rewrite(
                                     conn_id,
+                                    local_port,
                                     client_sock,
                                     upstream_sock,
                                     correlator,

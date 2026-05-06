@@ -64,6 +64,9 @@ pub struct ProtoFrameSummary {
     pub api_name: &'static str,
     pub api_version: i32,
     pub connection_id: i32,
+    /// Local listener port that owned the pump emitting this frame.
+    /// Lets the frontend aggregate send/recv counters per broker.
+    pub local_port: u16,
     pub corr_id: i32,
     pub size: usize,
     pub captured: usize,
@@ -80,6 +83,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             api_name: f.api_name,
             api_version: f.api_version,
             connection_id: f.connection_id,
+            local_port: f.local_port,
             corr_id: f.corr_id,
             size: f.size,
             captured: f.captured,
@@ -103,6 +107,10 @@ pub struct ProtoFrame {
     pub api_name: &'static str,
     pub api_version: i32,
     pub connection_id: i32,
+    /// Local TCP listener port that owned the pump that recorded this
+    /// frame. Stamped at emission time so that closed-connection
+    /// frames retain their broker attribution in the ring buffer.
+    pub local_port: u16,
     pub corr_id: i32,
     /// True wire size (request size on Send, response size on Recv).
     pub size: usize,
@@ -178,6 +186,7 @@ impl ProtoCorrelator {
                 api_name: ProtoEvent::api_name(event.api_key),
                 api_version: event.api_version,
                 connection_id: event.connection_id,
+                local_port: event.local_port,
                 corr_id: event.corr_id,
                 size: event.payload_size,
                 captured,
@@ -278,6 +287,7 @@ mod tests {
             api_version: 11,
             corr_id: 42,
             connection_id,
+            local_port: 0,
             payload_size: 1024,
             rtt_ms,
             payload: Vec::new(),
