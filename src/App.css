@@ -350,10 +350,25 @@ body,
 }
 /* Match grid template to the columns in ProtoList. The ts column needs
  * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
- * suffix from `slice(11, 26)` actually fits without an ellipsis. */
+ * suffix from `slice(11, 26)` actually fits without an ellipsis. The
+ * `api` column flexes (1fr) and absorbs spare width; everything else
+ * uses `minmax(0, …)` so cells can shrink below their content width
+ * (combined with `min-width: 0` on grid children, eg the FilterableCell
+ * inline-flex wrapper) when the horizontal splitter narrows the pane.
+ * Without `minmax(0, …)` the rightmost rtt column would bleed past the
+ * pane edge and overlap the detail panel header. */
 section.msglist[aria-label="Protocol frames"] .msglist__head,
 section.msglist[aria-label="Protocol frames"] .msglist__row {
-  grid-template-columns: 140px 30px 130px 36px 60px 90px 70px 70px;
+  grid-template-columns:
+    minmax(0, 140px) minmax(0, 30px) minmax(0, 1fr) minmax(0, 36px)
+    minmax(0, 60px) minmax(0, 90px) minmax(0, 70px) minmax(0, 70px);
+}
+/* Grid children need `min-width: 0` to shrink below content size. The
+ * `proto__col` already declares `overflow: hidden` (ellipsis), but the
+ * FilterableCell wrapper uses `inline-flex` which defaults to
+ * `min-width: auto` and would prevent that shrink. */
+section.msglist[aria-label="Protocol frames"] .proto__col {
+  min-width: 0;
 }
 .proto__col--dir {
   text-align: center;
@@ -741,6 +756,24 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 }
 .msglist__row.is-selected {
   background: var(--bg-selected);
+}
+/* Suppress the default browser focus ring on row click — the row has
+ * `tabIndex={0}` for keyboard nav, so clicks would leave a leftover
+ * outline that looks like selection state. Keep an accessible indicator
+ * for keyboard users via :focus-visible only. */
+.msglist__row:focus {
+  outline: none;
+}
+.msglist__row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* Keyboard focus on a row that's also paired: layer the pair-accent
+ * left bar with the focus ring so neither is lost. */
+.msglist__row.is-paired:focus-visible {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 0 0 1px var(--accent);
 }
 .msglist__col {
   overflow: hidden;
