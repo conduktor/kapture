@@ -236,10 +236,28 @@ body,
   min-height: 0;
 }
 .layout__main {
-  display: grid;
-  grid-template-rows: minmax(180px, 1fr) minmax(140px, 1fr) 180px;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   border-right: 1px solid var(--border);
+}
+/* Per-tab pane container, fills the remaining height under .tabs.
+   Grid template rows are set inline from React state so the splitter
+   handles can drive them on drag. */
+.layout__panes {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+}
+.splitter {
+  height: 6px;
+  background: var(--border);
+  cursor: row-resize;
+  transition: background 0.1s;
+}
+.splitter:hover,
+.splitter:active {
+  background: var(--accent);
 }
 
 /* ---------- MessageList ---------- */
@@ -469,7 +487,7 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 }
 .field {
   display: grid;
-  grid-template-columns: 120px 1fr auto;
+  grid-template-columns: 160px 1fr;
   gap: 8px;
   padding: 2px 0;
   align-items: center;
@@ -480,6 +498,12 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 .field__value {
   color: var(--text);
   word-break: break-all;
+}
+.field__name--with-icon,
+.field__value--with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .field__filter {
   /* Idle: faint hint of an affordance. Hover: fully visible. Matches

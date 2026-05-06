@@ -12,6 +12,7 @@ import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
 import { ProtoList } from "./components/ProtoList";
 import { ProtoDetail } from "./components/ProtoDetail";
+import { Splitter } from "./components/Splitter";
 import type {
   AppInfo,
   AuthArgs,
@@ -67,6 +68,19 @@ function App(): JSX.Element {
   const [tab, setTab] = useState<"messages" | "protocol">("messages");
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
+  // Substring filter for the protocol tab. Matches case-insensitively
+  // against api name / direction / broker. Kept separate from the
+  // Wireshark-style DSL filter applied to messages.
+  const [protoFilter, setProtoFilter] = useState("");
+  // Vertical splits, expressed as fr ratios. Two splits in messages tab
+  // (between MessageList/LayerTree and LayerTree/HexDump), one in
+  // protocol (between ProtoList/ProtoDetail). Adjusted via Splitter
+  // drag handles. Constrained to [0.05, 0.95] to keep panes minimally
+  // visible.
+  const [msgSplitTop, setMsgSplitTop] = useState(0.4);
+  const [msgSplitMid, setMsgSplitMid] = useState(0.7);
+  const [protoSplit, setProtoSplit] = useState(0.55);
+  const panesRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
   // generation is allowed to commit set_filter / snapshot results, so a
@@ -350,13 +364,54 @@ function App(): JSX.Element {
       }
     : undefined;
 
+  // Filter bar wiring — different surface per tab. Messages tab uses
+  // the Wireshark-style DSL (validated server-side); protocol tab uses
+  // a substring match against the api name / direction (frontend-only,
+  // since the protocol frames don't go through the same DSL today).
+  const filterValue = tab === "messages" ? filter : protoFilter;
+  const filterPlaceholder =
+    tab === "messages"
+      ? 'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
+      : "substring match — e.g. Metadata, Heartbeat, ApiVersions";
+  const onFilterChange = (next: string): void => {
+    if (tab === "messages") {
+      setFilter(next);
+    } else {
+      setProtoFilter(next);
+    }
+  };
+
+  // Frontend filter on the protocol frames: case-insensitive substring
+  // against api name / direction. No backend round-trip — the proto
+  // ring buffer is small enough to filter in JS.
+  const visibleProtoFrames =
+    protoFilter.trim() === ""
+      ? protoFrames
+      : protoFrames.filter((f) => {
+          const q = protoFilter.toLowerCase();
+          return (
+            f.apiName.toLowerCase().includes(q) ||
+            f.direction.toLowerCase().includes(q) ||
+            String(f.brokerId).includes(q) ||
+            String(f.corrId).includes(q)
+          );
+        });
+
+  // Splitter callbacks: convert pixel deltas into ratio deltas.
+  const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
+  const adjustSplit = (setter: (next: (prev: number) => number) => void, deltaPx: number): void => {
+    const h = panesRef.current?.offsetHeight ?? 1;
+    setter((prev) => clamp(prev + deltaPx / h, 0.05, 0.95));
+  };
+
   return (
     <div className="app">
       <UpdateBanner />
       <TopBar
-        filter={filter}
-        onFilterChange={setFilter}
-        filterError={filterError}
+        filter={filterValue}
+        onFilterChange={onFilterChange}
+        filterError={tab === "messages" ? filterError : null}
+        filterPlaceholder={filterPlaceholder}
         capturing={connection.status === "connected"}
         onToggleCapture={() => {
           if (connection.status === "connected") {
@@ -397,25 +452,54 @@ function App(): JSX.Element {
             </button>
           </div>
           {tab === "messages" ? (
-            <>
+            <div
+              ref={panesRef}
+              className="layout__panes"
+              style={{
+                gridTemplateRows: `${msgSplitTop}fr 6px ${
+                  msgSplitMid - msgSplitTop
+                }fr 6px ${1 - msgSplitMid}fr`,
+              }}
+            >
               <MessageList
                 messages={messages}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpenFilterMenu={openFilterMenu}
               />
+              <Splitter
+                onResize={(dy) => {
+                  adjustSplit(setMsgSplitTop, dy);
+                }}
+              />
               <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />
+              <Splitter
+                onResize={(dy) => {
+                  adjustSplit(setMsgSplitMid, dy);
+                }}
+              />
               <HexDump message={selected} />
-            </>
+            </div>
           ) : (
-            <>
+            <div
+              ref={panesRef}
+              className="layout__panes"
+              style={{ gridTemplateRows: `${protoSplit}fr 6px ${1 - protoSplit}fr` }}
+            >
               <ProtoList
-                frames={protoFrames}
+                frames={visibleProtoFrames}
                 selectedId={selectedFrameId}
                 onSelect={setSelectedFrameId}
               />
-              <ProtoDetail frame={protoFrames.find((f) => f.id === selectedFrameId) ?? null} />
-            </>
+              <Splitter
+                onResize={(dy) => {
+                  adjustSplit(setProtoSplit, dy);
+                }}
+              />
+              <ProtoDetail
+                frame={visibleProtoFrames.find((f) => f.id === selectedFrameId) ?? null}
+              />
+            </div>
           )}
         </div>
         <SidePanel appInfo={appInfo} connection={connection} stats={stats} />

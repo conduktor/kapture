@@ -216,20 +216,29 @@ function Field({
         }
       : undefined;
 
+  // Same menu, but separately reachable from the key cell and the
+  // value cell so users can aim at either side. Both icons share the
+  // same FilterTarget; the menu's "Has value" / "Filter ==" entries
+  // already cover key-presence vs. value-equality semantics.
+  const openAt = (event: MouseEvent<HTMLButtonElement>): void => {
+    if (target && onOpenFilterMenu) {
+      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
+    }
+  };
+
   return (
     <div
       className={`field${ctxHandler ? " field--filterable" : ""}`}
       {...(ctxHandler ? { onContextMenu: ctxHandler } : {})}
     >
-      <span className="field__name">{name}</span>
-      <span className="field__value">{value}</span>
-      {target && onOpenFilterMenu ? (
-        <FilterButton
-          onClick={(event) => {
-            onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
-          }}
-        />
-      ) : null}
+      <span className="field__name field__name--with-icon">
+        {name}
+        {target && onOpenFilterMenu ? <FilterButton onClick={openAt} /> : null}
+      </span>
+      <span className="field__value field__value--with-icon">
+        {value}
+        {target && onOpenFilterMenu ? <FilterButton onClick={openAt} /> : null}
+      </span>
     </div>
   );
 }

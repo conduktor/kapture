@@ -4,6 +4,7 @@ interface Props {
   filter: string;
   onFilterChange: (next: string) => void;
   filterError: string | null;
+  filterPlaceholder?: string;
   capturing: boolean;
   onToggleCapture: () => void;
   onClear: () => void;
@@ -15,6 +16,7 @@ export function TopBar({
   filter,
   onFilterChange,
   filterError,
+  filterPlaceholder,
   capturing,
   onToggleCapture,
   onClear,
@@ -40,7 +42,10 @@ export function TopBar({
           className={`topbar__filter${filterError ? " topbar__filter--invalid" : ""}`}
           spellCheck={false}
           autoComplete="off"
-          placeholder='topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
+          placeholder={
+            filterPlaceholder ??
+            'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
+          }
           value={filter}
           onChange={(event) => {
             onFilterChange(event.target.value);
