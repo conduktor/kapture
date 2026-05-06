@@ -1,4 +1,4 @@
-import { useMemo, type JSX, type MouseEvent } from "react";
+import { useMemo, type JSX, type MouseEvent, type ReactNode } from "react";
 import { List, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
 import type { FilterTarget } from "./FilterMenu";
@@ -83,9 +83,9 @@ function MessageRow({
   }
   const isSelected = selectedId === message.id;
 
-  // Right-click on a filterable cell opens the filter menu at the cursor.
-  // Cells without a sensible filter (offset, ts, size) intentionally have
-  // no handler — the row's default behaviour (select on click) still works.
+  // Hover-revealed icon is the primary affordance. Right-click on the cell
+  // is kept as a power-user shortcut (no UI cost). Both routes open the
+  // same menu at the cursor position.
   const ctxHandler =
     (target: FilterTarget) =>
     (event: MouseEvent<HTMLSpanElement>): void => {
@@ -93,6 +93,47 @@ function MessageRow({
       event.stopPropagation();
       onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
     };
+  const iconHandler =
+    (target: FilterTarget) =>
+    (event: MouseEvent<HTMLSpanElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget.getBoundingClientRect();
+      onOpenFilterMenu(target, { x: rect.right, y: rect.bottom });
+    };
+
+  // Cell + hover-revealed filter icon. Inline so we don't have to thread
+  // every cell through a wrapper component just for the affordance.
+  const filterableCell = (
+    extraClass: string,
+    target: FilterTarget,
+    children: ReactNode,
+  ): ReactNode => (
+    <span
+      className={`msglist__col ${extraClass} msglist__col--filterable`}
+      onContextMenu={ctxHandler(target)}
+    >
+      <span className="msglist__col-content">{children}</span>
+      <span
+        className="msglist__filter-icon"
+        role="button"
+        aria-label="Filter actions"
+        title="Filter actions"
+        tabIndex={-1}
+        onClick={iconHandler(target)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            const rect = event.currentTarget.getBoundingClientRect();
+            onOpenFilterMenu(target, { x: rect.right, y: rect.bottom });
+          }
+        }}
+      >
+        ⌄
+      </span>
+    </span>
+  );
 
   return (
     <button
@@ -105,58 +146,45 @@ function MessageRow({
       onDoubleClick={() => {
         onFollow(message);
       }}
-      title="Click to inspect — double-click to follow this key — right-click a cell to filter"
+      title="Click to inspect — double-click to follow this key — hover a cell for filter options"
       aria-posinset={ariaAttributes["aria-posinset"]}
       aria-setsize={ariaAttributes["aria-setsize"]}
       role={ariaAttributes.role}
     >
       <span className="msglist__col msglist__col--ts">{message.timestamp}</span>
-      <span
-        className="msglist__col msglist__col--topic msglist__col--filterable"
-        onContextMenu={ctxHandler({
-          path: "topic",
-          literal: { kind: "string", value: message.topic },
-        })}
-      >
-        {message.topic}
-      </span>
-      <span
-        className="msglist__col msglist__col--p msglist__col--filterable"
-        onContextMenu={ctxHandler({
+      {filterableCell(
+        "msglist__col--topic",
+        { path: "topic", literal: { kind: "string", value: message.topic } },
+        message.topic,
+      )}
+      {filterableCell(
+        "msglist__col--p",
+        {
           path: "envelope.partition",
           literal: { kind: "number", value: String(message.partition) },
-        })}
-      >
-        {message.partition}
-      </span>
+        },
+        message.partition,
+      )}
       <span className="msglist__col msglist__col--offset">{message.offset}</span>
       {message.key === null ? (
         <span className="msglist__col msglist__col--key">—</span>
       ) : (
-        <span
-          className="msglist__col msglist__col--key msglist__col--filterable"
-          onContextMenu={ctxHandler({
-            path: "envelope.key",
-            literal: { kind: "string", value: message.key },
-          })}
-        >
-          {message.key}
-        </span>
+        filterableCell(
+          "msglist__col--key",
+          { path: "envelope.key", literal: { kind: "string", value: message.key } },
+          message.key,
+        )
       )}
       {message.schemaName === null ? (
         <span className="msglist__col msglist__col--schema">
           <em className="muted">raw</em>
         </span>
       ) : (
-        <span
-          className="msglist__col msglist__col--schema msglist__col--filterable"
-          onContextMenu={ctxHandler({
-            path: "schema.name",
-            literal: { kind: "string", value: message.schemaName },
-          })}
-        >
-          {message.schemaName}
-        </span>
+        filterableCell(
+          "msglist__col--schema",
+          { path: "schema.name", literal: { kind: "string", value: message.schemaName } },
+          message.schemaName,
+        )
       )}
       <span className="msglist__col msglist__col--size">{message.sizeBytes}b</span>
     </button>

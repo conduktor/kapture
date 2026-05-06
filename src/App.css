@@ -696,16 +696,53 @@ body,
   margin: 4px 0;
 }
 
-/* Cells with a filter affordance get a subtle hover hint. */
+/* Cells with a filter affordance: the chevron icon appears on hover and
+   is the primary "click for filter options" affordance. Right-click on
+   the cell still opens the menu — same target, no UI cost. */
 .msglist__col--filterable {
-  cursor: context-menu;
+  position: relative;
+  cursor: pointer;
 }
 .msglist__col--filterable:hover {
   background: var(--bg-hover);
   border-radius: 2px;
 }
+.msglist__col-content {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+.msglist__filter-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s;
+  vertical-align: middle;
+}
+.msglist__col--filterable:hover .msglist__filter-icon,
+.msglist__row:hover .msglist__filter-icon:focus-visible {
+  opacity: 1;
+}
+.msglist__filter-icon:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
 .field--filterable {
-  cursor: context-menu;
+  cursor: pointer;
 }
 .dialog__field {
   display: flex;
