@@ -11,7 +11,6 @@ import { List, type ListImperativeAPI, type RowComponentProps } from "react-wind
 import type { ProtoDirection, ProtoFrame } from "../types";
 import {
   applyFilter,
-  filterChips,
   hasPredicate,
   isFilterEmpty,
   type ProtoFilter,
@@ -68,8 +67,8 @@ export function ProtoList({
   onSelect,
   filter,
   onAddPredicate: onAddPredicateRaw,
-  onRemoveChip,
-  onClearFilter,
+  onRemoveChip: _onRemoveChip,
+  onClearFilter: _onClearFilter,
   decodedFor,
 }: Props): JSX.Element {
   // Apply the filter. Stable identity for `frames` ref keeps reconciliation
@@ -179,21 +178,10 @@ export function ProtoList({
     [visibleFrames, selectedId, onSelect],
   );
 
-  const chips = useMemo<ProtoFilterChip[]>(() => filterChips(filter), [filter]);
   const total = frames.length;
-  const shown = visibleFrames.length;
 
   return (
     <section className="msglist" aria-label="Protocol frames" tabIndex={0} onKeyDown={onKeyDown}>
-      {chips.length > 0 ? (
-        <ProtoFilterBar
-          chips={chips}
-          shown={shown}
-          total={total}
-          onRemove={onRemoveChip}
-          onClear={onClearFilter}
-        />
-      ) : null}
       <div className="msglist__head">
         <span className="proto__col proto__col--dir" aria-hidden="true" />
         <span
@@ -258,48 +246,6 @@ export function ProtoList({
         )}
       </div>
     </section>
-  );
-}
-
-function ProtoFilterBar({
-  chips,
-  shown,
-  total,
-  onRemove,
-  onClear,
-}: {
-  chips: ProtoFilterChip[];
-  shown: number;
-  total: number;
-  onRemove: (chip: ProtoFilterChip) => void;
-  onClear: () => void;
-}): JSX.Element {
-  return (
-    <div className="proto-filterbar" role="region" aria-label="Active proto filters">
-      <span className="proto-filterbar__label">Filters</span>
-      {chips.map((chip, i) => (
-        <button
-          key={`${chip.kind}:${chip.mode}:${String(chip.value)}:${String(i)}`}
-          type="button"
-          className={`proto-chip proto-chip--${chip.mode}`}
-          title={`Remove: ${chip.label}`}
-          onClick={() => {
-            onRemove(chip);
-          }}
-        >
-          <span className="proto-chip__label">{chip.label}</span>
-          <span className="proto-chip__x" aria-hidden="true">
-            ×
-          </span>
-        </button>
-      ))}
-      <button type="button" className="proto-filterbar__clear" onClick={onClear}>
-        clear all
-      </button>
-      <span className="proto-filterbar__count">
-        showing {shown} of {total}
-      </span>
-    </div>
   );
 }
 
