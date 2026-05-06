@@ -528,9 +528,15 @@ impl KaptureMcp {
             .app_handle
             .try_state::<AppState>()
             .ok_or_else(|| ErrorData::internal_error("AppState not initialised", None))?;
-        crate::commands::start_proxy_impl(&self.app_handle, &state_ref, upstream, listen_port)
-            .await
-            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        crate::commands::start_proxy_impl(
+            &self.app_handle,
+            &state_ref,
+            upstream,
+            listen_port,
+            true, // MCP path: re-check gate before slot claim (race fix)
+        )
+        .await
+        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
         // Read the freshly-installed proxy summary so the agent gets a
         // proper status object (listen address etc.) on the same call.
         Ok(Json(proxy_status_response(&state_ref)))

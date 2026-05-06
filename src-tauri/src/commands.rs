@@ -405,23 +405,40 @@ pub async fn start_proxy(
     upstream: String,
     listen_port: u16,
 ) -> Result<ProxyStatus> {
-    start_proxy_impl(&app, &state, upstream, listen_port).await
+    start_proxy_impl(&app, &state, upstream, listen_port, false).await
 }
 
 /// Implementation shared between the Tauri command and the MCP
 /// `kapture_set_proxy_target` tool. The argument layering mirrors
 /// `start_capture_from_profile` in `mcp.rs`.
+///
+/// `mcp_authorized` MUST be `true` for the MCP path. When true, this
+/// function re-checks `mcp_connect_allowed` immediately before claiming
+/// the capture slot so a revoke that lands during the prior awaits
+/// (`take_capture`, `take_proxy`) cannot be bypassed. The Tauri
+/// command path passes `false` because the user clicking Connect IS
+/// the explicit consent.
 pub async fn start_proxy_impl(
     app: &AppHandle,
     state: &AppState,
     upstream: String,
     listen_port: u16,
+    mcp_authorized: bool,
 ) -> Result<ProxyStatus> {
     if let Some(handle) = state.take_capture() {
         handle.stop().await;
     }
     if let Some(handle) = state.take_proxy() {
         handle.stop().await;
+    }
+    // Re-check the MCP gate after the awaits above. A revocation that
+    // lands while we were stopping the previous capture must take
+    // effect before we open new sockets. No awaits between this check
+    // and `try_claim_capture_slot` below.
+    if mcp_authorized && !state.mcp_connect_allowed() {
+        return Err(KaptureError::Config(
+            "MCP-initiated proxy revoked before slot claim".to_owned(),
+        ));
     }
     if !state.try_claim_capture_slot() {
         return Err(KaptureError::AlreadyProxying);
