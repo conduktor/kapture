@@ -242,18 +242,38 @@ body,
   border-right: 1px solid var(--border);
 }
 /* Per-tab pane container, fills the remaining height under .tabs.
-   Grid template rows are set inline from React state so the splitter
-   handles can drive them on drag. */
+   Grid template rows/columns are set inline from React state so the
+   splitter handles can drive them on drag. The default (Messages tab)
+   is a vertical stack of three rows; the protocol tab opts into a
+   horizontal split via the `--horizontal` modifier. */
 .layout__panes {
   display: grid;
   flex: 1;
   min-height: 0;
 }
+/* Side-by-side variant (Protocol tab). Three columns: list | handle |
+   detail. Each grid cell needs `min-width: 0` so child content with
+   long mono lines (decoded tree, hex dump) shrinks instead of blowing
+   the column out and triggering horizontal scroll on the wrapper. */
+.layout__panes--horizontal {
+  min-width: 0;
+}
+.layout__panes--horizontal > * {
+  min-width: 0;
+  min-height: 0;
+}
 .splitter {
-  height: 6px;
   background: var(--border);
-  cursor: row-resize;
   transition: background 0.1s;
+}
+.splitter--vertical {
+  height: 6px;
+  cursor: row-resize;
+}
+.splitter--horizontal {
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
 }
 .splitter:hover,
 .splitter:active {

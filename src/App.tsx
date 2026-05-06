@@ -88,14 +88,38 @@ function App(): JSX.Element {
   // Bounded so the chip-based filter doesn't pin unbounded memory.
   const decodedCacheRef = useRef<Map<string, string>>(new Map());
   const DECODED_CACHE_MAX = 50;
-  // Vertical splits, expressed as fr ratios. Two splits in messages tab
-  // (between MessageList/LayerTree and LayerTree/HexDump), one in
-  // protocol (between ProtoList/ProtoDetail). Adjusted via Splitter
-  // drag handles. Constrained to [0.05, 0.95] to keep panes minimally
-  // visible.
+  // Pane splits, expressed as fr ratios. Messages tab is stacked
+  // top-to-bottom (two vertical splits between MessageList/LayerTree and
+  // LayerTree/HexDump). Protocol tab is side-by-side (one horizontal
+  // split between ProtoList/ProtoDetail). Adjusted via Splitter drag
+  // handles. Constrained to [0.05, 0.95] to keep panes minimally
+  // visible. The protocol split is persisted to localStorage so the
+  // user's preferred list/detail width survives reloads.
+  const PROTO_SPLIT_KEY = "kapture.proto.splitRatio";
   const [msgSplitTop, setMsgSplitTop] = useState(0.4);
   const [msgSplitMid, setMsgSplitMid] = useState(0.7);
-  const [protoSplit, setProtoSplit] = useState(0.55);
+  const [protoSplit, setProtoSplit] = useState<number>(() => {
+    try {
+      const raw = window.localStorage.getItem(PROTO_SPLIT_KEY);
+      if (raw === null) {
+        return 0.45;
+      }
+      const n = Number.parseFloat(raw);
+      if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) {
+        return n;
+      }
+    } catch {
+      /* localStorage may be unavailable (private mode, file://) — fall through */
+    }
+    return 0.45;
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(PROTO_SPLIT_KEY, String(protoSplit));
+    } catch {
+      /* ignore quota / unavailable */
+    }
+  }, [protoSplit]);
   const panesRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
@@ -504,11 +528,18 @@ function App(): JSX.Element {
     [protoFrames],
   );
 
-  // Splitter callbacks: convert pixel deltas into ratio deltas.
+  // Splitter callbacks: convert pixel deltas into ratio deltas. The
+  // axis depends on the pane container's split direction — vertical
+  // splits use height, horizontal use width.
   const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
-  const adjustSplit = (setter: (next: (prev: number) => number) => void, deltaPx: number): void => {
-    const h = panesRef.current?.offsetHeight ?? 1;
-    setter((prev) => clamp(prev + deltaPx / h, 0.05, 0.95));
+  const adjustSplit = (
+    setter: (next: (prev: number) => number) => void,
+    deltaPx: number,
+    axis: "y" | "x" = "y",
+  ): void => {
+    const el = panesRef.current;
+    const extent = (axis === "x" ? el?.offsetWidth : el?.offsetHeight) ?? 1;
+    setter((prev) => clamp(prev + deltaPx / extent, 0.05, 0.95));
   };
 
   return (
@@ -591,8 +622,8 @@ function App(): JSX.Element {
           ) : (
             <div
               ref={panesRef}
-              className="layout__panes"
-              style={{ gridTemplateRows: `${protoSplit}fr 6px ${1 - protoSplit}fr` }}
+              className="layout__panes layout__panes--horizontal"
+              style={{ gridTemplateColumns: `${protoSplit}fr 6px ${1 - protoSplit}fr` }}
             >
               <ProtoList
                 frames={protoFrames}
@@ -605,8 +636,9 @@ function App(): JSX.Element {
                 decodedFor={decodedFor}
               />
               <Splitter
-                onResize={(dy) => {
-                  adjustSplit(setProtoSplit, dy);
+                orientation="horizontal"
+                onResize={(dx) => {
+                  adjustSplit(setProtoSplit, dx, "x");
                 }}
               />
               <ProtoDetail
