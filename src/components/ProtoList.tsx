@@ -509,17 +509,14 @@ function ProtoRow({
       aria-setsize={ariaAttributes["aria-setsize"]}
       aria-selected={isSelected}
     >
-      <FilterableCell
+      <span
         className="proto__col proto__col--dir"
-        kind="direction"
-        value={frame.direction}
-        onAdd={onAddPredicate}
         title={frame.direction === "send" ? "request out" : "response in"}
       >
         <span className={`proto__dir--${frame.direction}`}>
           {frame.direction === "send" ? "→" : "←"}
         </span>
-      </FilterableCell>
+      </span>
       <span className="proto__col proto__col--ts">
         {ts}
         {delta !== null ? <span className="proto__ts-delta"> {delta}</span> : null}
