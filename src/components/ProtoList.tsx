@@ -200,7 +200,7 @@ export function ProtoList({
           className="proto__col proto__col--ts"
           title="Wall-clock time the frame was observed (HH:MM:SS.µs); the dim suffix shows the delta since the previous visible frame."
         >
-          ts
+          Timestamp
         </span>
         <span
           className="proto__col proto__col--api"
