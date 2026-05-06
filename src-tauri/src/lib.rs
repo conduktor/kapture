@@ -15,6 +15,7 @@ mod proxy_broker_map;
 mod proxy_handle;
 mod proxy_provisioner;
 mod proxy_records;
+mod proxy_redact;
 mod proxy_rewrite;
 mod proxy_topic_ids;
 mod ring_buffer;

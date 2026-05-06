@@ -149,3 +149,131 @@ Phase 2 lazy-listener fleet against a real 3-broker KRaft cluster.
   Fetch is correct but not the broker-internal latency.
 - The proxy's `--seconds` upper bound is what makes this CI-friendly:
   no TTY required, ctrl-c still works for interactive sessions.
+
+## Phase 3 — SASL pass-through with credential redaction
+
+End-to-end validation that the proxy forwards a SASL/PLAIN handshake
+verbatim to the broker and that the captured `SaslAuthenticate` request
+payload is redacted in the inspector ring buffer.
+
+### Stack
+
+`docker-compose.yml` profile `sasl` brings up a single Apache Kafka 4.x
+KRaft broker with two listeners:
+
+- `PLAINTEXT://kafka-sasl:9092` — internal / inter-broker.
+- `SASL_PLAINTEXT://localhost:49092` — exposed to the host, mechanism
+  `PLAIN`. JAAS config inlined as an env var.
+
+Dev-only credentials, baked into the JAAS string, **not for any
+non-dev use**:
+
+| user    | password       |
+| ------- | -------------- |
+| `admin` | `admin-secret` |
+| `alice` | `alice-secret` |
+
+```sh
+pnpm stack:up:sasl
+```
+
+### Control — kcat directly against the broker
+
+`kcat -b localhost:49092 -X security.protocol=SASL_PLAINTEXT -X sasl.mechanism=PLAIN -X sasl.username=alice -X sasl.password=alice-secret -L`:
+
+```
+Metadata for all topics (from broker 1: sasl_plaintext://localhost:49092/1):
+ 1 brokers:
+  broker 1 at localhost:49092 (controller)
+ 0 topics:
+```
+
+SASL/PLAIN works end-to-end against the dev broker.
+
+### Through the proxy
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --example proxy_smoke -- \
+    --upstream localhost:49092 --listen 9092 --seconds 25 &
+kcat -b 127.0.0.1:9092 -X security.protocol=SASL_PLAINTEXT \
+    -X sasl.mechanism=PLAIN -X sasl.username=alice -X sasl.password=alice-secret -L
+echo "hello-sasl" | kcat -b 127.0.0.1:9092 -X security.protocol=SASL_PLAINTEXT \
+    -X sasl.mechanism=PLAIN -X sasl.username=alice -X sasl.password=alice-secret -P -t sasl-test
+kcat -b 127.0.0.1:9092 -X security.protocol=SASL_PLAINTEXT \
+    -X sasl.mechanism=PLAIN -X sasl.username=alice -X sasl.password=alice-secret \
+    -C -t sasl-test -e -o beginning
+```
+
+`kcat -L` through the proxy:
+
+```
+Metadata for all topics (from broker 1: sasl_plaintext://127.0.0.1:9092/1):
+ 1 brokers:
+  broker 1 at 127.0.0.1:9092 (controller)
+ 0 topics:
+```
+
+Produce + Consume returned `hello-sasl` at offset 0 — full round-trip
+through the proxy, broker authenticated the client directly.
+
+### Frame sequence captured
+
+61 frames over 6 connections. Per-connection mix:
+
+```
+ApiVersions   -> ApiVersions   <-
+SaslHandshake -> SaslHandshake <-
+SaslAuthenticate -> SaslAuthenticate <-
+Metadata      -> Metadata      <-
+(then the operation: Produce / Fetch / ListOffsets)
+```
+
+API breakdown:
+
+| API              | Frames |
+| ---------------- | -----: |
+| ApiVersions      |     12 |
+| SaslHandshake    |     12 |
+| SaslAuthenticate |     12 |
+| Metadata         |     14 |
+| Produce          |      2 |
+| Fetch            |      8 |
+| ListOffsets      |      1 |
+
+### Redaction verification
+
+`grep -c "alice-secret" /tmp/proxy_smoke_sasl.log` → `0`.
+`grep -c "alice"        /tmp/proxy_smoke_sasl.log` → `0`.
+
+The unit test `proxy::tests::build_proto_event_redacts_sasl_authenticate_request_payload`
+plants a credential `\0alice\0alice-secret` in a synthetic api_key=36
+v2 frame, runs it through `build_proto_event`, and asserts the
+resulting `ProtoEvent.payload` contains neither the full credential
+nor the substring `alice-secret`. Module tests
+`proxy_redact::tests::redact_sasl_authenticate_replaces_body_after_header`
+and `..._short_payload_is_safe` cover the redaction helper directly.
+
+### Conclusion
+
+- SASL/PLAIN handshake forwards verbatim through the proxy: confirmed.
+- Forwarded bytes are NOT modified — the broker authenticates the
+  real client.
+- `SaslAuthenticate` request payload in the ring buffer is replaced
+  with a fixed `[REDACTED SaslAuthenticate body]` placeholder before
+  `ProtoCorrelator::record_event` is called. The credential never
+  enters the inspector path.
+
+### Notes / deviations
+
+- The dev cluster uses `SASL_PLAINTEXT`, not `SASL_SSL`. The proxy
+  doesn't terminate TLS, so `SASL_SSL` would need a separate phase
+  (TLS pass-through or termination — not in scope here).
+- Only `PLAIN` is exercised end-to-end. The redaction strategy is
+  mechanism-agnostic (replaces the entire body), so SCRAM and
+  OAUTHBEARER are covered by the same code path, but the dev stack
+  only ships `PLAIN`.
+- The redaction strategy is the paranoid one — replace the whole
+  body with a fixed placeholder rather than trying to skip the
+  request header. Trade-off: the Protocol-tab decoder will fail on
+  these frames (the placeholder isn't a valid `SaslAuthenticate`
+  body). That's correct — there's nothing to inspect.

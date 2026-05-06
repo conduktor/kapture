@@ -33,6 +33,7 @@ use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_records::{
     extract_from_fetch_response, extract_from_produce_request, extracted_to_captured,
 };
+use crate::proxy_redact::{redact_sasl_authenticate_body, API_KEY_SASL_AUTHENTICATE};
 use crate::proxy_topic_ids::TopicIdMap;
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
@@ -391,15 +392,26 @@ pub fn build_proto_event(
             if let Some(h) = header {
                 corr_map.record_request(h.corr_id, h)?;
             }
+            let api_key_i32 = header.map_or(-1, |h| i32::from(h.api_key));
+            // Redact SaslAuthenticate request bodies BEFORE we hand the
+            // payload off to the inspector. The forwarded `Bytes` in the
+            // pump is a separate buffer — it's untouched, so the broker
+            // still sees the real credentials. Only the in-process
+            // ring-buffer copy gets the placeholder.
+            let inspector_payload = if api_key_i32 == API_KEY_SASL_AUTHENTICATE {
+                redact_sasl_authenticate_body(payload)
+            } else {
+                payload
+            };
             ProtoEvent {
                 direction: ProtoDirection::Send,
-                api_key: header.map_or(-1, |h| i32::from(h.api_key)),
+                api_key: api_key_i32,
                 api_version: header.map_or(-1, |h| i32::from(h.api_version)),
                 corr_id: header.map_or(0, |h| h.corr_id),
                 broker_id,
                 payload_size,
                 rtt_ms: 0.0,
-                payload,
+                payload: inspector_payload,
             }
         }
         ProxyDirection::UpstreamToClient => {
@@ -645,6 +657,68 @@ mod tests {
         assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
         assert_eq!(&event.payload[4..], &frame[..]);
         assert!(event.rtt_ms >= 0.0);
+    }
+
+    #[test]
+    fn build_proto_event_redacts_sasl_authenticate_request_payload() {
+        // Build a SaslAuthenticate (api_key=36) v2 request frame whose
+        // body carries a PLAIN credential `\0alice\0alice-secret`.
+        let map = CorrelationMap::default();
+        let secret = b"\0alice\0alice-secret";
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&36i16.to_be_bytes()); // api_key
+        frame.extend_from_slice(&2i16.to_be_bytes()); // api_version
+        frame.extend_from_slice(&77i32.to_be_bytes()); // corr_id
+        frame.extend_from_slice(&(-1i16).to_be_bytes()); // client_id null
+        frame.push(0); // tagged fields
+        frame.extend_from_slice(secret);
+
+        // Sanity: the raw frame contains the credential.
+        assert!(frame.windows(secret.len()).any(|w| w == secret));
+
+        let event = build_proto_event(
+            ProxyDirection::ClientToUpstream,
+            ConnectionId(11),
+            &frame,
+            &map,
+        )
+        .unwrap();
+        assert_eq!(event.api_key, API_KEY_SASL_AUTHENTICATE);
+
+        // The inspector copy must not contain the credential anywhere.
+        assert!(
+            !event.payload.windows(secret.len()).any(|w| w == secret),
+            "SaslAuthenticate inspector payload must not contain raw credential bytes",
+        );
+        assert!(!event
+            .payload
+            .windows(b"alice-secret".len())
+            .any(|w| w == b"alice-secret"));
+    }
+
+    #[test]
+    fn build_proto_event_does_not_redact_other_request_payloads() {
+        // Non-SASL requests must still carry their full payload — only
+        // SaslAuthenticate (api_key 36) is redacted.
+        let map = CorrelationMap::default();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&3i16.to_be_bytes()); // api_key=Metadata
+        frame.extend_from_slice(&12i16.to_be_bytes()); // version
+        frame.extend_from_slice(&5i32.to_be_bytes()); // corr_id
+        frame.extend_from_slice(b"sentinel-payload");
+
+        let event = build_proto_event(
+            ProxyDirection::ClientToUpstream,
+            ConnectionId(12),
+            &frame,
+            &map,
+        )
+        .unwrap();
+        // Payload still contains the sentinel — no redaction applied.
+        assert!(event
+            .payload
+            .windows(b"sentinel-payload".len())
+            .any(|w| w == b"sentinel-payload"));
     }
 
     #[test]

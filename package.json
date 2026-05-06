@@ -31,6 +31,8 @@
     "stack:up:kafka": "docker compose --profile kafka up -d",
     "stack:up:mb": "docker compose --profile mb up -d",
     "stack:down:mb": "docker compose --profile mb down",
+    "stack:up:sasl": "docker compose --profile sasl up -d",
+    "stack:down:sasl": "docker compose --profile sasl down",
     "stack:down": "docker compose down",
     "stack:logs": "docker compose logs -f",
     "seed": "node tools/seed.mjs",

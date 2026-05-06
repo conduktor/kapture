@@ -163,6 +163,35 @@ services:
       - "39094:39094"
     networks: [kafka-mb]
 
+  # ──────────────── Apache Kafka with SASL_PLAINTEXT (Phase 3 proxy smoke) ────────────────
+  # Single-broker KRaft cluster with a SASL_PLAINTEXT listener on 49092.
+  # Mechanism: PLAIN. Dev-only credentials: admin/admin-secret, alice/alice-secret.
+  # NEVER reuse these in any non-dev environment.
+  kafka-sasl:
+    image: apache/kafka:latest
+    container_name: kapture-kafka-sasl
+    profiles: ["sasl"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,SASL://0.0.0.0:49092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-sasl:9092,SASL://localhost:49092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,SASL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-sasl:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_SASL_ENABLED_MECHANISMS: "PLAIN"
+      KAFKA_LISTENER_NAME_SASL_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-secret" user_admin="admin-secret" user_alice="alice-secret";'
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: "PLAIN"
+      CLUSTER_ID: "kapture-sasl-cluster"
+    ports:
+      - "49092:49092"
+    networks: [kafka-sasl]
+
 networks:
   redpanda:
     name: kapture-redpanda
@@ -170,3 +199,5 @@ networks:
     name: kapture-kafka
   kafka-mb:
     name: kapture-kafka-mb
+  kafka-sasl:
+    name: kapture-kafka-sasl
