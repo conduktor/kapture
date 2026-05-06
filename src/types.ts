@@ -109,6 +109,19 @@ export interface ProxyStatus {
 }
 
 /**
+ * Result of `test_proxy_upstream` — a one-shot probe of the upstream
+ * broker that runs the same handshake as `start_proxy` (TLS + SASL +
+ * ApiVersionsRequest v3) and closes. `apiVersionsCount` is populated
+ * only on success.
+ */
+export interface TestUpstreamResult {
+  ok: boolean;
+  latencyMs: number;
+  message: string;
+  apiVersionsCount: number | null;
+}
+
+/**
  * TLS args for the upstream hop in proxy mode. Mirrors the Rust
  * `ProxyTlsArgs` struct (camelCase serde). `serverName` empty string
  * means "use the bootstrap host parsed from `upstream`".

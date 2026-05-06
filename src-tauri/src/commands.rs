@@ -15,7 +15,9 @@ use crate::profiles::{
     AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata, UpstreamSaslMetadata,
     UpstreamTlsMetadata,
 };
-use crate::proxy_upstream::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
+use crate::proxy_upstream::{
+    test_upstream, UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig,
+};
 use crate::ring_buffer::CaptureStats;
 use crate::state::AppState;
 
@@ -269,6 +271,120 @@ pub async fn start_proxy_impl(
         listen_addr,
         upstream: trimmed_upstream,
     })
+}
+
+/// Result of [`test_proxy_upstream`]. Reported back to the dialog
+/// so the user gets a one-line OK/FAIL with handshake latency before
+/// committing to a full `start_proxy`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestUpstreamResult {
+    pub ok: bool,
+    pub latency_ms: f64,
+    pub message: String,
+    /// `Some(n)` when the broker replied to `ApiVersions` with `error_code == 0`.
+    /// `None` on any failure (connect, TLS, SASL, decode).
+    pub api_versions_count: Option<usize>,
+}
+
+/// Connect + handshake timeout for the Test button. A hung TLS or SASL
+/// handshake against an unreachable broker must not lock up the UI;
+/// 5s is generous for a healthy broker on the same continent.
+const TEST_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Probe the upstream the same way [`start_proxy`] would: open TCP,
+/// optionally TLS-wrap, optionally run SASL, then exchange one
+/// `ApiVersionsRequest` v3 and close. Fully ephemeral — does **not**
+/// claim the proxy slot, opens no listening sockets, mutates no
+/// `AppState`.
+#[tauri::command]
+pub async fn test_proxy_upstream(
+    upstream: String,
+    upstream_tls: Option<ProxyTlsArgs>,
+    upstream_sasl: Option<ProxySaslArgs>,
+) -> TestUpstreamResult {
+    let trimmed = upstream.trim().to_owned();
+    if trimmed.is_empty() {
+        return TestUpstreamResult {
+            ok: false,
+            latency_ms: 0.0,
+            message: "upstream must be non-empty".to_owned(),
+            api_versions_count: None,
+        };
+    }
+    let (host, port) = match split_host_port(&trimmed) {
+        Ok(parts) => parts,
+        Err(message) => {
+            return TestUpstreamResult {
+                ok: false,
+                latency_ms: 0.0,
+                message,
+                api_versions_count: None,
+            };
+        }
+    };
+    // Apply the same `server_name` fallback the proxy uses so the
+    // probe behaves identically when the user leaves SNI blank.
+    let tls_cfg = upstream_tls.map(|t| {
+        let cfg = t.into_config();
+        crate::proxy_upstream::resolve_server_name(&host, &cfg)
+    });
+    let sasl_cfg = match upstream_sasl.map(ProxySaslArgs::into_config).transpose() {
+        Ok(c) => c,
+        Err(err) => {
+            return TestUpstreamResult {
+                ok: false,
+                latency_ms: 0.0,
+                message: err.to_string(),
+                api_versions_count: None,
+            };
+        }
+    };
+    let started = std::time::Instant::now();
+    let probe = tokio::time::timeout(
+        TEST_UPSTREAM_TIMEOUT,
+        test_upstream(&host, port, tls_cfg.as_ref(), sasl_cfg.as_ref()),
+    )
+    .await;
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+    match probe {
+        Ok(Ok(outcome)) => TestUpstreamResult {
+            ok: true,
+            latency_ms: elapsed_ms,
+            message: format!("ApiVersions v{} OK", outcome.api_versions_version),
+            api_versions_count: Some(outcome.api_versions_count),
+        },
+        Ok(Err(err)) => TestUpstreamResult {
+            ok: false,
+            latency_ms: elapsed_ms,
+            message: err.to_string(),
+            api_versions_count: None,
+        },
+        Err(_) => TestUpstreamResult {
+            ok: false,
+            latency_ms: elapsed_ms,
+            message: format!("timed out after {}s", TEST_UPSTREAM_TIMEOUT.as_secs()),
+            api_versions_count: None,
+        },
+    }
+}
+
+/// Split `host:port`. Accepts bare IPv4 / DNS names; rejects IPv6
+/// literals (the proxy does not ship IPv6 support — same constraint
+/// as `start_proxy`'s upstream parser, but the proxy never explicitly
+/// validated this either, so any IPv6 input falls through here).
+fn split_host_port(addr: &str) -> std::result::Result<(String, u16), String> {
+    let (host, port) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| format!("upstream `{addr}` missing :port"))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| format!("upstream `{addr}` has invalid port"))?;
+    let host = host.trim();
+    if host.is_empty() {
+        return Err(format!("upstream `{addr}` missing host"));
+    }
+    Ok((host.to_owned(), port))
 }
 
 #[tauri::command]

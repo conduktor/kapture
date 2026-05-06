@@ -95,6 +95,7 @@ pub fn run() {
             commands::app_info,
             commands::probe_localhost_brokers,
             commands::start_proxy,
+            commands::test_proxy_upstream,
             commands::stop_proxy,
             commands::proxy_status,
             commands::snapshot,

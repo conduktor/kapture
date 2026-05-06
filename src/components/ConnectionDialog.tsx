@@ -9,6 +9,7 @@ import type {
   ProxyTlsArgs,
   SaslMechanism,
   SaveProfileArgs,
+  TestUpstreamResult,
 } from "../types";
 
 const DEFAULT_LISTEN_PORT = 9092;
@@ -78,6 +79,13 @@ export function ConnectionDialog({
   // as-is in profiles so a load round-trips.
   const [tlsServerName, setTlsServerName] = useState("");
 
+  // "Test" button state. Result is shown inline below the actions row;
+  // auto-clears 5 s after success or when any form field changes (so a
+  // stale OK never tricks the user into trusting a broken config).
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<TestUpstreamResult | null>(null);
+  const testClearTimerRef = useRef<number | null>(null);
+
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [profileError, setProfileError] = useState<string | null>(null);
@@ -119,6 +127,85 @@ export function ConnectionDialog({
   useEffect(() => {
     void refreshProfiles();
   }, []);
+
+  // Clear any pending auto-dismiss timer on unmount so a state-update
+  // doesn't fire on a torn-down component.
+  useEffect(() => {
+    return () => {
+      if (testClearTimerRef.current !== null) {
+        window.clearTimeout(testClearTimerRef.current);
+      }
+    };
+  }, []);
+
+  /**
+   * Drop the inline Test result. Called from every form-field setter
+   * so a stale "OK" doesn't bleed across config changes the user just
+   * made — the spec calls this out explicitly.
+   */
+  function clearTestResult(): void {
+    if (testResult !== null) {
+      setTestResult(null);
+    }
+    if (testClearTimerRef.current !== null) {
+      window.clearTimeout(testClearTimerRef.current);
+      testClearTimerRef.current = null;
+    }
+  }
+
+  async function runTest(): Promise<void> {
+    if (testClearTimerRef.current !== null) {
+      window.clearTimeout(testClearTimerRef.current);
+      testClearTimerRef.current = null;
+    }
+    if (useSasl && (saslUsername.trim() === "" || saslPassword === "")) {
+      setTestResult({
+        ok: false,
+        latencyMs: 0,
+        message: "Upstream SASL requires both username and password.",
+        apiVersionsCount: null,
+      });
+      return;
+    }
+    const upstreamTls: ProxyTlsArgs | null = useTls
+      ? {
+          serverName: tlsServerName,
+          caPath: tlsCaPath.trim() === "" ? null : tlsCaPath.trim(),
+          skipHostnameVerification: tlsSkipHostname,
+        }
+      : null;
+    const upstreamSasl: ProxySaslArgs | null = useSasl
+      ? {
+          mechanism: saslMechanism,
+          username: saslUsername,
+          password: saslPassword,
+        }
+      : null;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const result = await invoke<TestUpstreamResult>("test_proxy_upstream", {
+        upstream: upstream.trim(),
+        upstreamTls,
+        upstreamSasl,
+      });
+      setTestResult(result);
+      if (result.ok) {
+        // Auto-clear OK results after 5s — the spec mirrors curl /
+        // postman one-shot probe UX. Failures stay until the user
+        // edits the form.
+        testClearTimerRef.current = window.setTimeout(() => {
+          setTestResult(null);
+          testClearTimerRef.current = null;
+        }, 5000);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setTestResult({ ok: false, latencyMs: 0, message, apiVersionsCount: null });
+    } finally {
+      setTesting(false);
+    }
+  }
 
   async function refreshProfiles(): Promise<void> {
     try {
@@ -352,6 +439,7 @@ export function ConnectionDialog({
               value={upstream}
               onChange={(e) => {
                 setUpstream(e.target.value);
+                clearTestResult();
               }}
               placeholder="kafka.example.com:9092"
               spellCheck={false}
@@ -365,6 +453,7 @@ export function ConnectionDialog({
               checked={useTls}
               onChange={(e) => {
                 setUseTls(e.target.checked);
+                clearTestResult();
               }}
             />
             <span>Upstream uses TLS</span>
@@ -381,6 +470,7 @@ export function ConnectionDialog({
                   value={tlsCaPath}
                   onChange={(e) => {
                     setTlsCaPath(e.target.value);
+                    clearTestResult();
                   }}
                   placeholder="/path/to/ca.pem"
                   spellCheck={false}
@@ -393,6 +483,7 @@ export function ConnectionDialog({
                   checked={tlsSkipHostname}
                   onChange={(e) => {
                     setTlsSkipHostname(e.target.checked);
+                    clearTestResult();
                   }}
                 />
                 <span>Skip hostname verification</span>
@@ -405,6 +496,7 @@ export function ConnectionDialog({
               checked={useSasl}
               onChange={(e) => {
                 setUseSasl(e.target.checked);
+                clearTestResult();
               }}
             />
             <span>Upstream requires SASL</span>
@@ -418,6 +510,7 @@ export function ConnectionDialog({
                   value={saslMechanism}
                   onChange={(e) => {
                     setSaslMechanism(e.target.value as SaslMechanism);
+                    clearTestResult();
                   }}
                 >
                   <option value="PLAIN">SASL/PLAIN</option>
@@ -432,6 +525,7 @@ export function ConnectionDialog({
                   value={saslUsername}
                   onChange={(e) => {
                     setSaslUsername(e.target.value);
+                    clearTestResult();
                   }}
                   spellCheck={false}
                   autoComplete="off"
@@ -454,6 +548,7 @@ export function ConnectionDialog({
                     if (savedSaslPasswordHint) {
                       setSavedSaslPasswordHint(false);
                     }
+                    clearTestResult();
                   }}
                   autoComplete="off"
                   required
@@ -472,6 +567,7 @@ export function ConnectionDialog({
               value={listenPort}
               onChange={(e) => {
                 setListenPort(Number(e.target.value));
+                clearTestResult();
               }}
               min={1}
               max={65535}
@@ -498,10 +594,35 @@ export function ConnectionDialog({
               Cancel
             </button>
           ) : null}
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void runTest();
+            }}
+            disabled={testing || pending || upstream.trim() === ""}
+            title="Connect, run handshake (TLS/SASL), exchange ApiVersions, then close. Doesn't start the proxy."
+          >
+            {testing ? "Testing…" : "Test"}
+          </button>
           <button type="submit" className="btn btn--primary" disabled={pending}>
             {pending ? "Starting…" : isEditing ? "Restart proxy" : "Start proxy"}
           </button>
         </div>
+        {testResult !== null ? (
+          <p
+            className={
+              testResult.ok ? "dialog__test-result dialog__test-result--ok" : "dialog__error"
+            }
+          >
+            {testResult.ok ? "✓ " : "✗ "}
+            {testResult.message}
+            {testResult.ok ? ` · ${Math.round(testResult.latencyMs)} ms` : ""}
+            {testResult.ok && testResult.apiVersionsCount !== null
+              ? ` · ${testResult.apiVersionsCount} APIs supported`
+              : ""}
+          </p>
+        ) : null}
         {profileNameInput !== null ? (
           <div className="dialog__profile-row">
             <input

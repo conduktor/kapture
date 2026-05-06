@@ -41,6 +41,9 @@
 //!    `mcp_connect_allowed` (network sockets ⇒ explicit consent);
 //!    `stop_proxy` and `proxy_status` are administrative and always
 //!    allowed.
+//!  * `kapture_test_upstream` — read-only probe of an upstream broker
+//!    (TCP / TLS / SASL handshake + `ApiVersionsRequest` v3, then close).
+//!    Not gated; opens no listening sockets, mutates no state.
 //!
 //! ### Resource surface (read-only views)
 //!
@@ -236,6 +239,26 @@ struct McpProxySaslArgs {
     mechanism: String,
     username: String,
     password: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct TestUpstreamParams {
+    /// Upstream Kafka bootstrap as `host:port`.
+    upstream: String,
+    #[serde(default)]
+    upstream_tls: Option<McpProxyTlsArgs>,
+    #[serde(default)]
+    upstream_sasl: Option<McpProxySaslArgs>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct TestUpstreamResponse {
+    ok: bool,
+    latency_ms: f64,
+    message: String,
+    api_versions_count: Option<usize>,
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -560,6 +583,38 @@ impl KaptureMcp {
                 detail: "no active proxy".into(),
             })),
         }
+    }
+
+    #[tool(
+        description = "Probe an upstream Kafka broker without starting the proxy. Opens a fresh TCP connection (TLS / SASL if configured), exchanges a single ApiVersionsRequest v3, and closes. Reports OK + latency + count of supported APIs, or FAIL + error. Read-only — no listening sockets, no AppState mutation; not gated behind `mcp_connect_allowed`."
+    )]
+    async fn kapture_test_upstream(
+        &self,
+        Parameters(TestUpstreamParams {
+            upstream,
+            upstream_tls,
+            upstream_sasl,
+        }): Parameters<TestUpstreamParams>,
+    ) -> Result<Json<TestUpstreamResponse>, ErrorData> {
+        // Translate the MCP arg shapes into the Tauri-command arg
+        // shapes so we can call the same probe path the GUI uses.
+        let tls_args = upstream_tls.map(|t| crate::commands::ProxyTlsArgs {
+            server_name: t.server_name,
+            ca_path: t.ca_path,
+            skip_hostname_verification: t.skip_hostname_verification,
+        });
+        let sasl_args = upstream_sasl.map(|s| crate::commands::ProxySaslArgs {
+            mechanism: s.mechanism,
+            username: s.username,
+            password: s.password,
+        });
+        let result = crate::commands::test_proxy_upstream(upstream, tls_args, sasl_args).await;
+        Ok(Json(TestUpstreamResponse {
+            ok: result.ok,
+            latency_ms: result.latency_ms,
+            message: result.message,
+            api_versions_count: result.api_versions_count,
+        }))
     }
 
     #[tool(

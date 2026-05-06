@@ -25,12 +25,14 @@
 // public types live behind `dead_code`.
 #![allow(dead_code)]
 
+mod probe;
 mod scram;
 mod tls;
 
 #[cfg(test)]
 pub mod test_support;
 
+pub use probe::test_upstream;
 pub use tls::UpstreamTlsConfig;
 
 /// Pure helper: produce a TLS config with `server_name` filled in for
@@ -483,7 +485,7 @@ where
     Ok(resp.auth_bytes)
 }
 
-fn make_request_header(api: ApiKey, api_version: i16, corr_id: i32) -> RequestHeader {
+pub fn make_request_header(api: ApiKey, api_version: i16, corr_id: i32) -> RequestHeader {
     let mut h = RequestHeader::default();
     h.request_api_key = api as i16;
     h.request_api_version = api_version;
@@ -498,7 +500,7 @@ fn make_request_header(api: ApiKey, api_version: i16, corr_id: i32) -> RequestHe
 /// returns `anyhow::Result` here; we surface the error as a `String`
 /// so the caller can wrap it in the appropriate
 /// [`UpstreamConnectError`] variant.
-fn encode_request<B: Encodable>(
+pub fn encode_request<B: Encodable>(
     header: &RequestHeader,
     header_version: i16,
     body: &B,
@@ -516,7 +518,7 @@ fn encode_request<B: Encodable>(
 /// Read one Kafka wire frame: 4-byte BE length prefix followed by
 /// exactly that many body bytes. Frame size is capped at
 /// [`MAX_RESPONSE_FRAME_BYTES`] to mirror `framed_kafka`'s ceiling.
-async fn read_kafka_frame<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
+pub async fn read_kafka_frame<S>(stream: &mut S) -> std::io::Result<Vec<u8>>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -535,7 +537,7 @@ where
 }
 
 /// Write one Kafka wire frame: 4-byte BE length prefix + body.
-async fn write_kafka_frame<S>(stream: &mut S, body: &[u8]) -> std::io::Result<()>
+pub async fn write_kafka_frame<S>(stream: &mut S, body: &[u8]) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
