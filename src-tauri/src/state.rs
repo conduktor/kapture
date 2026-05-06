@@ -116,6 +116,12 @@ impl AppState {
             .map_or(0.0, |started| started.elapsed().as_secs_f64())
     }
 
+    /// Cheap clone of the active capture's `ProtoCorrelator`, if any.
+    /// Returns `None` when no capture is running.
+    pub fn correlator(&self) -> Option<Arc<ProtoCorrelator>> {
+        self.inner.lock().correlator.clone()
+    }
+
     pub fn mcp_connect_allowed(&self) -> bool {
         self.mcp_connect_allowed.load(Ordering::Acquire)
     }

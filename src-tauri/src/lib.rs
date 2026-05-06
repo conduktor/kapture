@@ -73,6 +73,7 @@ pub fn run() {
             commands::probe_localhost_brokers,
             commands::disconnect,
             commands::snapshot,
+            commands::proto_frames,
             commands::stats,
             commands::clear_buffer,
             commands::set_filter,

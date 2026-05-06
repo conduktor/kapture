@@ -21,6 +21,7 @@ use std::ffi::c_void;
 use std::os::raw::{c_double, c_int};
 use std::sync::{Arc, Weak};
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::correlator::ProtoCorrelator;
@@ -47,7 +48,7 @@ extern "C" {
     fn rd_kafka_set_proto_hook_cb(rk: *mut c_void, cb: Option<CHookFn>, opaque: *mut c_void);
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ProtoDirection {
     Send,

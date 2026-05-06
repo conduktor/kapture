@@ -17,15 +17,22 @@
 //! message the correlator has already absorbed the corresponding RECV
 //! event — there is no async race.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
-use parking_lot::RwLock;
+use chrono::Utc;
+use parking_lot::{Mutex, RwLock};
 use schemars::JsonSchema;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
 
 const FETCH_API_KEY: i32 = 1;
+/// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
+/// the serialized JSON; 4000 entries ≈ 8 MB at the high water mark.
+const PROTO_FRAMES_CAPACITY: usize = 4000;
+/// We trim in chunks to avoid per-event O(n) shift cost on the `VecDeque`.
+const PROTO_FRAMES_TRIM_HEADROOM: usize = 256;
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -40,9 +47,34 @@ pub struct FetchMetadata {
     pub rtt_ms: f64,
 }
 
+/// One observed Kafka protocol frame. Either a request (Send) or a
+/// response (Recv); pairing happens at view time on the frontend
+/// (group by `corrId`+`brokerId`). RTT is broker-side measurement,
+/// only meaningful on Recv.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtoFrame {
+    pub id: String,
+    /// RFC 3339 / ISO 8601 (UTC). Microsecond precision.
+    pub timestamp: String,
+    pub direction: ProtoDirection,
+    pub api_key: i32,
+    pub api_name: &'static str,
+    pub api_version: i32,
+    pub broker_id: i32,
+    pub corr_id: i32,
+    /// Bytes on the wire (request size on Send, response size on Recv).
+    pub size: usize,
+    /// Round-trip time in milliseconds. Only meaningful on `Recv`.
+    pub rtt_ms: f64,
+}
+
 #[derive(Debug, Default)]
 pub struct ProtoCorrelator {
     state: RwLock<CorrelatorState>,
+    /// Separately locked so the wire-frame ring buffer doesn't contend
+    /// with the (much hotter) `FetchMetadata` correlator state.
+    frames: Mutex<VecDeque<ProtoFrame>>,
 }
 
 #[derive(Debug, Default)]
@@ -59,7 +91,38 @@ impl ProtoCorrelator {
 
     /// Record a protocol event. Called synchronously from the
     /// librdkafka broker thread (via the proto-hook trampoline).
+    ///
+    /// Two side effects:
+    ///  1. Update the `FetchMetadata` correlator (latest Fetch RECV per
+    ///     broker) — used to enrich the next captured message.
+    ///  2. Append a `ProtoFrame` to the ring buffer — used by the
+    ///     "Protocol" view in the GUI.
     pub fn record_event(&self, event: &ProtoEvent) {
+        // (1) Frames ring buffer: every event, both directions.
+        {
+            let frame = ProtoFrame {
+                id: Uuid::new_v4().simple().to_string(),
+                timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                direction: event.direction,
+                api_key: event.api_key,
+                api_name: ProtoEvent::api_name(event.api_key),
+                api_version: event.api_version,
+                broker_id: event.broker_id,
+                corr_id: event.corr_id,
+                size: event.payload_size,
+                rtt_ms: event.rtt_ms,
+            };
+            let mut frames = self.frames.lock();
+            frames.push_back(frame);
+            // Trim in a single batch when we exceed the cap by the
+            // headroom amount, to keep amortised O(1) on push.
+            if frames.len() > PROTO_FRAMES_CAPACITY + PROTO_FRAMES_TRIM_HEADROOM {
+                let drop_n = frames.len() - PROTO_FRAMES_CAPACITY;
+                drop(frames.drain(..drop_n));
+            }
+        }
+
+        // (2) FetchMetadata correlator: only Fetch RECV is meaningful.
         if event.api_key != FETCH_API_KEY {
             return;
         }
@@ -78,6 +141,24 @@ impl ProtoCorrelator {
         let mut state = self.state.write();
         state.by_broker.insert(event.broker_id, meta.clone());
         state.latest = Some(meta);
+    }
+
+    /// Snapshot of the most recent `limit` frames (clamped to the
+    /// buffer cap), oldest first. Cheap clone of timestamped Strings.
+    #[must_use]
+    pub fn frames(&self, limit: usize) -> Vec<ProtoFrame> {
+        let frames = self.frames.lock();
+        let n = limit.min(frames.len());
+        // skip the oldest if we have more than `limit` so the result is
+        // the latest window in chronological order.
+        frames.iter().skip(frames.len() - n).cloned().collect()
+    }
+
+    /// Total number of frames currently in the ring buffer.
+    #[must_use]
+    #[allow(dead_code)] // surfaced via stats in a follow-up
+    pub fn frame_count(&self) -> usize {
+        self.frames.lock().len()
     }
 
     /// Approximation: returns the most-recent `Fetch` response across

@@ -10,7 +10,15 @@ import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
-import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
+import { ProtoList } from "./components/ProtoList";
+import type {
+  AppInfo,
+  AuthArgs,
+  CaptureStats,
+  ConnectionState,
+  KafkaMessage,
+  ProtoFrame,
+} from "./types";
 
 interface MenuState {
   target: FilterTarget;
@@ -55,6 +63,9 @@ function App(): JSX.Element {
   // the disconnected workspace; the user re-opens via the cluster pill.
   const [editing, setEditing] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  const [tab, setTab] = useState<"messages" | "protocol">("messages");
+  const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
   // generation is allowed to commit set_filter / snapshot results, so a
@@ -106,6 +117,41 @@ function App(): JSX.Element {
       if (statsUnlisten) {
         statsUnlisten();
       }
+    };
+  }, [connection.status]);
+
+  // Poll the protocol-frame ring buffer while connected. Cheap (a single
+  // command + a small JSON), no event stream because frames fire from
+  // the broker thread at very high rates and a per-frame Tauri event
+  // would flood the IPC channel. 1 s is plenty for a humans-eyeballing
+  // view; the buffer is capped at 4000 frames backend-side.
+  useEffect(() => {
+    if (connection.status !== "connected") {
+      // We don't reset the buffer here — that would be a setState inside
+      // an effect for a state we don't subscribe to. handleDisconnect
+      // clears it explicitly when the user stops the capture.
+      return;
+    }
+    let cancelled = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const frames = await invoke<ProtoFrame[]>("proto_frames", { limit: 2000 });
+        if (!cancelled) {
+          setProtoFrames(frames);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.warn("proto_frames poll failed", err);
+        }
+      }
+    };
+    void tick();
+    const interval = window.setInterval(() => {
+      void tick();
+    }, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
     };
   }, [connection.status]);
 
@@ -324,14 +370,49 @@ function App(): JSX.Element {
       />
       <main className="layout">
         <div className="layout__main">
-          <MessageList
-            messages={messages}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onOpenFilterMenu={openFilterMenu}
-          />
-          <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />
-          <HexDump message={selected} />
+          <div className="tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "messages"}
+              className={`tabs__tab${tab === "messages" ? " is-active" : ""}`}
+              onClick={() => {
+                setTab("messages");
+              }}
+            >
+              Messages <span className="tabs__count">({messages.length})</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "protocol"}
+              className={`tabs__tab${tab === "protocol" ? " is-active" : ""}`}
+              onClick={() => {
+                setTab("protocol");
+              }}
+              title="Kafka protocol frames observed at the wire level"
+            >
+              Protocol <span className="tabs__count">({protoFrames.length})</span>
+            </button>
+          </div>
+          {tab === "messages" ? (
+            <>
+              <MessageList
+                messages={messages}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onOpenFilterMenu={openFilterMenu}
+              />
+              <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />
+              <HexDump message={selected} />
+            </>
+          ) : (
+            <ProtoList
+              frames={protoFrames}
+              selectedId={selectedFrameId}
+              onSelect={setSelectedFrameId}
+            />
+          )}
         </div>
         <SidePanel appInfo={appInfo} connection={connection} stats={stats} />
       </main>

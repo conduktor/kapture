@@ -19,6 +19,23 @@ export interface FetchMetadata {
   rttMs: number;
 }
 
+export type ProtoDirection = "send" | "recv";
+
+/** One observed Kafka protocol frame (request or response). */
+export interface ProtoFrame {
+  id: string;
+  timestamp: string;
+  direction: ProtoDirection;
+  apiKey: number;
+  apiName: string;
+  apiVersion: number;
+  brokerId: number;
+  corrId: number;
+  size: number;
+  /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
+  rttMs: number;
+}
+
 export interface KafkaMessage {
   id: string;
   timestamp: string;

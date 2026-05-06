@@ -264,6 +264,77 @@ body,
   font-family: var(--mono);
   font-size: 12px;
 }
+
+/* ---------- Tabs (Messages | Protocol) ---------- */
+.tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+}
+.tabs__tab {
+  background: none;
+  border: none;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-family: var(--sans);
+  transition:
+    color 0.12s,
+    border-color 0.12s;
+}
+.tabs__tab:hover {
+  color: var(--text);
+}
+.tabs__tab.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+.tabs__count {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+/* ---------- Protocol list (reuses .msglist__head/row container) ---------- */
+.proto__col {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Match grid template to the columns in ProtoList. */
+section.msglist[aria-label="Protocol frames"] .msglist__head,
+section.msglist[aria-label="Protocol frames"] .msglist__row {
+  grid-template-columns: 110px 30px 130px 36px 60px 90px 70px 70px;
+}
+.proto__col--dir {
+  text-align: center;
+  font-weight: 700;
+}
+.proto__dir--send {
+  color: var(--accent);
+}
+.proto__dir--recv {
+  color: var(--success);
+}
+.proto__col--api {
+  font-weight: 500;
+}
+.proto__col--rtt,
+.proto__col--size,
+.proto__col--corr,
+.proto__col--broker,
+.proto__col--v {
+  text-align: right;
+}
 .msglist__head {
   padding: 6px 12px;
 }

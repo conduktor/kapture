@@ -8,7 +8,7 @@ use tracing::info;
 use serde::Deserialize;
 
 use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
-use crate::correlator::ProtoCorrelator;
+use crate::correlator::{ProtoCorrelator, ProtoFrame};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
@@ -385,6 +385,18 @@ pub async fn disconnect(state: State<'_, AppState>) -> Result<()> {
     handle.stop().await;
     info!("capture stopped");
     Ok(())
+}
+
+/// Snapshot of recent observed Kafka protocol frames. Returns up to
+/// `limit` (cap 2000) entries, oldest first. Empty when no capture is
+/// running.
+#[tauri::command]
+pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<ProtoFrame> {
+    let cap = limit.map_or(2000_usize, |n| (n as usize).min(2000));
+    state
+        .correlator()
+        .map(|c| c.frames(cap))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
