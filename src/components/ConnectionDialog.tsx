@@ -2,9 +2,11 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthArgs,
+  ConnectionMode,
   LoadedProfile,
   ProbeResult,
   ProfileMetadata,
+  ProxyStatus,
   SaslMechanism,
   SaveProfileArgs,
   SaveProfileAuth,
@@ -44,6 +46,16 @@ interface Props {
     schemaRegistryUrl: string | null,
     auth: AuthArgs | null,
   ) => void;
+  /**
+   * Called when the user starts the proxy listener. The parent stores the
+   * resulting `ProxyStatus` so the cluster pill can show
+   * `proxy {listenAddr} → {upstream}`.
+   */
+  onProxyStarted: (status: ProxyStatus) => void;
+  /** Surfaces a proxy start failure to the parent's `error` slot. */
+  onProxyError: (message: string) => void;
+  /** Optimistic flip to "connecting" while the proxy listener boots. */
+  onProxyStarting: () => void;
   onCancel?: (() => void) | undefined;
   pending: boolean;
   error: string | null;
@@ -55,10 +67,16 @@ export function ConnectionDialog({
   initial,
   isEditing,
   onConnect,
+  onProxyStarted,
+  onProxyError,
+  onProxyStarting,
   onCancel,
   pending,
   error,
 }: Props): JSX.Element {
+  const [mode, setMode] = useState<ConnectionMode>("client");
+  const [proxyUpstream, setProxyUpstream] = useState("localhost:9092");
+  const [proxyListenPort, setProxyListenPort] = useState(9092);
   const [bootstrap, setBootstrap] = useState(initial?.bootstrap ?? defaultBootstrap);
   const [topicPattern, setTopicPattern] = useState(initial?.topicPattern ?? "");
   const [showAdvanced, setShowAdvanced] = useState((initial?.topicPattern ?? "").trim() !== "");
@@ -265,6 +283,23 @@ export function ConnectionDialog({
   }
 
   const submit = (): void => {
+    if (mode === "proxy") {
+      const upstream = proxyUpstream.trim();
+      onProxyStarting();
+      void (async () => {
+        try {
+          const status = await invoke<ProxyStatus>("start_proxy", {
+            upstream,
+            listenPort: proxyListenPort,
+          });
+          onProxyStarted(status);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          onProxyError(message);
+        }
+      })();
+      return;
+    }
     const registryUrl = registry.trim();
     const trimmedPattern = topicPattern.trim();
     const auth: AuthArgs | null =
@@ -296,222 +331,284 @@ export function ConnectionDialog({
         }}
       >
         <h2 className="dialog__title">{isEditing ? "Edit connection" : "Connect to Kafka"}</h2>
-        <div className="dialog__profile-row">
-          <select
-            className="dialog__input"
-            value={selectedProfile}
-            onChange={(e) => {
-              void applyProfile(e.target.value);
-            }}
-            disabled={profileBusy}
-          >
-            <option value="">— New connection —</option>
-            {profiles.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name} ({p.bootstrapServers})
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void deleteSelectedProfile();
-            }}
-            disabled={profileBusy || selectedProfile === ""}
-            title="Delete this profile"
-          >
-            Delete
-          </button>
-        </div>
-        {profileError ? <p className="dialog__error">{profileError}</p> : null}
-        <label className="dialog__field">
-          <span className="dialog__label">Bootstrap servers</span>
-          <input
-            className="dialog__input"
-            value={bootstrap}
-            onChange={(e) => {
-              setBootstrap(e.target.value);
-            }}
-            placeholder="host:port,host:port"
-            spellCheck={false}
-            autoComplete="off"
-            required
-          />
-        </label>
-        <label className="dialog__field">
-          <span className="dialog__label">Schema Registry URL (optional)</span>
-          <input
-            className="dialog__input"
-            value={registry}
-            onChange={(e) => {
-              setRegistry(e.target.value);
-            }}
-            placeholder="http://localhost:18081"
-            spellCheck={false}
-            autoComplete="off"
-          />
-        </label>
-        <button
-          type="button"
-          className="dialog__disclosure"
-          onClick={() => {
-            setShowAdvanced((s) => !s);
-          }}
-          aria-expanded={showAdvanced}
-        >
-          {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
-        </button>
-        {showAdvanced ? (
-          <label className="dialog__field">
-            <span className="dialog__label">
-              Topic pattern (regex, optional)
-              <span className="dialog__hint-inline">
-                {" "}
-                e.g. <code>^orders\..*</code> — narrows broker-side subscription
-              </span>
-            </span>
+        <fieldset className="dialog__mode">
+          <legend className="dialog__label">Mode</legend>
+          <label className="dialog__check">
             <input
-              className="dialog__input"
-              value={topicPattern}
-              onChange={(e) => {
-                setTopicPattern(e.target.value);
+              type="radio"
+              name="mode"
+              value="client"
+              checked={mode === "client"}
+              onChange={() => {
+                setMode("client");
               }}
-              placeholder="^[^_].*"
-              spellCheck={false}
-              autoComplete="off"
             />
+            <span>Client — Kapture connects as a consumer</span>
           </label>
-        ) : null}
-        <label className="dialog__field">
-          <span className="dialog__label">Authentication</span>
-          <select
-            className="dialog__input"
-            value={authMethod}
-            onChange={(e) => {
-              setAuthMethod(e.target.value as AuthMethod);
-            }}
-          >
-            <option value="none">None (PLAINTEXT)</option>
-            {SASL_MECHANISMS.map((m) => (
-              <option key={m} value={m}>
-                SASL/{m}
-              </option>
-            ))}
-          </select>
-        </label>
-        {authMethod !== "none" ? (
+          <label className="dialog__check">
+            <input
+              type="radio"
+              name="mode"
+              value="proxy"
+              checked={mode === "proxy"}
+              onChange={() => {
+                setMode("proxy");
+              }}
+            />
+            <span>Proxy — point your apps at Kapture</span>
+          </label>
+        </fieldset>
+        {mode === "proxy" ? (
           <>
             <label className="dialog__field">
-              <span className="dialog__label">Username</span>
+              <span className="dialog__label">Upstream broker</span>
               <input
                 className="dialog__input"
-                value={username}
+                value={proxyUpstream}
                 onChange={(e) => {
-                  setUsername(e.target.value);
+                  setProxyUpstream(e.target.value);
                 }}
+                placeholder="kafka.example.com:9092"
                 spellCheck={false}
                 autoComplete="off"
                 required
               />
             </label>
             <label className="dialog__field">
-              <span className="dialog__label">
-                Password
-                {isEditing && initial?.authMethod && initial.authMethod !== "none" ? (
-                  <span className="dialog__hint-inline"> (re-enter; not stored in UI)</span>
-                ) : null}
-              </span>
+              <span className="dialog__label">Listen port (127.0.0.1)</span>
               <input
-                type="password"
                 className="dialog__input"
-                value={password}
+                type="number"
+                value={proxyListenPort}
                 onChange={(e) => {
-                  setPassword(e.target.value);
+                  setProxyListenPort(Number(e.target.value));
                 }}
+                min={1}
+                max={65535}
+                required
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <div className="dialog__profile-row">
+              <select
+                className="dialog__input"
+                value={selectedProfile}
+                onChange={(e) => {
+                  void applyProfile(e.target.value);
+                }}
+                disabled={profileBusy}
+              >
+                <option value="">— New connection —</option>
+                {profiles.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name} ({p.bootstrapServers})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  void deleteSelectedProfile();
+                }}
+                disabled={profileBusy || selectedProfile === ""}
+                title="Delete this profile"
+              >
+                Delete
+              </button>
+            </div>
+            {profileError ? <p className="dialog__error">{profileError}</p> : null}
+            <label className="dialog__field">
+              <span className="dialog__label">Bootstrap servers</span>
+              <input
+                className="dialog__input"
+                value={bootstrap}
+                onChange={(e) => {
+                  setBootstrap(e.target.value);
+                }}
+                placeholder="host:port,host:port"
+                spellCheck={false}
                 autoComplete="off"
                 required
               />
             </label>
-            <label className="dialog__check">
+            <label className="dialog__field">
+              <span className="dialog__label">Schema Registry URL (optional)</span>
               <input
-                type="checkbox"
-                checked={useTls}
+                className="dialog__input"
+                value={registry}
                 onChange={(e) => {
-                  setUseTls(e.target.checked);
+                  setRegistry(e.target.value);
                 }}
+                placeholder="http://localhost:18081"
+                spellCheck={false}
+                autoComplete="off"
               />
-              <span>TLS (SASL_SSL)</span>
             </label>
-            {useTls ? (
+            <button
+              type="button"
+              className="dialog__disclosure"
+              onClick={() => {
+                setShowAdvanced((s) => !s);
+              }}
+              aria-expanded={showAdvanced}
+            >
+              {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
+            </button>
+            {showAdvanced ? (
+              <label className="dialog__field">
+                <span className="dialog__label">
+                  Topic pattern (regex, optional)
+                  <span className="dialog__hint-inline">
+                    {" "}
+                    e.g. <code>^orders\..*</code> — narrows broker-side subscription
+                  </span>
+                </span>
+                <input
+                  className="dialog__input"
+                  value={topicPattern}
+                  onChange={(e) => {
+                    setTopicPattern(e.target.value);
+                  }}
+                  placeholder="^[^_].*"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+            ) : null}
+            <label className="dialog__field">
+              <span className="dialog__label">Authentication</span>
+              <select
+                className="dialog__input"
+                value={authMethod}
+                onChange={(e) => {
+                  setAuthMethod(e.target.value as AuthMethod);
+                }}
+              >
+                <option value="none">None (PLAINTEXT)</option>
+                {SASL_MECHANISMS.map((m) => (
+                  <option key={m} value={m}>
+                    SASL/{m}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {authMethod !== "none" ? (
               <>
                 <label className="dialog__field">
-                  <span className="dialog__label">CA certificate path (optional)</span>
+                  <span className="dialog__label">Username</span>
                   <input
                     className="dialog__input"
-                    value={caPath}
+                    value={username}
                     onChange={(e) => {
-                      setCaPath(e.target.value);
+                      setUsername(e.target.value);
                     }}
-                    placeholder="/path/to/ca.pem"
                     spellCheck={false}
                     autoComplete="off"
+                    required
                   />
                 </label>
                 <label className="dialog__field">
-                  <span className="dialog__label">Client certificate path (mTLS)</span>
-                  <input
-                    className="dialog__input"
-                    value={certPath}
-                    onChange={(e) => {
-                      setCertPath(e.target.value);
-                    }}
-                    placeholder="/path/to/client.crt"
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </label>
-                <label className="dialog__field">
-                  <span className="dialog__label">Client private key path (mTLS)</span>
-                  <input
-                    className="dialog__input"
-                    value={keyPath}
-                    onChange={(e) => {
-                      setKeyPath(e.target.value);
-                    }}
-                    placeholder="/path/to/client.key"
-                    spellCheck={false}
-                    autoComplete="off"
-                  />
-                </label>
-                <label className="dialog__field">
-                  <span className="dialog__label">Key password (optional, encrypted keys)</span>
+                  <span className="dialog__label">
+                    Password
+                    {isEditing && initial?.authMethod && initial.authMethod !== "none" ? (
+                      <span className="dialog__hint-inline"> (re-enter; not stored in UI)</span>
+                    ) : null}
+                  </span>
                   <input
                     type="password"
                     className="dialog__input"
-                    value={keyPassword}
+                    value={password}
                     onChange={(e) => {
-                      setKeyPassword(e.target.value);
+                      setPassword(e.target.value);
                     }}
                     autoComplete="off"
+                    required
                   />
                 </label>
+                <label className="dialog__check">
+                  <input
+                    type="checkbox"
+                    checked={useTls}
+                    onChange={(e) => {
+                      setUseTls(e.target.checked);
+                    }}
+                  />
+                  <span>TLS (SASL_SSL)</span>
+                </label>
+                {useTls ? (
+                  <>
+                    <label className="dialog__field">
+                      <span className="dialog__label">CA certificate path (optional)</span>
+                      <input
+                        className="dialog__input"
+                        value={caPath}
+                        onChange={(e) => {
+                          setCaPath(e.target.value);
+                        }}
+                        placeholder="/path/to/ca.pem"
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="dialog__field">
+                      <span className="dialog__label">Client certificate path (mTLS)</span>
+                      <input
+                        className="dialog__input"
+                        value={certPath}
+                        onChange={(e) => {
+                          setCertPath(e.target.value);
+                        }}
+                        placeholder="/path/to/client.crt"
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="dialog__field">
+                      <span className="dialog__label">Client private key path (mTLS)</span>
+                      <input
+                        className="dialog__input"
+                        value={keyPath}
+                        onChange={(e) => {
+                          setKeyPath(e.target.value);
+                        }}
+                        placeholder="/path/to/client.key"
+                        spellCheck={false}
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="dialog__field">
+                      <span className="dialog__label">Key password (optional, encrypted keys)</span>
+                      <input
+                        type="password"
+                        className="dialog__input"
+                        value={keyPassword}
+                        onChange={(e) => {
+                          setKeyPassword(e.target.value);
+                        }}
+                        autoComplete="off"
+                      />
+                    </label>
+                  </>
+                ) : null}
               </>
             ) : null}
+            <label className="dialog__check">
+              <input
+                type="checkbox"
+                checked={fromBeginning}
+                onChange={(e) => {
+                  setFromBeginning(e.target.checked);
+                }}
+              />
+              <span>Read from beginning</span>
+            </label>
           </>
-        ) : null}
-        <label className="dialog__check">
-          <input
-            type="checkbox"
-            checked={fromBeginning}
-            onChange={(e) => {
-              setFromBeginning(e.target.checked);
-            }}
-          />
-          <span>Read from beginning</span>
-        </label>
+        )}
         {error ? <p className="dialog__error">{error}</p> : null}
-        {testState.phase !== "idle" ? (
+        {mode === "client" && testState.phase !== "idle" ? (
           <p
             className={
               testState.phase === "ok"
@@ -531,34 +628,46 @@ export function ConnectionDialog({
           </p>
         ) : null}
         <div className="dialog__actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void runTest();
-            }}
-            disabled={testState.phase === "testing"}
-            title="Probe broker + Schema Registry without starting a capture"
-          >
-            {testState.phase === "testing" ? "Testing…" : "Test"}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => {
-              void saveAsProfile();
-            }}
-            disabled={profileBusy}
-          >
-            Save profile…
-          </button>
+          {mode === "client" ? (
+            <>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  void runTest();
+                }}
+                disabled={testState.phase === "testing"}
+                title="Probe broker + Schema Registry without starting a capture"
+              >
+                {testState.phase === "testing" ? "Testing…" : "Test"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  void saveAsProfile();
+                }}
+                disabled={profileBusy}
+              >
+                Save profile…
+              </button>
+            </>
+          ) : null}
           {onCancel ? (
             <button type="button" className="btn" onClick={onCancel}>
               Cancel
             </button>
           ) : null}
           <button type="submit" className="btn btn--primary" disabled={pending}>
-            {pending ? "Connecting…" : isEditing ? "Reconnect" : "Connect"}
+            {mode === "proxy"
+              ? pending
+                ? "Starting…"
+                : "Start proxy"
+              : pending
+                ? "Connecting…"
+                : isEditing
+                  ? "Reconnect"
+                  : "Connect"}
           </button>
         </div>
       </form>

@@ -21,6 +21,7 @@ import type {
   KafkaMessage,
   ProtoFrame,
   ProtoFrameDetail,
+  ProxyStatus,
 } from "./types";
 
 interface MenuState {
@@ -45,12 +46,14 @@ const INITIAL_STATS: CaptureStats = {
 
 const INITIAL_CONNECTION: ConnectionState = {
   status: "disconnected",
+  mode: "client",
   cluster: null,
   topicPattern: null,
   error: null,
   schemaRegistryUrl: null,
   fromBeginning: false,
   authPrefill: null,
+  proxyStatus: null,
 };
 
 function App(): JSX.Element {
@@ -294,6 +297,7 @@ function App(): JSX.Element {
   ): void => {
     setConnection({
       status: "connecting",
+      mode: "client",
       cluster: bootstrap,
       topicPattern,
       error: null,
@@ -309,6 +313,7 @@ function App(): JSX.Element {
             keyPath: auth.tls?.keyPath ?? null,
           }
         : null,
+      proxyStatus: null,
     });
     setEditing(false);
     void (async () => {
@@ -346,10 +351,51 @@ function App(): JSX.Element {
     })();
   };
 
+  // Proxy mode: ConnectionDialog drives the `start_proxy` invoke and pushes
+  // results back via these three callbacks. We mirror the client-mode state
+  // shape (`connecting` → `connected`/`error`) so the rest of the UI doesn't
+  // need to know which mode is active.
+  const handleProxyStarting = (): void => {
+    setConnection((prev) => ({
+      ...prev,
+      status: "connecting",
+      mode: "proxy",
+      cluster: null,
+      topicPattern: null,
+      error: null,
+      schemaRegistryUrl: null,
+      fromBeginning: false,
+      authPrefill: null,
+      proxyStatus: null,
+    }));
+    setEditing(false);
+  };
+
+  const handleProxyStarted = (status: ProxyStatus): void => {
+    setConnection((prev) => ({
+      ...prev,
+      status: "connected",
+      mode: "proxy",
+      error: null,
+      proxyStatus: status,
+    }));
+  };
+
+  const handleProxyError = (message: string): void => {
+    setConnection((prev) => ({
+      ...prev,
+      status: "error",
+      mode: "proxy",
+      error: message,
+      proxyStatus: null,
+    }));
+  };
+
   const handleDisconnect = (): void => {
+    const wasProxy = connection.mode === "proxy";
     void (async () => {
       try {
-        await invoke("disconnect");
+        await invoke(wasProxy ? "stop_proxy" : "disconnect");
       } catch (err) {
         console.error("disconnect failed", err);
       } finally {
@@ -474,6 +520,8 @@ function App(): JSX.Element {
         }}
         onClear={handleClear}
         cluster={connection.cluster ?? "no cluster"}
+        mode={connection.mode}
+        proxyStatus={connection.proxyStatus}
         onEdit={() => {
           setEditing(true);
         }}
@@ -570,6 +618,9 @@ function App(): JSX.Element {
           initial={initialPrefill}
           isEditing={isEditing}
           onConnect={handleConnect}
+          onProxyStarting={handleProxyStarting}
+          onProxyStarted={handleProxyStarted}
+          onProxyError={handleProxyError}
           onCancel={cancelDialog}
           pending={connection.status === "connecting"}
           error={connection.error}

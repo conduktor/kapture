@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import type { ConnectionMode, ProxyStatus } from "../types";
 
 interface Props {
   filter: string;
@@ -9,6 +10,8 @@ interface Props {
   onToggleCapture: () => void;
   onClear: () => void;
   cluster: string;
+  mode: ConnectionMode;
+  proxyStatus: ProxyStatus | null;
   onEdit: () => void;
 }
 
@@ -21,8 +24,19 @@ export function TopBar({
   onToggleCapture,
   onClear,
   cluster,
+  mode,
+  proxyStatus,
   onEdit,
 }: Props): JSX.Element {
+  // Cluster pill: in proxy mode show `proxy {listenAddr} → {upstream}` when
+  // the listener is up; fall back to "proxy" while the listener is booting
+  // so the pill never blanks. Client mode keeps the original bootstrap text.
+  const pillLabel =
+    mode === "proxy"
+      ? proxyStatus
+        ? `proxy ${proxyStatus.listenAddr} → ${proxyStatus.upstream}`
+        : "proxy"
+      : cluster;
   return (
     <header className="topbar">
       <button
@@ -32,7 +46,7 @@ export function TopBar({
         title="Edit connection settings"
       >
         <span className="topbar__cluster-dot" data-status={capturing ? "live" : "idle"} />
-        <span className="topbar__cluster-name">{cluster}</span>
+        <span className="topbar__cluster-name">{pillLabel}</span>
         <span className="topbar__cluster-edit" aria-hidden="true">
           ✎
         </span>

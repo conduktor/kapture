@@ -85,8 +85,22 @@ export interface AppInfo {
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 
+export type ConnectionMode = "client" | "proxy";
+
+export interface ProxyConfig {
+  upstream: string;
+  listenPort: number;
+}
+
+export interface ProxyStatus {
+  listenAddr: string;
+  upstream: string;
+}
+
 export interface ConnectionState {
   status: ConnectionStatus;
+  /** "client" = Kapture connects as a consumer; "proxy" = apps point at us. */
+  mode: ConnectionMode;
   cluster: string | null;
   /** Topic regex actually in effect on the broker side (default ^[^_].*). */
   topicPattern: string | null;
@@ -97,6 +111,8 @@ export interface ConnectionState {
   schemaRegistryUrl: string | null;
   fromBeginning: boolean;
   authPrefill: ConnectionAuthPrefill | null;
+  /** Populated only when mode === "proxy" and the listener is up. */
+  proxyStatus: ProxyStatus | null;
 }
 
 export interface ConnectionAuthPrefill {
