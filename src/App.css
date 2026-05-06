@@ -356,6 +356,144 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
   text-align: right;
 }
 
+/* Hover-revealed ⊕/⊖ filter button on proto list cells. The icon sits
+ * inline next to the cell content and only turns visible when the cell
+ * is hovered — same affordance pattern as the message list, but scoped
+ * to the proto row container so it doesn't pick up unrelated styles. */
+.proto-cell--filterable {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.proto-cell__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proto-cell__filter {
+  visibility: hidden;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  height: 14px;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.proto-cell--filterable:hover .proto-cell__filter,
+.proto-cell__filter:focus-visible {
+  visibility: visible;
+}
+.proto-cell__filter:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Decoded-tree leaf value variant: same affordance, but the surrounding
+ * container is a grid cell of `.tree-node__summary` / `.field` so the
+ * hover trigger has to live on the row, not just on the value span. */
+.field__value--filterable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.field__value-text {
+  word-break: break-all;
+}
+.tree-node__summary .proto-cell__filter,
+.field .proto-cell__filter {
+  visibility: hidden;
+}
+.tree-node__summary:hover .proto-cell__filter,
+.field:hover .proto-cell__filter {
+  visibility: visible;
+}
+
+/* Active filter chip bar above the proto list. */
+.proto-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 11px;
+}
+.proto-filterbar__label {
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+.proto-filterbar__count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.proto-filterbar__clear {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.proto-filterbar__clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.proto-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s;
+}
+.proto-chip--include {
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--accent);
+  border-color: rgba(79, 70, 229, 0.25);
+}
+.proto-chip--include:hover {
+  background: rgba(79, 70, 229, 0.18);
+}
+.proto-chip--exclude {
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.25);
+}
+.proto-chip--exclude:hover {
+  background: rgba(220, 38, 38, 0.16);
+}
+.proto-chip__x {
+  opacity: 0.7;
+  font-weight: 600;
+}
+.proto-chip:hover .proto-chip__x {
+  opacity: 1;
+}
+
 /* Pair highlight: when a frame is selected, its request/response
  * partner (same corrId+connectionId, opposite dir) gets a dashed accent
  * border on the left so the eye can pair them across rows. */

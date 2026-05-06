@@ -1,12 +1,22 @@
-import { type JSX } from "react";
+import { type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
 import { parseDebug, type DebugNode } from "../lib/debugTree";
+import type { ProtoFilterMode } from "../lib/protoFilter";
+
+/**
+ * Add a `decodedContains` predicate from a clicked decoded leaf. The
+ * substring is `"<fieldName>: <renderedValue>"` so it matches the exact
+ * line emitted by the Rust `format!("{:#?}", msg)` Debug output that
+ * powers the decoded view (the kafka-protocol crate uses `derive(Debug)`).
+ */
+type AddDecodedFn = (substring: string, mode: ProtoFilterMode) => void;
 
 interface Props {
   frame: ProtoFrameDetail | null;
+  onAddDecodedFilter?: AddDecodedFn;
 }
 
-export function ProtoDetail({ frame }: Props): JSX.Element {
+export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
   if (!frame) {
     return (
       <section className="layers layers--empty" aria-label="Frame detail">
@@ -42,7 +52,13 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {frame.decoded ? <DecodedTree decoded={frame.decoded} apiName={frame.apiName} /> : null}
+      {frame.decoded ? (
+        <DecodedTree
+          decoded={frame.decoded}
+          apiName={frame.apiName}
+          {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+        />
+      ) : null}
       {rows.length > 0 ? (
         <details className="layer" {...(frame.decoded ? {} : { open: true })}>
           <summary className="layer__title">payload — hex view</summary>
@@ -63,16 +79,83 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
   );
 }
 
-function Field({ name, value }: { name: string; value: string }): JSX.Element {
+function Field({
+  name,
+  value,
+  onAddDecodedFilter,
+  filterSubstring,
+}: {
+  name: string;
+  value: string;
+  /** When set, value cell renders a hover-revealed ⊕/⊖ filter button. */
+  onAddDecodedFilter?: AddDecodedFn;
+  /** Substring used by the predicate; defaults to `name: value` (no quotes). */
+  filterSubstring?: string;
+}): JSX.Element {
   return (
     <div className="field">
       <span className="field__name">{name}</span>
-      <span className="field__value">{value}</span>
+      {onAddDecodedFilter ? (
+        <FilterableValue
+          value={value}
+          onAdd={onAddDecodedFilter}
+          substring={filterSubstring ?? `${name}: ${value}`}
+        />
+      ) : (
+        <span className="field__value">{value}</span>
+      )}
     </div>
   );
 }
 
-function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string }): JSX.Element {
+/**
+ * Hover-revealed filter affordance for a decoded leaf value. Click ⊕
+ * adds an include predicate, alt-click adds an exclude. The actual
+ * substring matched against the frame's `decoded` Debug output is
+ * `"<fieldName>: <renderedValue>"` — that's exactly what the Rust
+ * `{:#?}` Debug formatter emits for a struct field, so the substring
+ * is reliable enough without parsing.
+ */
+function FilterableValue({
+  value,
+  onAdd,
+  substring,
+}: {
+  value: string;
+  onAdd: AddDecodedFn;
+  substring: string;
+}): JSX.Element {
+  const onClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    onAdd(substring, event.altKey ? "exclude" : "include");
+  };
+  return (
+    <span className="field__value field__value--filterable">
+      <span className="field__value-text">{value}</span>
+      <button
+        type="button"
+        className="proto-cell__filter"
+        tabIndex={-1}
+        aria-label="Filter on this field value"
+        title={`Filter ⊕ on "${substring}" • Alt/Option-click to exclude ⊖`}
+        onClick={onClick}
+      >
+        ⊕
+      </button>
+    </span>
+  );
+}
+
+function DecodedTree({
+  decoded,
+  apiName,
+  onAddDecodedFilter,
+}: {
+  decoded: string;
+  apiName: string;
+  onAddDecodedFilter?: AddDecodedFn;
+}): JSX.Element {
   const tree = parseDebug(decoded);
   if (!tree) {
     // Parser bailed out: surface the raw Debug string rather than nothing.
@@ -102,10 +185,17 @@ function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string })
           tree.fields.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
-            tree.fields.map((f, i) => <DebugNodeView key={i} node={f.value} name={f.name} />)
+            tree.fields.map((f, i) => (
+              <DebugNodeView
+                key={i}
+                node={f.value}
+                name={f.name}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
           )
         ) : (
-          <DebugNodeView node={tree} />
+          <DebugNodeView node={tree} {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})} />
         )}
       </div>
     </details>
@@ -119,7 +209,15 @@ function DecodedTree({ decoded, apiName }: { decoded: string; apiName: string })
  * card around their children, so nesting reads as indentation rather
  * than a stack of nested containers.
  */
-function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.Element {
+function DebugNodeView({
+  node,
+  name,
+  onAddDecodedFilter,
+}: {
+  node: DebugNode;
+  name?: string;
+  onAddDecodedFilter?: AddDecodedFn;
+}): JSX.Element {
   if (node.kind === "struct") {
     return (
       <details className="tree-node" open>
@@ -131,7 +229,14 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
           {node.fields.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
-            node.fields.map((f, i) => <DebugNodeView key={i} node={f.value} name={f.name} />)
+            node.fields.map((f, i) => (
+              <DebugNodeView
+                key={i}
+                node={f.value}
+                name={f.name}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
           )}
         </div>
       </details>
@@ -148,7 +253,14 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
           {node.items.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
-            node.items.map((item, i) => <DebugNodeView key={i} node={item} name={`[${i}]`} />)
+            node.items.map((item, i) => (
+              <DebugNodeView
+                key={i}
+                node={item}
+                name={`[${i}]`}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
           )}
         </div>
       </details>
@@ -161,10 +273,22 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
     if (node.items.length === 1) {
       const inner = node.items[0];
       if (!inner) {
-        return <Field name={name ?? ""} value={`${node.name}()`} />;
+        return (
+          <Field
+            name={name ?? ""}
+            value={`${node.name}()`}
+            {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+          />
+        );
       }
       const label = name ? `${name} (${node.name})` : node.name;
-      return <DebugNodeView node={inner} name={label} />;
+      return (
+        <DebugNodeView
+          node={inner}
+          name={label}
+          {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+        />
+      );
     }
     return (
       <details className="tree-node" open>
@@ -174,17 +298,34 @@ function DebugNodeView({ node, name }: { node: DebugNode; name?: string }): JSX.
         </summary>
         <div className="tree-node__children">
           {node.items.map((item, i) => (
-            <DebugNodeView key={i} node={item} name={`[${i}]`} />
+            <DebugNodeView
+              key={i}
+              node={item}
+              name={`[${i}]`}
+              {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+            />
           ))}
         </div>
       </details>
     );
   }
-  if (node.kind === "string") {
-    return <Field name={name ?? ""} value={`"${node.value}"`} />;
-  }
-  // primitive
-  return <Field name={name ?? ""} value={node.text} />;
+  // Leaf: build a substring that mirrors the Rust `{:#?}` Debug
+  // formatter's "<name>: <rendered>" line so the decodedContains
+  // predicate matches reliably.
+  const rendered = node.kind === "string" ? `"${node.value}"` : node.text;
+  const fieldName = name ?? "";
+  // Tuple-flattened labels like `topic_id (TopicName)` aren't valid
+  // field-line prefixes in the Debug output; strip the parenthesized
+  // wrapper for the substring (the bare field name + value still matches).
+  const baseName = fieldName.replace(/\s*\([^)]*\)\s*$/, "");
+  const substring = baseName === "" ? rendered : `${baseName}: ${rendered}`;
+  return (
+    <Field
+      name={fieldName}
+      value={rendered}
+      {...(onAddDecodedFilter ? { onAddDecodedFilter, filterSubstring: substring } : {})}
+    />
+  );
 }
 
 interface HexRow {

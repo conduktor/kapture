@@ -13,6 +13,12 @@ import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
 import { ProtoList } from "./components/ProtoList";
 import { ProtoDetail } from "./components/ProtoDetail";
 import { Splitter } from "./components/Splitter";
+import {
+  EMPTY_PROTO_FILTER,
+  addPredicate as addProtoPredicate,
+  type ProtoFilter,
+  type ProtoFilterMode,
+} from "./lib/protoFilter";
 import type {
   AppInfo,
   AuthArgs,
@@ -73,10 +79,17 @@ function App(): JSX.Element {
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
-  // Substring filter for the protocol tab. Matches case-insensitively
-  // against api name / direction / broker. Kept separate from the
-  // Wireshark-style DSL filter applied to messages.
-  const [protoFilter, setProtoFilter] = useState("");
+  // Chip-based filter for the protocol tab. Built from hover ⊕/⊖
+  // affordances on list cells and decoded leaf values. Kept separate
+  // from the Wireshark-style DSL filter applied to messages — proto
+  // frames don't go through the message DSL.
+  const [protoFilter, setProtoFilter] = useState<ProtoFilter>(EMPTY_PROTO_FILTER);
+  // Opportunistic LRU of fetched decoded bodies keyed by frame id.
+  // Used by the decodedContains predicate; frames not in the cache
+  // bypass the predicate (over-include rather than over-exclude).
+  // Bounded so the chip-based filter doesn't pin unbounded memory.
+  const decodedCacheRef = useRef<Map<string, string>>(new Map());
+  const DECODED_CACHE_MAX = 50;
   // Vertical splits, expressed as fr ratios. Two splits in messages tab
   // (between MessageList/LayerTree and LayerTree/HexDump), one in
   // protocol (between ProtoList/ProtoDetail). Adjusted via Splitter
@@ -214,6 +227,21 @@ function App(): JSX.Element {
         const detail = await invoke<ProtoFrameDetail | null>("proto_frame_detail", { id });
         if (!detailCancelRef.current) {
           setSelectedFrameDetail(detail);
+          // Seed the decoded LRU. Map iteration order is insertion
+          // order, so re-inserting (delete + set) bumps the entry to
+          // the most-recent slot; oldest is the first key.
+          if (detail?.decoded != null) {
+            const cache = decodedCacheRef.current;
+            cache.delete(detail.id);
+            cache.set(detail.id, detail.decoded);
+            while (cache.size > DECODED_CACHE_MAX) {
+              const oldest = cache.keys().next();
+              if (oldest.done === true) {
+                break;
+              }
+              cache.delete(oldest.value);
+            }
+          }
         }
       } catch (err) {
         if (!detailCancelRef.current) {
@@ -464,38 +492,31 @@ function App(): JSX.Element {
       }
     : undefined;
 
-  // Filter bar wiring — different surface per tab. Messages tab uses
-  // the Wireshark-style DSL (validated server-side); protocol tab uses
-  // a substring match against the api name / direction (frontend-only,
-  // since the protocol frames don't go through the same DSL today).
-  const filterValue = tab === "messages" ? filter : protoFilter;
+  // Filter bar wiring — Messages tab uses the Wireshark-style DSL
+  // (validated server-side); Protocol tab disables the top input and
+  // exposes filters via in-row hover ⊕/⊖ chips instead. The chip bar
+  // lives inside ProtoList.
+  const filterValue = tab === "messages" ? filter : "";
   const filterPlaceholder =
     tab === "messages"
       ? 'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
-      : "substring match — e.g. Metadata, Heartbeat, ApiVersions";
+      : "Hover any cell or decoded field and click ⊕ to filter";
   const onFilterChange = (next: string): void => {
     if (tab === "messages") {
       setFilter(next);
-    } else {
-      setProtoFilter(next);
     }
+    // Protocol tab: top filter input is read-only / informational. The
+    // chip-based filter is driven by hover ⊕/⊖ buttons.
   };
 
-  // Frontend filter on the protocol frames: case-insensitive substring
-  // against api name / direction. No backend round-trip — the proto
-  // ring buffer is small enough to filter in JS.
-  const visibleProtoFrames =
-    protoFilter.trim() === ""
-      ? protoFrames
-      : protoFrames.filter((f) => {
-          const q = protoFilter.toLowerCase();
-          return (
-            f.apiName.toLowerCase().includes(q) ||
-            f.direction.toLowerCase().includes(q) ||
-            String(f.connectionId).includes(q) ||
-            String(f.corrId).includes(q)
-          );
-        });
+  const decodedFor = useCallback(
+    (id: string): string | undefined => decodedCacheRef.current.get(id),
+    [],
+  );
+
+  const onAddDecodedFilter = useCallback((substring: string, mode: ProtoFilterMode): void => {
+    setProtoFilter((prev) => addProtoPredicate(prev, "decodedContains", substring, mode));
+  }, []);
 
   // Splitter callbacks: convert pixel deltas into ratio deltas.
   const clamp = (x: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, x));
@@ -589,9 +610,12 @@ function App(): JSX.Element {
               style={{ gridTemplateRows: `${protoSplit}fr 6px ${1 - protoSplit}fr` }}
             >
               <ProtoList
-                frames={visibleProtoFrames}
+                frames={protoFrames}
                 selectedId={selectedFrameId}
                 onSelect={setSelectedFrameId}
+                filter={protoFilter}
+                onFilterChange={setProtoFilter}
+                decodedFor={decodedFor}
               />
               <Splitter
                 onResize={(dy) => {
@@ -605,6 +629,7 @@ function App(): JSX.Element {
                   // during the brief window before the new fetch lands.
                   selectedFrameDetail?.id === selectedFrameId ? selectedFrameDetail : null
                 }
+                onAddDecodedFilter={onAddDecodedFilter}
               />
             </div>
           )}

@@ -1,11 +1,35 @@
-import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  type JSX,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
-import type { ProtoFrame } from "../types";
+import type { ProtoDirection, ProtoFrame } from "../types";
+import {
+  EMPTY_PROTO_FILTER,
+  addPredicate,
+  applyFilter,
+  filterChips,
+  isFilterEmpty,
+  removePredicate,
+  type ProtoFilter,
+  type ProtoFilterChip,
+  type ProtoFilterKind,
+  type ProtoFilterMode,
+} from "../lib/protoFilter";
 
 interface Props {
   frames: ProtoFrame[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  filter: ProtoFilter;
+  onFilterChange: (next: ProtoFilter) => void;
+  /** Cache lookup for decodedContains predicates (frame id → decoded body). */
+  decodedFor?: (id: string) => string | undefined;
 }
 
 interface RowProps {
@@ -14,7 +38,18 @@ interface RowProps {
   /** Id of the request/response pair partner of the selected frame. */
   pairedId: string | null;
   onSelect: (id: string) => void;
+  onAddPredicate: AddPredicateFn;
 }
+
+type AddPredicateFn = <K extends ProtoFilterKind>(
+  kind: K,
+  value: K extends "direction"
+    ? ProtoDirection
+    : K extends "connectionId" | "corrId"
+      ? number
+      : string,
+  mode: ProtoFilterMode,
+) => void;
 
 const ROW_HEIGHT = 24;
 
@@ -22,7 +57,23 @@ const ROW_HEIGHT = 24;
 // observed (Send + Recv) in chronological order. Pairing of request to
 // response is left to the eye for now (same corr_id + connection_id) — backend
 // pairing is a follow-up.
-export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element {
+export function ProtoList({
+  frames,
+  selectedId,
+  onSelect,
+  filter,
+  onFilterChange,
+  decodedFor,
+}: Props): JSX.Element {
+  // Apply the filter. Stable identity for `frames` ref keeps reconciliation
+  // cheap across renders that don't change the predicates.
+  const visibleFrames = useMemo<ProtoFrame[]>(() => {
+    if (isFilterEmpty(filter)) {
+      return frames;
+    }
+    return frames.filter((f) => applyFilter(filter, f, decodedFor));
+  }, [frames, filter, decodedFor]);
+
   // Find the request/response partner of the selected frame.
   //
   // Why `(connectionId, corrId)` alone isn't a unique key: librdkafka
@@ -41,19 +92,19 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
     if (selectedId === null) {
       return null;
     }
-    const idx = frames.findIndex((f) => f.id === selectedId);
+    const idx = visibleFrames.findIndex((f) => f.id === selectedId);
     if (idx < 0) {
       return null;
     }
-    const sel = frames[idx];
+    const sel = visibleFrames[idx];
     if (!sel) {
       return null;
     }
     const matches = (f: ProtoFrame): boolean =>
       f.corrId === sel.corrId && f.connectionId === sel.connectionId;
     if (sel.direction === "send") {
-      for (let i = idx + 1; i < frames.length; i += 1) {
-        const f = frames[i];
+      for (let i = idx + 1; i < visibleFrames.length; i += 1) {
+        const f = visibleFrames[i];
         if (f?.direction === "recv" && matches(f)) {
           return f.id;
         }
@@ -67,7 +118,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
       return null;
     }
     for (let i = idx - 1; i >= 0; i -= 1) {
-      const f = frames[i];
+      const f = visibleFrames[i];
       if (f?.direction === "send" && matches(f)) {
         return f.id;
       }
@@ -76,11 +127,24 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
       }
     }
     return null;
-  }, [frames, selectedId]);
+  }, [visibleFrames, selectedId]);
+
+  // TS can't narrow the `value` conditional inside AddPredicateFn back
+  // to the matching `KindMap[K]` slot — addPredicate is generic so we
+  // forward the (kind, value) pair through an `any`-cast. The public
+  // AddPredicateFn signature still enforces the correct value-per-kind
+  // at every call site outside this component.
+  const onAddPredicate = useCallback<AddPredicateFn>(
+    (kind, value, mode) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onFilterChange(addPredicate(filter, kind as any, value as any, mode));
+    },
+    [filter, onFilterChange],
+  );
 
   const rowProps = useMemo<RowProps>(
-    () => ({ frames, selectedId, pairedId, onSelect }),
-    [frames, selectedId, pairedId, onSelect],
+    () => ({ frames: visibleFrames, selectedId, pairedId, onSelect, onAddPredicate }),
+    [visibleFrames, selectedId, pairedId, onSelect, onAddPredicate],
   );
   const listRef = useRef<ListImperativeAPI | null>(null);
   const onKeyDown = useCallback(
@@ -88,30 +152,47 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
         return;
       }
-      if (frames.length === 0) {
+      if (visibleFrames.length === 0) {
         return;
       }
       event.preventDefault();
       const dir = event.key === "ArrowDown" ? 1 : -1;
-      const cur = selectedId === null ? -1 : frames.findIndex((f) => f.id === selectedId);
+      const cur = selectedId === null ? -1 : visibleFrames.findIndex((f) => f.id === selectedId);
       const next =
         cur < 0
           ? dir > 0
             ? 0
-            : frames.length - 1
-          : Math.max(0, Math.min(frames.length - 1, cur + dir));
-      const nextFrame = frames[next];
+            : visibleFrames.length - 1
+          : Math.max(0, Math.min(visibleFrames.length - 1, cur + dir));
+      const nextFrame = visibleFrames[next];
       if (!nextFrame) {
         return;
       }
       onSelect(nextFrame.id);
       listRef.current?.scrollToRow({ index: next, align: "auto" });
     },
-    [frames, selectedId, onSelect],
+    [visibleFrames, selectedId, onSelect],
   );
+
+  const chips = useMemo<ProtoFilterChip[]>(() => filterChips(filter), [filter]);
+  const total = frames.length;
+  const shown = visibleFrames.length;
 
   return (
     <section className="msglist" aria-label="Protocol frames" tabIndex={0} onKeyDown={onKeyDown}>
+      {chips.length > 0 ? (
+        <ProtoFilterBar
+          chips={chips}
+          shown={shown}
+          total={total}
+          onRemove={(chip) => {
+            onFilterChange(removePredicate(filter, chip.kind, chip.value, chip.mode));
+          }}
+          onClear={() => {
+            onFilterChange(EMPTY_PROTO_FILTER);
+          }}
+        />
+      ) : null}
       <div className="msglist__head">
         <span className="proto__col proto__col--ts">ts</span>
         <span className="proto__col proto__col--dir">dir</span>
@@ -123,20 +204,29 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         <span className="proto__col proto__col--rtt">rtt (ms)</span>
       </div>
       <div className="msglist__body">
-        {frames.length === 0 ? (
+        {visibleFrames.length === 0 ? (
           <div className="msglist__empty">
-            <p>No protocol frames yet.</p>
-            <p className="muted">
-              Connect to a cluster — every Kafka API call (Metadata, Fetch, Heartbeat, …) the
-              consumer makes will appear here.
-            </p>
+            {total === 0 ? (
+              <>
+                <p>No protocol frames yet.</p>
+                <p className="muted">
+                  Connect to a cluster — every Kafka API call (Metadata, Fetch, Heartbeat, …) the
+                  consumer makes will appear here.
+                </p>
+              </>
+            ) : (
+              <>
+                <p>No frames match the current filter.</p>
+                <p className="muted">{total} frame(s) hidden — clear filters to show all.</p>
+              </>
+            )}
           </div>
         ) : (
           <List
             className="msglist__virtual"
             listRef={listRef}
             rowComponent={ProtoRow}
-            rowCount={frames.length}
+            rowCount={visibleFrames.length}
             rowHeight={ROW_HEIGHT}
             rowProps={rowProps}
             overscanCount={8}
@@ -144,6 +234,113 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         )}
       </div>
     </section>
+  );
+}
+
+function ProtoFilterBar({
+  chips,
+  shown,
+  total,
+  onRemove,
+  onClear,
+}: {
+  chips: ProtoFilterChip[];
+  shown: number;
+  total: number;
+  onRemove: (chip: ProtoFilterChip) => void;
+  onClear: () => void;
+}): JSX.Element {
+  return (
+    <div className="proto-filterbar" role="region" aria-label="Active proto filters">
+      <span className="proto-filterbar__label">Filters</span>
+      {chips.map((chip, i) => (
+        <button
+          key={`${chip.kind}:${chip.mode}:${String(chip.value)}:${String(i)}`}
+          type="button"
+          className={`proto-chip proto-chip--${chip.mode}`}
+          title={`Remove: ${chip.label}`}
+          onClick={() => {
+            onRemove(chip);
+          }}
+        >
+          <span className="proto-chip__label">{chip.label}</span>
+          <span className="proto-chip__x" aria-hidden="true">
+            ×
+          </span>
+        </button>
+      ))}
+      <button type="button" className="proto-filterbar__clear" onClick={onClear}>
+        clear all
+      </button>
+      <span className="proto-filterbar__count">
+        showing {shown} of {total}
+      </span>
+    </div>
+  );
+}
+
+interface FilterableCellProps {
+  className: string;
+  title?: string;
+  children: ReactNode;
+  /** Predicate kind. */
+  kind: ProtoFilterKind;
+  /** Value to filter on; type varies with `kind` (string covers ProtoDirection). */
+  value: number | string;
+  onAdd: AddPredicateFn;
+}
+
+/**
+ * Cell wrapper that reveals a tiny ⊕/⊖ filter button on hover. Click
+ * adds an include predicate; alt/option-click adds an exclude. Stops
+ * row-click propagation so filtering doesn't also select the row.
+ */
+function FilterableCell({
+  className,
+  title,
+  children,
+  kind,
+  value,
+  onAdd,
+}: FilterableCellProps): JSX.Element {
+  const onCellClick = (event: MouseEvent<HTMLSpanElement>): void => {
+    // Cells don't trigger selection — only the row's onClick does.
+    // We just need to make sure the icon button doesn't bubble.
+    event.stopPropagation();
+  };
+  const handle =
+    (mode: ProtoFilterMode) =>
+    (event: MouseEvent<HTMLButtonElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      // Cast is safe — caller picks `kind` to match the value type.
+      onAdd(kind as never, value as never, mode);
+    };
+  const onIconClick = (event: MouseEvent<HTMLButtonElement>): void => {
+    if (event.altKey) {
+      handle("exclude")(event);
+    } else {
+      handle("include")(event);
+    }
+  };
+  return (
+    <span
+      className={`${className} proto-cell--filterable`}
+      onClick={onCellClick}
+      title={title ?? "Click ⊕ to filter • Alt-click to exclude"}
+    >
+      <span className="proto-cell__content">{children}</span>
+      <button
+        type="button"
+        className="proto-cell__filter"
+        tabIndex={-1}
+        aria-label="Filter on this value"
+        title="Click: filter ⊕ this value • Alt/Option-click: exclude ⊖"
+        onClick={onIconClick}
+      >
+        ⊕
+      </button>
+    </span>
   );
 }
 
@@ -155,6 +352,7 @@ function ProtoRow({
   selectedId,
   pairedId,
   onSelect,
+  onAddPredicate,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const frame = frames[index];
   if (!frame) {
@@ -166,32 +364,65 @@ function ProtoRow({
   // Backend emits RFC3339 with microseconds → keep HH:MM:SS.ffffff.
   const ts = frame.timestamp.slice(11, 26);
   return (
-    <button
-      type="button"
+    <div
       style={style}
       className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}`}
       onClick={() => {
         onSelect(frame.id);
       }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(frame.id);
+        }
+      }}
+      role={ariaAttributes.role}
+      tabIndex={0}
       aria-posinset={ariaAttributes["aria-posinset"]}
       aria-setsize={ariaAttributes["aria-setsize"]}
-      role={ariaAttributes.role}
+      aria-selected={isSelected}
     >
       <span className="proto__col proto__col--ts">{ts}</span>
-      <span
-        className={`proto__col proto__col--dir proto__dir--${frame.direction}`}
+      <FilterableCell
+        className="proto__col proto__col--dir"
+        kind="direction"
+        value={frame.direction}
+        onAdd={onAddPredicate}
         title={frame.direction === "send" ? "request out" : "response in"}
       >
-        {frame.direction === "send" ? "→" : "←"}
-      </span>
-      <span className="proto__col proto__col--api">{frame.apiName}</span>
+        <span className={`proto__dir--${frame.direction}`}>
+          {frame.direction === "send" ? "→" : "←"}
+        </span>
+      </FilterableCell>
+      <FilterableCell
+        className="proto__col proto__col--api"
+        kind="apiName"
+        value={frame.apiName}
+        onAdd={onAddPredicate}
+      >
+        {frame.apiName}
+      </FilterableCell>
       <span className="proto__col proto__col--v">v{frame.apiVersion}</span>
-      <span className="proto__col proto__col--broker">{frame.connectionId}</span>
-      <span className="proto__col proto__col--corr">{frame.corrId}</span>
+      <FilterableCell
+        className="proto__col proto__col--broker"
+        kind="connectionId"
+        value={frame.connectionId}
+        onAdd={onAddPredicate}
+      >
+        {frame.connectionId}
+      </FilterableCell>
+      <FilterableCell
+        className="proto__col proto__col--corr"
+        kind="corrId"
+        value={frame.corrId}
+        onAdd={onAddPredicate}
+      >
+        {frame.corrId}
+      </FilterableCell>
       <span className="proto__col proto__col--size">{frame.size}b</span>
       <span className="proto__col proto__col--rtt">
         {frame.direction === "recv" ? frame.rttMs.toFixed(2) : "—"}
       </span>
-    </button>
+    </div>
   );
 }
