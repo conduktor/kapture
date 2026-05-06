@@ -248,8 +248,12 @@ impl<H: ScramHash> ScramClient<H> {
                 iterations: iterations_u64,
             });
         }
-        // Safe: bounded above by MAX_PBKDF2_ITERATIONS.
-        let iterations = iterations_u64 as u32;
+        // Bounded above by MAX_PBKDF2_ITERATIONS (1_000_000) which fits
+        // in u32 trivially. try_from is the no-panic conversion.
+        let iterations =
+            u32::try_from(iterations_u64).map_err(|_| ScramError::InvalidIterations {
+                iterations: iterations_u64,
+            })?;
 
         if salt_b64.is_empty() {
             return Err(ScramError::InvalidSalt("empty base64 salt".to_owned()));
@@ -493,7 +497,7 @@ mod tests {
         let m = "m=reserved,r=rOprNGfwEbeRWgbNEkqOX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096";
         match c.server_first(m) {
             Err(ScramError::MalformedMessage(msg)) => {
-                assert!(msg.contains("mandatory extension"), "msg = {msg}")
+                assert!(msg.contains("mandatory extension"), "msg = {msg}");
             }
             other => panic!("expected MalformedMessage, got {other:?}"),
         }
