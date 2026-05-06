@@ -19,6 +19,13 @@ use parking_lot::Mutex;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
+use crate::proto_hook::{ProtoDirection, ProtoEvent};
+
+/// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
+/// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
+/// decoded body stays bounded across both client and proxy modes.
+pub const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
+
 // Skeleton type for Phase 1 — wired into AppState/commands in later tasks
 // of the proxy-mode plan (Tasks 6–8). Allowing dead_code locally so the
 // `-D warnings` gate passes while the module is still inert.
@@ -222,6 +229,72 @@ where
     Ok(())
 }
 
+/// Build the `ProtoEvent` for one tapped frame. On the request path,
+/// peek the header and stash it in `corr_map`. On the response path,
+/// look up the matching request to recover `(api_key, api_version)`
+/// and RTT.
+///
+/// The `payload` field re-prepends the 4-byte big-endian size prefix
+/// (encoding the body length, i.e. `frame.len()`) so the existing
+/// `proto_decode::decode_frame` parser keeps working unchanged. The
+/// `payload_size` is the WIRE size including that prefix, matching
+/// the librdkafka FFI semantics.
+#[allow(dead_code)] // wired into the pump tap in Task 6
+#[must_use]
+pub fn build_proto_event(
+    dir: ProxyDirection,
+    conn_id: ConnectionId,
+    frame: &[u8],
+    corr_map: &CorrelationMap,
+) -> ProtoEvent {
+    let body_len_i32 = i32::try_from(frame.len()).unwrap_or(i32::MAX);
+    let payload_size = frame.len() + 4;
+    let body_take = frame.len().min(PROTO_PAYLOAD_CAP - 4);
+    let mut payload = Vec::with_capacity(body_take + 4);
+    payload.extend_from_slice(&body_len_i32.to_be_bytes());
+    payload.extend_from_slice(&frame[..body_take]);
+    let broker_id = i32::try_from(conn_id.0 & 0x7FFF_FFFF).unwrap_or(i32::MAX);
+
+    match dir {
+        ProxyDirection::ClientToUpstream => {
+            let header = peek_request_header(frame);
+            if let Some(h) = header {
+                corr_map.record_request(h.corr_id, h);
+            }
+            ProtoEvent {
+                direction: ProtoDirection::Send,
+                api_key: header.map_or(-1, |h| i32::from(h.api_key)),
+                api_version: header.map_or(-1, |h| i32::from(h.api_version)),
+                corr_id: header.map_or(0, |h| h.corr_id),
+                broker_id,
+                payload_size,
+                rtt_ms: 0.0,
+                payload,
+            }
+        }
+        ProxyDirection::UpstreamToClient => {
+            // Response wire prefix is just the 4-byte correlation id.
+            let corr_id = if frame.len() >= 4 {
+                i32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]])
+            } else {
+                0
+            };
+            let pending = corr_map.take_response(corr_id);
+            let rtt_ms = pending.map_or(0.0, |p| p.rtt_at(Instant::now()));
+            ProtoEvent {
+                direction: ProtoDirection::Recv,
+                api_key: pending.map_or(-1, |p| i32::from(p.header.api_key)),
+                api_version: pending.map_or(-1, |p| i32::from(p.header.api_version)),
+                corr_id,
+                broker_id,
+                payload_size,
+                rtt_ms,
+                payload,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -308,6 +381,99 @@ mod tests {
     fn correlation_map_returns_none_for_unknown_corr_id() {
         let map = CorrelationMap::default();
         assert!(map.take_response(999).is_none());
+    }
+
+    #[test]
+    fn build_proto_event_for_request_uses_peeked_header() {
+        let map = CorrelationMap::default();
+        // 8-byte header prefix: api_key=18 (ApiVersions), api_ver=3, corr_id=99
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&18i16.to_be_bytes());
+        frame.extend_from_slice(&3i16.to_be_bytes());
+        frame.extend_from_slice(&99i32.to_be_bytes());
+        frame.extend_from_slice(b"....rest....");
+
+        let event = build_proto_event(
+            ProxyDirection::ClientToUpstream,
+            ConnectionId(7),
+            &frame,
+            &map,
+        );
+
+        assert!(matches!(
+            event.direction,
+            crate::proto_hook::ProtoDirection::Send
+        ));
+        assert_eq!(event.api_key, 18);
+        assert_eq!(event.api_version, 3);
+        assert_eq!(event.corr_id, 99);
+        assert_eq!(event.broker_id, 7);
+        assert_eq!(event.payload_size, frame.len() + 4);
+        let body_len = i32::try_from(frame.len()).unwrap();
+        assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
+        assert_eq!(&event.payload[4..], &frame[..]);
+        assert!(event.rtt_ms == 0.0);
+        // Map now holds an entry for corr_id 99.
+        assert!(map.take_response(99).is_some());
+    }
+
+    #[test]
+    fn build_proto_event_for_response_resolves_from_map() {
+        let map = CorrelationMap::default();
+        map.record_request(
+            42,
+            RequestHeaderPeek {
+                api_key: 1,
+                api_version: 13,
+                corr_id: 42,
+            },
+        );
+        // Response wire prefix: corr_id (i32 BE) at offset 0.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&42i32.to_be_bytes());
+        frame.extend_from_slice(b"....body....");
+
+        let event = build_proto_event(
+            ProxyDirection::UpstreamToClient,
+            ConnectionId(7),
+            &frame,
+            &map,
+        );
+
+        assert!(matches!(
+            event.direction,
+            crate::proto_hook::ProtoDirection::Recv
+        ));
+        assert_eq!(event.api_key, 1);
+        assert_eq!(event.api_version, 13);
+        assert_eq!(event.corr_id, 42);
+        assert_eq!(event.broker_id, 7);
+        assert_eq!(event.payload_size, frame.len() + 4);
+        let body_len = i32::try_from(frame.len()).unwrap();
+        assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
+        assert_eq!(&event.payload[4..], &frame[..]);
+        assert!(event.rtt_ms >= 0.0);
+    }
+
+    #[test]
+    fn build_proto_event_for_unknown_response_is_marked_unknown() {
+        let map = CorrelationMap::default();
+        // Response with no matching request in the map.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&404i32.to_be_bytes());
+        frame.extend_from_slice(b"....body....");
+
+        let event = build_proto_event(
+            ProxyDirection::UpstreamToClient,
+            ConnectionId(7),
+            &frame,
+            &map,
+        );
+
+        assert_eq!(event.api_key, -1);
+        assert_eq!(event.api_version, -1);
+        assert_eq!(event.corr_id, 404);
+        assert_eq!(event.payload_size, frame.len() + 4);
     }
 
     /// End-to-end: spin up a fake upstream broker that echoes each
