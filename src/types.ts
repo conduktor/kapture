@@ -48,6 +48,21 @@ export interface ConnectionState {
   cluster: string | null;
   topics: string[];
   error: string | null;
+  // Non-secret connection params remembered locally so the edit dialog
+  // can prefill them. Secrets (auth.password, tls.keyPassword) are NOT
+  // round-tripped — the user re-enters them in edit mode.
+  schemaRegistryUrl: string | null;
+  fromBeginning: boolean;
+  authPrefill: ConnectionAuthPrefill | null;
+}
+
+export interface ConnectionAuthPrefill {
+  mechanism: SaslMechanism;
+  username: string;
+  useTls: boolean;
+  caPath: string | null;
+  certPath: string | null;
+  keyPath: string | null;
 }
 
 export interface CaptureStats {

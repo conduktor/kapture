@@ -33,6 +33,9 @@ const INITIAL_CONNECTION: ConnectionState = {
   cluster: null,
   topics: [],
   error: null,
+  schemaRegistryUrl: null,
+  fromBeginning: true,
+  authPrefill: null,
 };
 
 function App(): JSX.Element {
@@ -171,6 +174,18 @@ function App(): JSX.Element {
       cluster: bootstrap,
       topics: topicList,
       error: null,
+      schemaRegistryUrl,
+      fromBeginning,
+      authPrefill: auth
+        ? {
+            mechanism: auth.mechanism,
+            username: auth.username,
+            useTls: auth.useTls,
+            caPath: auth.tls?.caPath ?? null,
+            certPath: auth.tls?.certPath ?? null,
+            keyPath: auth.tls?.keyPath ?? null,
+          }
+        : null,
     });
     setEditing(false);
     void (async () => {
@@ -194,20 +209,22 @@ function App(): JSX.Element {
         setMessages([]);
         setSelectedId(null);
         setStats(INITIAL_STATS);
-        setConnection({
+        setConnection((prev) => ({
+          ...prev,
           status: "connected",
           cluster: bootstrap,
           topics: topicList,
           error: null,
-        });
+        }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setConnection({
+        setConnection((prev) => ({
+          ...prev,
           status: "error",
           cluster: bootstrap,
           topics: topicList,
           error: message,
-        });
+        }));
       }
     })();
   };
@@ -252,6 +269,18 @@ function App(): JSX.Element {
     ? {
         bootstrap: connection.cluster ?? DEFAULT_BOOTSTRAP,
         topics: connection.topics.join(", "),
+        registry: connection.schemaRegistryUrl ?? "",
+        fromBeginning: connection.fromBeginning,
+        ...(connection.authPrefill
+          ? {
+              authMethod: connection.authPrefill.mechanism,
+              username: connection.authPrefill.username,
+              useTls: connection.authPrefill.useTls,
+              caPath: connection.authPrefill.caPath ?? "",
+              certPath: connection.authPrefill.certPath ?? "",
+              keyPath: connection.authPrefill.keyPath ?? "",
+            }
+          : { authMethod: "none" as const }),
       }
     : undefined;
 

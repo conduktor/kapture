@@ -23,6 +23,11 @@ interface Initial {
   username: string;
   useTls: boolean;
   fromBeginning: boolean;
+  // TLS paths prefill in edit mode. Passwords intentionally excluded:
+  // they live only in the OS keychain and the user must re-enter them.
+  caPath: string;
+  certPath: string;
+  keyPath: string;
 }
 
 interface Props {
@@ -62,9 +67,9 @@ export function ConnectionDialog({
   const [username, setUsername] = useState(initial?.username ?? "");
   const [password, setPassword] = useState("");
   const [useTls, setUseTls] = useState(initial?.useTls ?? false);
-  const [caPath, setCaPath] = useState("");
-  const [certPath, setCertPath] = useState("");
-  const [keyPath, setKeyPath] = useState("");
+  const [caPath, setCaPath] = useState(initial?.caPath ?? "");
+  const [certPath, setCertPath] = useState(initial?.certPath ?? "");
+  const [keyPath, setKeyPath] = useState(initial?.keyPath ?? "");
   const [keyPassword, setKeyPassword] = useState("");
 
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
@@ -327,7 +332,12 @@ export function ConnectionDialog({
               />
             </label>
             <label className="dialog__field">
-              <span className="dialog__label">Password</span>
+              <span className="dialog__label">
+                Password
+                {isEditing && initial?.authMethod && initial.authMethod !== "none" ? (
+                  <span className="dialog__hint-inline"> (re-enter; not stored in UI)</span>
+                ) : null}
+              </span>
               <input
                 type="password"
                 className="dialog__input"

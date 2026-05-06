@@ -601,6 +601,12 @@ body,
   border-radius: 3px;
   font-size: 11.5px;
 }
+.dialog__hint-inline {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: 6px;
+}
 .dialog__field {
   display: flex;
   flex-direction: column;
