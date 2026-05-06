@@ -19,6 +19,19 @@ mod ring_buffer;
 mod schema_registry;
 mod state;
 
+/// Public re-exports for `cargo run --example proxy_smoke`.
+///
+/// Examples link against `kapture_lib` (the rlib output) and need a
+/// stable, narrow API surface — exposing every module would force
+/// pedantic-clippy doc rewrites on a lot of internal code that isn't
+/// part of any external contract.
+pub mod example_api {
+    pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
+    pub use crate::proto_hook::ProtoDirection;
+    pub use crate::proxy::ProxyConfig;
+    pub use crate::proxy_handle::ProxyHandle;
+}
+
 use std::sync::Arc;
 
 use tauri::Manager;

@@ -48,10 +48,12 @@ pub struct FetchMetadata {
     pub rtt_ms: f64,
 }
 
-/// Lightweight projection of `ProtoFrame` — everything needed to draw
-/// the Protocol list row. Excludes `payload_hex` and `decoded` so the
-/// 1 Hz poll doesn't ship MB of data to the renderer when the ring
-/// buffer is full of large Fetch responses.
+/// Lightweight projection of `ProtoFrame`.
+///
+/// Everything needed to draw the Protocol list row. Excludes
+/// `payload_hex` and `decoded` so the 1 Hz poll doesn't ship MB of data
+/// to the renderer when the ring buffer is full of large Fetch
+/// responses.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtoFrameSummary {
