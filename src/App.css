@@ -463,14 +463,12 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
 }
 .proto-cell__content {
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .proto-cell__filter {
-  visibility: hidden;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -487,16 +485,31 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   transition:
     background 0.12s,
     color 0.12s,
-    border-color 0.12s;
+    border-color 0.12s,
+    opacity 0.12s;
 }
+/* The filter buttons sit OUTSIDE the cell flow on the right edge so
+ * they don't reserve horizontal space when the cell isn't hovered. On
+ * hover (or when an active predicate forces visibility), they fade in
+ * floating above the row's right boundary. */
 .proto-cell__filters {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  /* Stack above row content so the buttons aren't clipped by the
+   * neighbouring cell when they overflow the conn·corr column slightly. */
+  z-index: 2;
 }
-.proto-cell--filterable:hover .proto-cell__filter,
-.proto-cell__filter:focus-visible,
-.proto-cell__filter.is-active {
-  visibility: visible;
+.proto-cell--filterable:hover .proto-cell__filters,
+.proto-cell--filterable:focus-within .proto-cell__filters,
+.proto-cell__filters:has(.proto-cell__filter.is-active) {
+  opacity: 1;
+  pointer-events: auto;
 }
 /* Active include filter — accent (indigo) highlight to mirror the
  * "filter chip" colour used in the top filter bar. */
