@@ -11,6 +11,8 @@ interface Props {
   onClear: () => void;
   proxyStatus: ProxyStatus | null;
   onEdit: () => void;
+  /** Open the Snippets modal. Button is only rendered when connected. */
+  onOpenSnippets: () => void;
 }
 
 export function TopBar({
@@ -23,6 +25,7 @@ export function TopBar({
   onClear,
   proxyStatus,
   onEdit,
+  onOpenSnippets,
 }: Props): JSX.Element {
   // Proxy pill: show `proxy {listenAddr} → {upstream}` when the listener
   // is up; "no proxy" when nothing's running; "proxy starting…" when the
@@ -62,6 +65,16 @@ export function TopBar({
         {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
       </div>
       <div className="topbar__controls">
+        {capturing ? (
+          <button
+            type="button"
+            className="btn btn--ghost topbar__snippets"
+            onClick={onOpenSnippets}
+            title="Show test commands (kcat / kafka CLI)"
+          >
+            <span aria-hidden="true">{">_"}</span> Snippets
+          </button>
+        ) : null}
         <button
           type="button"
           className="btn btn--primary"

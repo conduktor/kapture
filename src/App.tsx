@@ -6,7 +6,8 @@ import { TopBar } from "./components/TopBar";
 import { MessageList } from "./components/MessageList";
 import { LayerTree } from "./components/LayerTree";
 import { HexDump } from "./components/HexDump";
-import { SidePanel } from "./components/SidePanel";
+import { StatusBar } from "./components/StatusBar";
+import { SnippetsModal } from "./components/SnippetsModal";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
@@ -23,7 +24,6 @@ import {
   type ProtoFilterMode,
 } from "./lib/protoFilter";
 import type {
-  AppInfo,
   CaptureStats,
   ConnectionState,
   KafkaMessage,
@@ -63,9 +63,11 @@ function App(): JSX.Element {
   const [filterError, setFilterError] = useState<string | null>(null);
   const [messages, setMessages] = useState<KafkaMessage[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
+  // Lifted: snippets modal lives at App level so the backdrop covers
+  // the full viewport and Escape/backdrop close work uniformly.
+  const [snippetsOpen, setSnippetsOpen] = useState(false);
   // Open the dialog automatically on first launch when nothing is
   // connected. Cancelling the dialog flips this to false and we stay in
   // the disconnected workspace; the user re-opens via the cluster pill.
@@ -126,18 +128,6 @@ function App(): JSX.Element {
   // generation is allowed to commit set_filter / snapshot results, so a
   // slow backend round-trip from a stale filter can't overwrite the UI.
   const filterGenRef = useRef(0);
-
-  // Initial: fetch app info
-  useEffect(() => {
-    void (async () => {
-      try {
-        const info = await invoke<AppInfo>("app_info");
-        setAppInfo(info);
-      } catch (error) {
-        console.error("ipc app_info failed", error);
-      }
-    })();
-  }, []);
 
   // Subscribe to live events while connected.
   //
@@ -561,6 +551,9 @@ function App(): JSX.Element {
         onEdit={() => {
           setEditing(true);
         }}
+        onOpenSnippets={() => {
+          setSnippetsOpen(true);
+        }}
       />
       <main className="layout">
         <div className="layout__main">
@@ -653,8 +646,16 @@ function App(): JSX.Element {
             </div>
           )}
         </div>
-        <SidePanel appInfo={appInfo} connection={connection} stats={stats} />
       </main>
+      <StatusBar connection={connection} stats={stats} />
+      {snippetsOpen && connection.status === "connected" && connection.proxyStatus !== null ? (
+        <SnippetsModal
+          listenAddr={connection.proxyStatus.listenAddr}
+          onClose={() => {
+            setSnippetsOpen(false);
+          }}
+        />
+      ) : null}
       {showDialog ? (
         <ConnectionDialog
           defaultUpstream={DEFAULT_UPSTREAM}

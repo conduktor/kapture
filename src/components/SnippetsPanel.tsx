@@ -2,7 +2,7 @@ import { useState, type JSX } from "react";
 
 interface Props {
   /** The proxy's actual listen address, e.g. `127.0.0.1:9092`. Required —
-   * the section only renders when the proxy is up so we always have one. */
+   * the modal only renders when the proxy is up so we always have one. */
   listenAddr: string;
 }
 
@@ -65,38 +65,20 @@ function buildGroups(listenAddr: string): SnippetGroup[] {
   ];
 }
 
+/** Body-only render of the snippet groups. Used inside SnippetsModal. */
 export function SnippetsPanel({ listenAddr }: Props): JSX.Element {
-  const [open, setOpen] = useState(false);
   const groups = buildGroups(listenAddr);
-
   return (
-    <section className="side__section">
-      <button
-        type="button"
-        className="side__collapse"
-        aria-expanded={open}
-        onClick={() => {
-          setOpen((prev) => !prev);
-        }}
-      >
-        <span className="side__collapse-caret" aria-hidden>
-          {open ? "▾" : "▸"}
-        </span>
-        <span className="side__title side__title--inline">Test commands</span>
-      </button>
-      {open ? (
-        <div className="snippets">
-          {groups.map((group) => (
-            <div key={group.heading} className="snippets__group">
-              <h3 className="snippets__group-title">{group.heading}</h3>
-              {group.snippets.map((s) => (
-                <SnippetBlock key={s.label} label={s.label} command={s.command} />
-              ))}
-            </div>
+    <div className="snippets">
+      {groups.map((group) => (
+        <div key={group.heading} className="snippets__group">
+          <h3 className="snippets__group-title">{group.heading}</h3>
+          {group.snippets.map((s) => (
+            <SnippetBlock key={s.label} label={s.label} command={s.command} />
           ))}
         </div>
-      ) : null}
-    </section>
+      ))}
+    </div>
   );
 }
 

@@ -124,7 +124,7 @@ export interface ProxySaslArgs {
 
 /**
  * Snapshot of the running proxy. Returned by the `proxy_status`
- * command (polled by the SidePanel) and the `kapture_proxy_status`
+ * command (polled by the StatusBar) and the `kapture_proxy_status`
  * MCP tool. `listening: false` when no proxy is active — the rest
  * of the fields are zeroed in that case.
  */
