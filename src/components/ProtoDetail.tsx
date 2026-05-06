@@ -177,8 +177,7 @@ function DecodedTree({
   return (
     <details className="layer" open>
       <summary className="layer__title">
-        decoded ({apiName}
-        {tree.kind === "struct" && tree.name !== "" ? ` → ${tree.name}` : ""})
+        {tree.kind === "struct" && tree.name !== "" ? tree.name : apiName}
       </summary>
       <div className="layer__body proto-decoded-tree">
         {tree.kind === "struct" ? (
