@@ -36,6 +36,7 @@ pub mod example_api {
     pub use crate::proxy::ProxyConfig;
     pub use crate::proxy_handle::{ProxyHandle, RecordSink};
     pub use crate::proxy_topic_ids::TopicIdMap;
+    pub use crate::proxy_upstream::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
 }
 
 use std::sync::Arc;

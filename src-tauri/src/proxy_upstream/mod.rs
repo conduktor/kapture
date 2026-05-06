@@ -72,8 +72,9 @@ impl UpstreamSaslMechanism {
     }
 }
 
-/// Credentials used to authenticate to the upstream broker. The
-/// password is redacted from `Debug` to match `capture::AuthConfig`'s
+/// Credentials used to authenticate to the upstream broker.
+///
+/// The password is redacted from `Debug` to match `capture::AuthConfig`'s
 /// posture — `{:?}` of an `UpstreamSaslConfig` must never leak it
 /// into logs / tracing spans / error messages.
 #[derive(Clone)]

@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kapture_lib::example_api::{
     CapturedMessage, ProtoCorrelator, ProtoDirection, ProxyConfig, ProxyHandle, RecordSink,
+    UpstreamSaslConfig, UpstreamSaslMechanism,
 };
 use tokio::time::{interval, MissedTickBehavior};
 use tracing_subscriber::EnvFilter;
@@ -35,12 +36,16 @@ struct Args {
     upstream: String,
     listen_port: u16,
     seconds: u64,
+    sasl_username: Option<String>,
+    sasl_password: Option<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut upstream = "localhost:39092".to_owned();
     let mut listen_port: u16 = 9092;
     let mut seconds: u64 = 60;
+    let mut sasl_username: Option<String> = None;
+    let mut sasl_password: Option<String> = None;
 
     let mut iter = std::env::args().skip(1);
     while let Some(a) = iter.next() {
@@ -56,8 +61,14 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--seconds needs a value")?;
                 seconds = v.parse().map_err(|e| format!("--seconds: {e}"))?;
             }
+            "--sasl-username" => {
+                sasl_username = Some(iter.next().ok_or("--sasl-username needs a value")?);
+            }
+            "--sasl-password" => {
+                sasl_password = Some(iter.next().ok_or("--sasl-password needs a value")?);
+            }
             "-h" | "--help" => {
-                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--seconds N]");
+                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--seconds N] [--sasl-username U --sasl-password P]");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
@@ -67,6 +78,8 @@ fn parse_args() -> Result<Args, String> {
         upstream,
         listen_port,
         seconds,
+        sasl_username,
+        sasl_password,
     })
 }
 
@@ -80,13 +93,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .try_init();
 
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+    let sasl_enabled = args.sasl_username.is_some() && args.sasl_password.is_some();
     println!(
-        "proxy_smoke: upstream={} listen=127.0.0.1:{} budget={}s",
-        args.upstream, args.listen_port, args.seconds,
+        "proxy_smoke: upstream={} listen=127.0.0.1:{} budget={}s sasl={}",
+        args.upstream,
+        args.listen_port,
+        args.seconds,
+        if sasl_enabled { "PLAIN" } else { "off" },
     );
 
     let correlator = Arc::new(ProtoCorrelator::new());
-    let cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
+    let mut cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
+    if let (Some(u), Some(p)) = (args.sasl_username.as_ref(), args.sasl_password.as_ref()) {
+        cfg = cfg.with_sasl(UpstreamSaslConfig {
+            mechanism: UpstreamSaslMechanism::Plain,
+            username: u.clone(),
+            password: p.clone(),
+        });
+    }
     let captured_count = Arc::new(AtomicUsize::new(0));
     let captured_count_for_sink = Arc::clone(&captured_count);
     let sink: RecordSink = Arc::new(move |msg: CapturedMessage| {

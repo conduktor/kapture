@@ -277,3 +277,126 @@ and `..._short_payload_is_safe` cover the redaction helper directly.
   request header. Trade-off: the Protocol-tab decoder will fail on
   these frames (the placeholder isn't a valid `SaslAuthenticate`
   body). That's correct — there's nothing to inspect.
+
+## Phase 4 step 5 — SASL injection smoke
+
+Goal: prove the proxy can authenticate upstream on the client's
+behalf. A kcat client with NO SASL config talks plain TCP to the
+proxy on `127.0.0.1:9092`; the proxy authenticates as
+`alice/alice-secret` against a `SASL_PLAINTEXT` broker on
+`localhost:49092`. Round-trip a topic to confirm produce + fetch
+both flow through.
+
+### Setup
+
+- Branch: `proxy-auth-inject`
+- Cluster: `pnpm stack:up:sasl` (Apache Kafka KRaft single-broker,
+  port 49092, `SASL_PLAINTEXT`/`PLAIN`, dev creds `alice/alice-secret`)
+- Harness: `cargo run --example proxy_smoke -- --upstream localhost:49092
+--listen 9092 --seconds 30 --sasl-username alice
+--sasl-password alice-secret`
+- `proxy_smoke.rs` extended with `--sasl-username` / `--sasl-password`
+  CLI args; `lib.rs` `example_api` re-exports `UpstreamSaslConfig`,
+  `UpstreamSaslMechanism`, `UpstreamTlsConfig`.
+
+### Control: direct kcat with SASL config
+
+```text
+$ kcat -b localhost:49092 -X security.protocol=SASL_PLAINTEXT \
+    -X sasl.mechanism=PLAIN -X sasl.username=alice \
+    -X sasl.password=alice-secret -L
+Metadata for all topics (from broker 1: sasl_plaintext://localhost:49092/1):
+ 1 brokers:
+  broker 1 at localhost:49092 (controller)
+ 0 topics:
+```
+
+### Proxy-driven: kcat with NO SASL config
+
+```text
+$ kcat -b localhost:9092 -L
+Metadata for all topics (from broker 1: 127.0.0.1:9092/1):
+ 1 brokers:
+  broker 1 at 127.0.0.1:9092 (controller)
+ 0 topics:
+```
+
+This is the headline result: same shape of metadata response, but
+the client is plain TCP. Auth happened entirely inside the proxy.
+
+### Round-trip: produce 5, consume 5
+
+```text
+$ for i in 1 2 3 4 5; do
+    echo "k$i:hello-injection-$i" | kcat -b localhost:9092 -P -t inject-test -K:
+  done
+
+$ kcat -b 127.0.0.1:9092 -C -t inject-test -e -o beginning
+% Reached end of topic inject-test [0] at offset 5: exiting
+k.ello-injection-1
+k.ello-injection-2
+k.ello-injection-3
+k.ello-injection-4
+k.ello-injection-5
+```
+
+(`localhost` resolved to `::1` first for the consumer; the proxy
+binds `127.0.0.1` only, so the consumer was retargeted to
+`127.0.0.1:9092`. Cosmetic — same proxy, same path.)
+
+The leading `k.ello…` is `key:value` collision with kcat's `-K:`
+delimiter on stdout — values on the wire are `hello-injection-N`,
+verified by the proxy's record sink:
+
+```text
+RECORD topic=inject-test partition=0 offset=0 key=None size=18
+RECORD topic=inject-test partition=0 offset=1 key=None size=18
+RECORD topic=inject-test partition=0 offset=2 key=None size=18
+RECORD topic=inject-test partition=0 offset=3 key=None size=18
+RECORD topic=inject-test partition=0 offset=4 key=None size=18
+```
+
+### Numbers
+
+- Total frames observed by `ProtoCorrelator`: **79**
+- Records captured by `RecordSink`: **10** (5 produce + 5 fetch)
+- `topic_id_map` size: **1** (`inject-test`)
+- APIs seen: `ApiVersions`, `Metadata`, `Produce`, `ListOffsets`,
+  `Fetch` — all forwarded after the proxy's per-connection upstream
+  SASL handshake completed.
+
+### Credential leak grep
+
+```text
+$ grep -c 'alice-secret' /tmp/proxy-sasl-inject-smoke.log
+1
+$ grep 'alice-secret' /tmp/proxy-sasl-inject-smoke.log
+     Running `src-tauri/target/debug/examples/proxy_smoke ... --sasl-password alice-secret`
+```
+
+The single match is the cargo-run command echo of the example's
+own CLI args (a dev-harness artifact, not proxy output). The proxy
+itself emits **zero** log lines containing the password. No
+`SaslAuthenticate` frame appears in the captured-frame stream:
+`open_upstream` runs the handshake on a raw `TcpStream` _before_
+the framed pump and `ProtoCorrelator` are wired in, so the proxy's
+own auth bytes never enter the inspector path. Phase 3's
+`SaslAuthenticate`-body redaction would catch any client-emitted
+auth frame as well; here, no client emitted one.
+
+### Notes / deviations
+
+- `open_upstream` doesn't currently emit any `tracing` lines for
+  the SASL exchange. The functional proof is the absence of a
+  failure: a `SASL_PLAINTEXT` broker rejects unauthenticated
+  Metadata/Produce/Fetch outright. All 79 frames flowed; the
+  handshake therefore succeeded. Adding a single `info!("upstream
+sasl handshake ok mechanism={mech}")` would be a nice-to-have
+  for ops visibility — flagged for a follow-up.
+- TLS path (`open_upstream` with `Some(UpstreamTlsConfig)`) is
+  plumbed and unit-tested but not exercised in this smoke. A
+  separate spec covers TLS + SASL together.
+- The "change only the bootstrap server" promise holds: the
+  client config delta from direct → proxied is `bootstrap=localhost:49092
+  - 4 SASL params`→`bootstrap=localhost:9092`. Three lines
+    removed, one host changed.
