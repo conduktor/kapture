@@ -165,10 +165,40 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> 
         ApiKey::SaslHandshake => decode_one::<SaslHandshakeRequest>(buf, version),
         ApiKey::ApiVersions => decode_one::<ApiVersionsRequest>(buf, version),
         ApiKey::CreateTopics => decode_one::<CreateTopicsRequest>(buf, version),
+        ApiKey::DeleteTopics => decode_one::<DeleteTopicsRequest>(buf, version),
+        ApiKey::DeleteRecords => decode_one::<DeleteRecordsRequest>(buf, version),
         ApiKey::InitProducerId => decode_one::<InitProducerIdRequest>(buf, version),
+        ApiKey::OffsetForLeaderEpoch => decode_one::<OffsetForLeaderEpochRequest>(buf, version),
+        ApiKey::AddPartitionsToTxn => decode_one::<AddPartitionsToTxnRequest>(buf, version),
+        ApiKey::AddOffsetsToTxn => decode_one::<AddOffsetsToTxnRequest>(buf, version),
+        ApiKey::EndTxn => decode_one::<EndTxnRequest>(buf, version),
+        ApiKey::TxnOffsetCommit => decode_one::<TxnOffsetCommitRequest>(buf, version),
+        ApiKey::DescribeAcls => decode_one::<DescribeAclsRequest>(buf, version),
+        ApiKey::CreateAcls => decode_one::<CreateAclsRequest>(buf, version),
+        ApiKey::DeleteAcls => decode_one::<DeleteAclsRequest>(buf, version),
         ApiKey::DescribeConfigs => decode_one::<DescribeConfigsRequest>(buf, version),
+        ApiKey::AlterConfigs => decode_one::<AlterConfigsRequest>(buf, version),
         ApiKey::SaslAuthenticate => decode_one::<SaslAuthenticateRequest>(buf, version),
+        ApiKey::CreatePartitions => decode_one::<CreatePartitionsRequest>(buf, version),
+        ApiKey::DeleteGroups => decode_one::<DeleteGroupsRequest>(buf, version),
+        ApiKey::ElectLeaders => decode_one::<ElectLeadersRequest>(buf, version),
+        ApiKey::IncrementalAlterConfigs => {
+            decode_one::<IncrementalAlterConfigsRequest>(buf, version)
+        }
+        ApiKey::OffsetDelete => decode_one::<OffsetDeleteRequest>(buf, version),
         ApiKey::DescribeCluster => decode_one::<DescribeClusterRequest>(buf, version),
+        ApiKey::DescribeProducers => decode_one::<DescribeProducersRequest>(buf, version),
+        ApiKey::DescribeTransactions => decode_one::<DescribeTransactionsRequest>(buf, version),
+        ApiKey::ListTransactions => decode_one::<ListTransactionsRequest>(buf, version),
+        ApiKey::ConsumerGroupHeartbeat => decode_one::<ConsumerGroupHeartbeatRequest>(buf, version),
+        ApiKey::ConsumerGroupDescribe => decode_one::<ConsumerGroupDescribeRequest>(buf, version),
+        ApiKey::DescribeTopicPartitions => {
+            decode_one::<DescribeTopicPartitionsRequest>(buf, version)
+        }
+        ApiKey::ShareGroupHeartbeat => decode_one::<ShareGroupHeartbeatRequest>(buf, version),
+        ApiKey::ShareGroupDescribe => decode_one::<ShareGroupDescribeRequest>(buf, version),
+        ApiKey::ShareFetch => decode_one::<ShareFetchRequest>(buf, version),
+        ApiKey::ShareAcknowledge => decode_one::<ShareAcknowledgeRequest>(buf, version),
         _ => None,
     }
 }
@@ -191,10 +221,42 @@ fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String>
         ApiKey::SaslHandshake => decode_one::<SaslHandshakeResponse>(buf, version),
         ApiKey::ApiVersions => decode_one::<ApiVersionsResponse>(buf, version),
         ApiKey::CreateTopics => decode_one::<CreateTopicsResponse>(buf, version),
+        ApiKey::DeleteTopics => decode_one::<DeleteTopicsResponse>(buf, version),
+        ApiKey::DeleteRecords => decode_one::<DeleteRecordsResponse>(buf, version),
         ApiKey::InitProducerId => decode_one::<InitProducerIdResponse>(buf, version),
+        ApiKey::OffsetForLeaderEpoch => decode_one::<OffsetForLeaderEpochResponse>(buf, version),
+        ApiKey::AddPartitionsToTxn => decode_one::<AddPartitionsToTxnResponse>(buf, version),
+        ApiKey::AddOffsetsToTxn => decode_one::<AddOffsetsToTxnResponse>(buf, version),
+        ApiKey::EndTxn => decode_one::<EndTxnResponse>(buf, version),
+        ApiKey::TxnOffsetCommit => decode_one::<TxnOffsetCommitResponse>(buf, version),
+        ApiKey::DescribeAcls => decode_one::<DescribeAclsResponse>(buf, version),
+        ApiKey::CreateAcls => decode_one::<CreateAclsResponse>(buf, version),
+        ApiKey::DeleteAcls => decode_one::<DeleteAclsResponse>(buf, version),
         ApiKey::DescribeConfigs => decode_one::<DescribeConfigsResponse>(buf, version),
+        ApiKey::AlterConfigs => decode_one::<AlterConfigsResponse>(buf, version),
         ApiKey::SaslAuthenticate => decode_one::<SaslAuthenticateResponse>(buf, version),
+        ApiKey::CreatePartitions => decode_one::<CreatePartitionsResponse>(buf, version),
+        ApiKey::DeleteGroups => decode_one::<DeleteGroupsResponse>(buf, version),
+        ApiKey::ElectLeaders => decode_one::<ElectLeadersResponse>(buf, version),
+        ApiKey::IncrementalAlterConfigs => {
+            decode_one::<IncrementalAlterConfigsResponse>(buf, version)
+        }
+        ApiKey::OffsetDelete => decode_one::<OffsetDeleteResponse>(buf, version),
         ApiKey::DescribeCluster => decode_one::<DescribeClusterResponse>(buf, version),
+        ApiKey::DescribeProducers => decode_one::<DescribeProducersResponse>(buf, version),
+        ApiKey::DescribeTransactions => decode_one::<DescribeTransactionsResponse>(buf, version),
+        ApiKey::ListTransactions => decode_one::<ListTransactionsResponse>(buf, version),
+        ApiKey::ConsumerGroupHeartbeat => {
+            decode_one::<ConsumerGroupHeartbeatResponse>(buf, version)
+        }
+        ApiKey::ConsumerGroupDescribe => decode_one::<ConsumerGroupDescribeResponse>(buf, version),
+        ApiKey::DescribeTopicPartitions => {
+            decode_one::<DescribeTopicPartitionsResponse>(buf, version)
+        }
+        ApiKey::ShareGroupHeartbeat => decode_one::<ShareGroupHeartbeatResponse>(buf, version),
+        ApiKey::ShareGroupDescribe => decode_one::<ShareGroupDescribeResponse>(buf, version),
+        ApiKey::ShareFetch => decode_one::<ShareFetchResponse>(buf, version),
+        ApiKey::ShareAcknowledge => decode_one::<ShareAcknowledgeResponse>(buf, version),
         _ => None,
     }
 }
