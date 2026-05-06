@@ -31,7 +31,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hex = "0.4"
 bytes = "1"
-kafka-protocol = "0.16"
+kafka-protocol = "0.17"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 pest = "2"
