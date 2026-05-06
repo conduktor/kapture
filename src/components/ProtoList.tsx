@@ -24,28 +24,59 @@ const ROW_HEIGHT = 24;
 // response is left to the eye for now (same corr_id + broker_id) — backend
 // pairing is a follow-up.
 export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element {
-  // Find the request/response partner of the selected frame: same
-  // (corrId, brokerId) but opposite direction. Wireshark's "Follow
-  // stream" applied to a single Kafka exchange. Returns null when the
-  // pair hasn't been observed yet (mid-flight request, or response
-  // whose request has scrolled out of the ring buffer).
+  // Find the request/response partner of the selected frame.
+  //
+  // Why `(brokerId, corrId)` alone isn't a unique key: librdkafka
+  // tracks corrId per `rd_kafka_broker_t::rkb_corrid` and the *logical*
+  // bootstrap broker (broker_id = -1) is reused across every TCP
+  // connection during discovery. Each new bootstrap connection restarts
+  // at corrId = 1, so the same (-1, 1, ApiVersions) exchange shows up
+  // many times. Pairing by id alone would highlight all of them.
+  //
+  // Trick: pick the *nearest* opposite-direction frame in the temporal
+  // direction the matching half lives:
+  //   SEND selected → first RECV *after* it
+  //   RECV selected → last  SEND *before* it
+  // The frames array is chronological so we can short-circuit.
   const pairedId = useMemo<string | null>(() => {
     if (selectedId === null) {
       return null;
     }
-    const sel = frames.find((f) => f.id === selectedId);
+    const idx = frames.findIndex((f) => f.id === selectedId);
+    if (idx < 0) {
+      return null;
+    }
+    const sel = frames[idx];
     if (!sel) {
       return null;
     }
-    const opposite = sel.direction === "send" ? "recv" : "send";
-    const match = frames.find(
-      (f) =>
-        f.id !== sel.id &&
-        f.direction === opposite &&
-        f.corrId === sel.corrId &&
-        f.brokerId === sel.brokerId,
-    );
-    return match?.id ?? null;
+    const matches = (f: ProtoFrame): boolean =>
+      f.corrId === sel.corrId && f.brokerId === sel.brokerId;
+    if (sel.direction === "send") {
+      for (let i = idx + 1; i < frames.length; i += 1) {
+        const f = frames[i];
+        if (f?.direction === "recv" && matches(f)) {
+          return f.id;
+        }
+        // Stop early if we hit another SEND with the same key — that
+        // means a new connection started and the original RECV will
+        // never come.
+        if (f?.direction === "send" && matches(f)) {
+          return null;
+        }
+      }
+      return null;
+    }
+    for (let i = idx - 1; i >= 0; i -= 1) {
+      const f = frames[i];
+      if (f?.direction === "send" && matches(f)) {
+        return f.id;
+      }
+      if (f?.direction === "recv" && matches(f)) {
+        return null;
+      }
+    }
+    return null;
   }, [frames, selectedId]);
 
   const rowProps = useMemo<RowProps>(
