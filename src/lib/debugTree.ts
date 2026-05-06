@@ -109,6 +109,14 @@ class Parser {
       // `{key: value, ...}` or `{}` when empty).
       return this.parseAnonMap();
     }
+    // UUID literal: kafka-protocol's `topic_id: Uuid` field prints
+    // verbatim as `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (no quotes,
+    // no wrapping tuple). Match the 8-4-4-4-12 hex shape FIRST so the
+    // primitive / ident parsers don't choke on hex letters or dashes.
+    const uuid = this.tryParseUuidLiteral();
+    if (uuid !== null) {
+      return uuid;
+    }
     if (c === "-" || (c >= "0" && c <= "9")) {
       return this.parsePrimitiveLiteral();
     }
@@ -293,6 +301,37 @@ class Parser {
     return this.src.slice(start, this.pos);
   }
 
+  /**
+   * Match a UUID literal (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) at
+   * the current position without consuming on miss. UUIDs come from
+   * the `uuid` crate's Debug impl which forwards to `LowerHex`, so
+   * topic IDs land in kafka-protocol output as bare hex+dash strings
+   * — neither identifiers nor numbers nor strings.
+   */
+  tryParseUuidLiteral(): DebugNode | null {
+    const layout = [8, 4, 4, 4, 12];
+    let cursor = this.pos;
+    for (let group = 0; group < layout.length; group += 1) {
+      const len = layout[group] ?? 0;
+      for (let i = 0; i < len; i += 1) {
+        const ch = this.src[cursor];
+        if (ch === undefined || !isHexDigit(ch)) {
+          return null;
+        }
+        cursor += 1;
+      }
+      if (group < layout.length - 1) {
+        if (this.src[cursor] !== "-") {
+          return null;
+        }
+        cursor += 1;
+      }
+    }
+    const text = this.src.slice(this.pos, cursor);
+    this.pos = cursor;
+    return { kind: "primitive", text };
+  }
+
   parsePrimitiveLiteral(): DebugNode {
     const start = this.pos;
     if (this.peek() === "-") {
@@ -368,4 +407,7 @@ function isIdentStart(c: string): boolean {
 }
 function isIdentCont(c: string): boolean {
   return isIdentStart(c) || (c >= "0" && c <= "9");
+}
+function isHexDigit(c: string): boolean {
+  return (c >= "0" && c <= "9") || (c >= "a" && c <= "f") || (c >= "A" && c <= "F");
 }
