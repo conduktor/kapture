@@ -15,7 +15,15 @@
 use std::collections::HashMap;
 
 use parking_lot::RwLock;
+use tracing::warn;
 use uuid::Uuid;
+
+/// Cap on resolved topic-id entries. A malicious upstream could
+/// advertise an unbounded `MetadataResponse`; cap defensively. 10k is
+/// well above any realistic cluster — Kafka best-practice tops out at
+/// ~4k topics per cluster — so this cap is effectively unreachable
+/// for honest workloads while protecting against memory exhaustion.
+pub const MAX_TOPIC_ID_ENTRIES: usize = 10_000;
 
 /// Shared topic-id resolver.
 ///
@@ -37,11 +45,30 @@ impl TopicIdMap {
     /// Insert / update one mapping. Skips the nil UUID (used by
     /// kafka-protocol as the "absent `topic_id`" sentinel for
     /// pre-v10 Metadata / pre-v13 Fetch).
+    ///
+    /// Capped at `MAX_TOPIC_ID_ENTRIES`. New IDs past the cap are
+    /// dropped with a warn-log; updates to existing IDs are always
+    /// allowed (a topic getting deleted+recreated reuses the slot).
     pub fn record(&self, topic_id: Uuid, name: String) {
         if topic_id.is_nil() || name.is_empty() {
             return;
         }
-        self.inner.write().insert(topic_id, name);
+        let mut guard = self.inner.write();
+        // Update existing entry without growing the map (always allowed,
+        // even past the cap — handles topic delete+recreate cleanly).
+        if let Some(slot) = guard.get_mut(&topic_id) {
+            *slot = name;
+            return;
+        }
+        if guard.len() >= MAX_TOPIC_ID_ENTRIES {
+            warn!(
+                cap = MAX_TOPIC_ID_ENTRIES,
+                topic_id = %topic_id,
+                "TopicIdMap full; dropping new entry"
+            );
+            return;
+        }
+        guard.insert(topic_id, name);
     }
 
     /// Resolve `topic_id` to a topic name, if observed.
@@ -112,6 +139,26 @@ mod tests {
         assert!(map.lookup(unknown).is_none());
         // Nil UUID is rejected on lookup as well — never resolves.
         assert!(map.lookup(Uuid::nil()).is_none());
+    }
+
+    #[test]
+    fn topic_id_map_caps_at_max_entries() {
+        let map = TopicIdMap::new();
+        // Fill to the cap with distinct UUIDs.
+        for i in 0..MAX_TOPIC_ID_ENTRIES {
+            map.record(Uuid::from_u128(i as u128 + 1), format!("t{i}"));
+        }
+        assert_eq!(map.len(), MAX_TOPIC_ID_ENTRIES);
+        // One more new entry is dropped.
+        let overflow = Uuid::from_u128((MAX_TOPIC_ID_ENTRIES + 100) as u128);
+        map.record(overflow, "overflow".to_owned());
+        assert_eq!(map.len(), MAX_TOPIC_ID_ENTRIES);
+        assert!(map.lookup(overflow).is_none());
+        // Updates to existing IDs are still allowed past the cap.
+        let existing = Uuid::from_u128(1);
+        map.record(existing, "renamed".to_owned());
+        assert_eq!(map.lookup(existing).as_deref(), Some("renamed"));
+        assert_eq!(map.len(), MAX_TOPIC_ID_ENTRIES);
     }
 
     #[test]
