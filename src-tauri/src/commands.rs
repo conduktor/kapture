@@ -170,9 +170,16 @@ pub async fn connect(
     schema_registry_url: Option<String>,
     auth: Option<AuthArgs>,
 ) -> Result<ConnectResponse> {
-    // Atomic claim — prevents the GUI and an MCP agent from starting
-    // two captures concurrently (Codex review #5).
+    // GUI semantics: clicking Connect always means "switch to this".
+    // Stop the previous capture cleanly first, then claim the slot.
+    // The MCP `kafka_connect_profile` path keeps stricter semantics so
+    // an agent can't squash a human-driven capture without consent.
+    if let Some(handle) = state.take_capture() {
+        handle.stop().await;
+    }
     if !state.try_claim_capture_slot() {
+        // Only reachable if an MCP agent claimed the slot in the narrow
+        // window between take_capture and try_claim_capture_slot.
         return Err(KaptureError::AlreadyCapturing);
     }
     state.buffer.clear();

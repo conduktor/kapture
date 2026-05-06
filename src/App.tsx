@@ -198,14 +198,8 @@ function App(): JSX.Element {
     setEditing(false);
     void (async () => {
       try {
-        // If we're already connected, disconnect first (edit-mode reconnect).
-        if (connection.status === "connected") {
-          try {
-            await invoke("disconnect");
-          } catch (err) {
-            console.error("disconnect during reconnect failed", err);
-          }
-        }
+        // The backend connect command stops any previous capture
+        // atomically, so the frontend doesn't disconnect first.
         await invoke("connect", {
           bootstrapServers: bootstrap,
           topicPattern,
