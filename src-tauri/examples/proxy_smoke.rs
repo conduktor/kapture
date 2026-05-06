@@ -20,6 +20,7 @@
 //! upper bound (`--seconds`) so CI runs terminate without a TTY.
 
 use std::collections::BTreeMap;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,6 +37,7 @@ use tracing_subscriber::EnvFilter;
 struct Args {
     upstream: String,
     listen_port: u16,
+    bind: IpAddr,
     seconds: u64,
     sasl_mechanism: String,
     sasl_username: Option<String>,
@@ -45,6 +47,7 @@ struct Args {
 fn parse_args() -> Result<Args, String> {
     let mut upstream = "localhost:39092".to_owned();
     let mut listen_port: u16 = 9092;
+    let mut bind: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut seconds: u64 = 60;
     let mut sasl_mechanism = "PLAIN".to_owned();
     let mut sasl_username: Option<String> = None;
@@ -60,6 +63,10 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--listen needs a value")?;
                 listen_port = v.parse().map_err(|e| format!("--listen: {e}"))?;
             }
+            "--bind" => {
+                let v = iter.next().ok_or("--bind needs a value")?;
+                bind = v.parse().map_err(|e| format!("--bind: {e}"))?;
+            }
             "--seconds" => {
                 let v = iter.next().ok_or("--seconds needs a value")?;
                 seconds = v.parse().map_err(|e| format!("--seconds: {e}"))?;
@@ -74,15 +81,22 @@ fn parse_args() -> Result<Args, String> {
                 sasl_password = Some(iter.next().ok_or("--sasl-password needs a value")?);
             }
             "-h" | "--help" => {
-                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--seconds N] [--sasl-mechanism PLAIN|SCRAM-SHA-256|SCRAM-SHA-512] [--sasl-username U --sasl-password P]");
+                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--bind IP] [--seconds N] [--sasl-mechanism PLAIN|SCRAM-SHA-256|SCRAM-SHA-512] [--sasl-username U --sasl-password P]\n\
+                          --bind defaults to 127.0.0.1. WARN: 0.0.0.0 exposes the proxy on all interfaces with no auth — only for short bounded smokes (use with --seconds <N>).");
                 std::process::exit(0);
             }
             other => return Err(format!("unknown arg: {other}")),
         }
     }
+    if !bind.is_loopback() && seconds == 0 {
+        return Err(
+            "refusing to bind to a non-loopback address without a bounded --seconds".to_owned(),
+        );
+    }
     Ok(Args {
         upstream,
         listen_port,
+        bind,
         seconds,
         sasl_mechanism,
         sasl_username,
@@ -91,7 +105,7 @@ fn parse_args() -> Result<Args, String> {
 }
 
 fn build_proxy_config(args: &Args) -> Result<ProxyConfig, Box<dyn std::error::Error>> {
-    let mut cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port);
+    let mut cfg = ProxyConfig::new(args.upstream.clone(), args.listen_port).with_bind(args.bind);
     if let (Some(u), Some(p)) = (args.sasl_username.as_ref(), args.sasl_password.as_ref()) {
         let mechanism = match args.sasl_mechanism.to_uppercase().as_str() {
             "PLAIN" => UpstreamSaslMechanism::Plain,
@@ -125,8 +139,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     let sasl_enabled = args.sasl_username.is_some() && args.sasl_password.is_some();
     println!(
-        "proxy_smoke: upstream={} listen=127.0.0.1:{} budget={}s sasl={}",
+        "proxy_smoke: upstream={} listen={}:{} budget={}s sasl={}",
         args.upstream,
+        args.bind,
         args.listen_port,
         args.seconds,
         if sasl_enabled {
