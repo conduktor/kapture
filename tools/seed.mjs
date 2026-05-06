@@ -292,6 +292,42 @@ async function main() {
     let total = 0;
     const tickMs = 1000;
     const perTick = Math.max(1, Math.floor(RATE * (tickMs / 1000)));
+
+    // Tickle the broker control plane every few seconds so the proto-hook
+    // sees non-Fetch traffic too: Metadata, FindCoordinator, ApiVersions,
+    // DescribeCluster, ListGroups. Useful even before the Protocol tab
+    // ships — these calls already flow through the same hook.
+    const tickleAdmin = kafka.admin();
+    await tickleAdmin.connect();
+    let tickleTick = 0;
+    const tickle = async () => {
+      tickleTick++;
+      try {
+        // Rotate to exercise different verbs in turn.
+        const which = tickleTick % 3;
+        if (which === 0) {
+          await tickleAdmin.fetchTopicMetadata({ topics: ALL_TOPICS });
+        } else if (which === 1) {
+          await tickleAdmin.listTopics();
+        } else {
+          // describeCluster → DescribeCluster API + Metadata
+          await tickleAdmin.describeCluster();
+        }
+      } catch (err) {
+        // Best-effort: a transient error here shouldn't kill the seed.
+        console.warn("tickle failed:", err.message ?? err);
+      }
+    };
+    const tickleInterval = setInterval(() => {
+      void tickle();
+    }, 3000);
+    void tickle(); // kick off immediately so the user sees traffic right away.
+
+    process.on("SIGINT", () => {
+      clearInterval(tickleInterval);
+      void tickleAdmin.disconnect().finally(() => process.exit(0));
+    });
+
     while (true) {
       const sent = await produceBatch(perTick, schemaIds);
       total += sent;
