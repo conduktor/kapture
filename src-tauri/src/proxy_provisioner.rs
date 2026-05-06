@@ -11,15 +11,12 @@
 //! Split out of `proxy.rs` so that file stays under the size hook
 //! ceiling (~1000 lines).
 //!
-//! # Errors / TOCTOU
-//! `BrokerMap::ensure_listener` binds a `127.0.0.1:0` listener, reads
-//! the assigned port, then drops the listener. The real impl in
-//! `ProxyInner::ensure` rebinds that same port for the accept loop —
-//! between the drop and the rebind another local process *could* grab
-//! the port, in which case rebind returns an `AddrInUse` and we let
-//! the error bubble up to the rewriter, which forwards verbatim. See
-//! Task 18 (Phase 2 security review) — residual risk is documented as
-//! "Kapture runs in a controlled localhost environment".
+//! # Errors / listener ownership
+//! The real impl in `ProxyInner::ensure` uses
+//! `BrokerMap::ensure_bound_listener`, which returns the still-open
+//! loopback listener for newly discovered brokers. The accept loop takes
+//! ownership of that socket directly, so there is no drop/rebind window
+//! for another local process to claim the advertised proxy port.
 
 use std::io;
 

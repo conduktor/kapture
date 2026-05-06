@@ -15,7 +15,9 @@ use std::sync::{Arc, Weak};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
 use tokio::sync::watch;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
@@ -23,6 +25,7 @@ use crate::correlator::ProtoCorrelator;
 use crate::proxy::{
     next_connection_id, run_pump_with_rewrite, BrokerMap, CorrelationMap, ProxyConfig,
 };
+use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
 
 /// Shared proxy state. Wrapped in an `Arc` by `ProxyHandle` so the
@@ -34,10 +37,18 @@ pub struct ProxyInner {
     /// Per-listener accept-loop join handles, keyed by the local port.
     /// Locked synchronously: NEVER `.await` while holding this lock.
     listeners: Mutex<HashMap<u16, JoinHandle<()>>>,
+    /// Per-connection pump join handles, keyed by `ConnectionId`.
+    /// Drained and aborted on stop/drop so established upstream sockets
+    /// do not outlive proxy mode.
+    active_pumps: Mutex<HashMap<u64, JoinHandle<()>>>,
     bootstrap_addr: SocketAddr,
     bootstrap_upstream: String,
     correlator: Arc<ProtoCorrelator>,
     broker_map: Arc<BrokerMap>,
+    /// Serialises lazy listener provisioning so a discovered broker is
+    /// inserted into `BrokerMap` and has its accept loop spawned as one
+    /// cancellation-safe operation.
+    provision_lock: TokioMutex<()>,
     /// Self-reference so `BrokerProvisioner::ensure` (which only sees
     /// `&self`) can promote to an `Arc<Self>` and spawn the accept
     /// loop for newly-discovered brokers. Set once, after the
@@ -51,12 +62,13 @@ impl std::fmt::Debug for ProxyInner {
             .field("bootstrap_addr", &self.bootstrap_addr)
             .field("bootstrap_upstream", &self.bootstrap_upstream)
             .field("listener_count", &self.listeners.lock().len())
+            .field("active_pump_count", &self.active_pumps.lock().len())
             .finish_non_exhaustive()
     }
 }
 
-/// A running proxy. Drop / `stop()` to tear down all listener
-/// accept loops.
+/// A running proxy. Drop / `stop()` to tear down listener accept loops
+/// and active connection pumps.
 pub struct ProxyHandle(Arc<ProxyInner>);
 
 impl std::fmt::Debug for ProxyHandle {
@@ -67,22 +79,24 @@ impl std::fmt::Debug for ProxyHandle {
 
 #[async_trait]
 impl BrokerProvisioner for ProxyInner {
-    /// Atomically: check the broker map; if absent, allocate a port
-    /// (`BrokerMap::ensure_listener`) AND spawn its accept loop. The
-    /// per-listener spawn step is also idempotent — `spawn_listener`
-    /// no-ops if there's already a `JoinHandle` in the listeners table.
-    ///
-    /// On rebind failure (TOCTOU: the `127.0.0.1:0` ephemeral port
-    /// allocated by `ensure_listener` got grabbed by another process
-    /// before we could rebind it), we surface the `io::Error` to the
-    /// rewriter, which logs and forwards verbatim. Documented in
-    /// `proxy_provisioner.rs`.
+    /// Atomically: check the broker map; if absent, bind a loopback
+    /// listener and spawn its accept loop without dropping the socket
+    /// between allocation and task ownership. The per-listener spawn
+    /// step is idempotent — `spawn_listener` no-ops if there's already
+    /// a `JoinHandle` in the listeners table.
     async fn ensure(&self, host: &str, port: u16) -> io::Result<u16> {
-        let local_port = self.broker_map.ensure_listener(host, port).await?;
+        let _guard = self.provision_lock.lock().await;
+        let broker_listener = self.broker_map.ensure_bound_listener(host, port).await?;
+        let local_port = broker_listener.local_port();
         let arc_self = self.weak_self.lock().upgrade().ok_or_else(|| {
             io::Error::other("ProxyInner self-reference dropped (proxy stopped?)")
         })?;
-        arc_self.spawn_listener(local_port)?;
+        match broker_listener {
+            BrokerListener::Existing(_) => arc_self.spawn_listener(local_port)?,
+            BrokerListener::Created { listener, .. } => {
+                arc_self.spawn_bound_listener(local_port, listener)?;
+            }
+        }
         Ok(local_port)
     }
 }
@@ -94,9 +108,28 @@ impl ProxyInner {
     ///
     /// `local_port` must already be present in `broker_map` (either
     /// via `BrokerMap::reserve` for the bootstrap or via
-    /// `BrokerMap::ensure_listener` for a discovered broker).
+    /// `BrokerMap::ensure_bound_listener` for a discovered broker).
     fn spawn_listener(self: &Arc<Self>, local_port: u16) -> io::Result<()> {
         // Fast path: already have a JoinHandle.
+        {
+            let guard = self.listeners.lock();
+            if guard.contains_key(&local_port) {
+                return Ok(());
+            }
+        }
+
+        // Synchronous bind is only used for an already-reserved port
+        // (bootstrap/future manual warm-up). Lazy response provisioning
+        // passes an already-bound socket through `spawn_bound_listener`.
+        let std_listener = std::net::TcpListener::bind(("127.0.0.1", local_port))?;
+        self.spawn_bound_listener(local_port, std_listener)
+    }
+
+    fn spawn_bound_listener(
+        self: &Arc<Self>,
+        local_port: u16,
+        std_listener: std::net::TcpListener,
+    ) -> io::Result<()> {
         {
             let guard = self.listeners.lock();
             if guard.contains_key(&local_port) {
@@ -113,9 +146,6 @@ impl ProxyInner {
         };
         let upstream_target = format!("{upstream_host}:{upstream_port}");
 
-        // Synchronous bind so a failure surfaces to the rewriter
-        // (TOCTOU race window with `BrokerMap::ensure_listener`).
-        let std_listener = std::net::TcpListener::bind(("127.0.0.1", local_port))?;
         std_listener.set_nonblocking(true)?;
         let listener = TcpListener::from_std(std_listener)?;
 
@@ -147,7 +177,7 @@ fn spawn_accept_loop(
 ) -> JoinHandle<()> {
     let mut stop_rx = inner.stop_tx.subscribe();
     let correlator = Arc::clone(&inner.correlator);
-    let provisioner: Arc<dyn BrokerProvisioner> = inner;
+    let provisioner: Arc<dyn BrokerProvisioner> = inner.clone();
 
     tokio::spawn(async move {
         info!(listen_port = local_port, upstream = %upstream_target, "proxy listener up");
@@ -161,17 +191,21 @@ fn spawn_accept_loop(
                 }
                 accepted = listener.accept() => {
                     match accepted {
-                        Ok((client_sock, peer)) => {
-                            let conn_id = next_connection_id();
-                            let upstream_target = upstream_target.clone();
-                            let correlator = Arc::clone(&correlator);
-                            let corr_map = Arc::new(CorrelationMap::default());
-                            let provisioner = Arc::clone(&provisioner);
-                            tokio::spawn(async move {
-                                let upstream_sock = match TcpStream::connect(&upstream_target).await {
-                                    Ok(s) => s,
+                            Ok((client_sock, peer)) => {
+                                let conn_id = next_connection_id();
+                                let upstream_target = upstream_target.clone();
+                                let correlator = Arc::clone(&correlator);
+                                let corr_map = Arc::new(CorrelationMap::default());
+                                let provisioner = Arc::clone(&provisioner);
+                                let pump_inner = Arc::clone(&inner);
+                                let (start_tx, start_rx) = oneshot::channel();
+                                let task = tokio::spawn(async move {
+                                    let _ = start_rx.await;
+                                    let upstream_sock = match TcpStream::connect(&upstream_target).await {
+                                        Ok(s) => s,
                                     Err(err) => {
                                         warn!(conn = conn_id.0, error = %err, "upstream connect failed");
+                                        pump_inner.active_pumps.lock().remove(&conn_id.0);
                                         return;
                                     }
                                 };
@@ -185,12 +219,15 @@ fn spawn_accept_loop(
                                     provisioner,
                                 )
                                 .await;
-                                if let Err(err) = result {
-                                    warn!(conn = conn_id.0, error = %err, "proxy pump error");
-                                }
-                                info!(conn = conn_id.0, "proxy connection closed");
-                            });
-                        }
+                                    if let Err(err) = result {
+                                        warn!(conn = conn_id.0, error = %err, "proxy pump error");
+                                    }
+                                    info!(conn = conn_id.0, "proxy connection closed");
+                                    pump_inner.active_pumps.lock().remove(&conn_id.0);
+                                });
+                                inner.active_pumps.lock().insert(conn_id.0, task);
+                                let _ = start_tx.send(());
+                            }
                         Err(err) => {
                             warn!(error = %err, "proxy accept failed");
                         }
@@ -223,10 +260,12 @@ impl ProxyHandle {
         let inner = Arc::new(ProxyInner {
             stop_tx,
             listeners: Mutex::new(HashMap::new()),
+            active_pumps: Mutex::new(HashMap::new()),
             bootstrap_addr: local_addr,
             bootstrap_upstream: config.upstream.clone(),
             correlator,
             broker_map,
+            provision_lock: TokioMutex::new(()),
             weak_self: Mutex::new(Weak::new()),
         });
         *inner.weak_self.lock() = Arc::downgrade(&inner);
@@ -249,8 +288,7 @@ impl ProxyHandle {
     ///
     /// # Errors
     /// Bubbles up the bind error if `127.0.0.1:local_port` can't be
-    /// claimed (e.g. another process grabbed it during the TOCTOU
-    /// window opened by `BrokerMap::ensure_listener`).
+    /// claimed.
     #[allow(dead_code)] // exposed for tests / future explicit warm-up
     pub fn ensure_listener_running(&self, local_port: u16) -> io::Result<()> {
         self.0.spawn_listener(local_port)
@@ -285,17 +323,28 @@ impl ProxyHandle {
         for (_, task) in drained {
             let _ = task.await;
         }
+        let drained_pumps: HashMap<u64, JoinHandle<()>> =
+            mem::take(&mut self.0.active_pumps.lock());
+        for (_, task) in drained_pumps {
+            task.abort();
+            let _ = task.await;
+        }
     }
 }
 
 impl Drop for ProxyHandle {
     fn drop(&mut self) {
         let _ = self.0.stop_tx.send(true);
-        // Best-effort abort on the listeners table. If another Arc
-        // owner outlives us, their tasks will still observe the stop
+        // Best-effort abort on listener and pump tables. If another Arc
+        // owner outlives us, listener tasks will still observe the stop
         // signal and exit cleanly.
         let drained: HashMap<u16, JoinHandle<()>> = mem::take(&mut self.0.listeners.lock());
         for (_, task) in drained {
+            task.abort();
+        }
+        let drained_pumps: HashMap<u64, JoinHandle<()>> =
+            mem::take(&mut self.0.active_pumps.lock());
+        for (_, task) in drained_pumps {
             task.abort();
         }
     }

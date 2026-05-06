@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tokio::net::TcpStream;
@@ -34,6 +34,11 @@ use crate::proxy_provisioner::BrokerProvisioner;
 /// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
 /// decoded body stays bounded across both client and proxy modes.
 pub const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
+
+/// Maximum in-flight requests tracked per client TCP connection.
+/// Exceeding this closes the offending proxy connection instead of
+/// allowing an unbounded correlation map to grow until memory pressure.
+pub const MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: usize = 8192;
 
 // Skeleton type for Phase 1 — wired into AppState/commands in later tasks
 // of the proxy-mode plan (Tasks 6–8). Allowing dead_code locally so the
@@ -139,11 +144,10 @@ impl PendingRequest {
 
 /// Per-connection map `corr_id → in-flight request`.
 ///
-/// Bounded implicitly by the number of in-flight Kafka requests on
-/// one TCP connection — Kafka clients pipeline but cap at a few
-/// hundred. We rely on the response take to drain entries; if a
-/// connection drops mid-flight any leftovers are released when the
-/// owning task exits and drops the map.
+/// Bounded explicitly per TCP connection so a malicious local client
+/// cannot send unlimited unique correlation IDs without reading
+/// responses. If a connection drops mid-flight any leftovers are
+/// released when the owning task exits and drops the map.
 #[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Default)]
 pub struct CorrelationMap {
@@ -152,14 +156,22 @@ pub struct CorrelationMap {
 
 #[allow(dead_code)] // see note on `ProxyConfig`
 impl CorrelationMap {
-    pub fn record_request(&self, corr_id: i32, header: RequestHeaderPeek) {
-        self.inner.lock().insert(
+    pub fn record_request(&self, corr_id: i32, header: RequestHeaderPeek) -> io::Result<()> {
+        let mut inner = self.inner.lock();
+        if !inner.contains_key(&corr_id) && inner.len() >= MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION {
+            return Err(io::Error::other(format!(
+                "proxy correlation map limit reached ({MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION})"
+            )));
+        }
+        inner.insert(
             corr_id,
             PendingRequest {
                 header,
                 sent_at: Instant::now(),
             },
         );
+        drop(inner);
+        Ok(())
     }
 
     pub fn take_response(&self, corr_id: i32) -> Option<PendingRequest> {
@@ -277,7 +289,7 @@ pub async fn run_pump_with_rewrite(
                     conn_id,
                     &bytes,
                     &corr_map,
-                );
+                )?;
                 correlator.record_event(&event);
                 upstream_framed.send(bytes).await?;
             }
@@ -291,7 +303,7 @@ pub async fn run_pump_with_rewrite(
                     conn_id,
                     &bytes,
                     &corr_map,
-                );
+                )?;
                 let api_key = i16::try_from(event.api_key).unwrap_or(-1);
                 let api_version = i16::try_from(event.api_version).unwrap_or(-1);
                 correlator.record_event(&event);
@@ -305,18 +317,7 @@ pub async fn run_pump_with_rewrite(
                     )
                     .await
                     {
-                        Ok(Some(rewritten)) => {
-                            // Splice the original correlation_id back in.
-                            // The rewriter encoded a fresh ResponseHeader
-                            // with corr_id=0; replace the first 4 bytes.
-                            if rewritten.len() >= 4 && bytes.len() >= 4 {
-                                let mut buf = BytesMut::from(rewritten.as_ref());
-                                buf[0..4].copy_from_slice(&bytes[0..4]);
-                                buf.freeze()
-                            } else {
-                                bytes.clone()
-                            }
-                        }
+                        Ok(Some(rewritten)) => rewritten,
                         Ok(None) => bytes.clone(),
                         Err(err) => {
                             warn!(error = %err, "rewrite failed; forwarding verbatim");
@@ -344,13 +345,12 @@ pub async fn run_pump_with_rewrite(
 /// `payload_size` is the WIRE size including that prefix, matching
 /// the librdkafka FFI semantics.
 #[allow(dead_code)] // wired into the pump tap in Task 6
-#[must_use]
 pub fn build_proto_event(
     dir: ProxyDirection,
     conn_id: ConnectionId,
     frame: &[u8],
     corr_map: &CorrelationMap,
-) -> ProtoEvent {
+) -> io::Result<ProtoEvent> {
     let body_len_i32 = i32::try_from(frame.len()).unwrap_or(i32::MAX);
     let payload_size = frame.len() + 4;
     let body_take = frame.len().min(PROTO_PAYLOAD_CAP - 4);
@@ -359,11 +359,11 @@ pub fn build_proto_event(
     payload.extend_from_slice(&frame[..body_take]);
     let broker_id = i32::try_from(conn_id.0 & 0x7FFF_FFFF).unwrap_or(i32::MAX);
 
-    match dir {
+    let event = match dir {
         ProxyDirection::ClientToUpstream => {
             let header = peek_request_header(frame);
             if let Some(h) = header {
-                corr_map.record_request(h.corr_id, h);
+                corr_map.record_request(h.corr_id, h)?;
             }
             ProtoEvent {
                 direction: ProtoDirection::Send,
@@ -396,7 +396,8 @@ pub fn build_proto_event(
                 payload,
             }
         }
-    }
+    };
+    Ok(event)
 }
 
 pub use crate::proxy_broker_map::BrokerMap;
@@ -501,7 +502,8 @@ mod tests {
                 api_version: 13,
                 corr_id: 42,
             },
-        );
+        )
+        .unwrap();
         let pending = map.take_response(42).unwrap();
         assert_eq!(pending.header.api_key, 1);
         assert_eq!(pending.header.api_version, 13);
@@ -519,6 +521,32 @@ mod tests {
     }
 
     #[test]
+    fn correlation_map_rejects_unbounded_in_flight_requests() {
+        let map = CorrelationMap::default();
+        for corr_id in 0..MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION {
+            map.record_request(
+                i32::try_from(corr_id).unwrap(),
+                RequestHeaderPeek {
+                    api_key: 3,
+                    api_version: 12,
+                    corr_id: i32::try_from(corr_id).unwrap(),
+                },
+            )
+            .unwrap();
+        }
+
+        let result = map.record_request(
+            99_999,
+            RequestHeaderPeek {
+                api_key: 3,
+                api_version: 12,
+                corr_id: 99_999,
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn build_proto_event_for_request_uses_peeked_header() {
         let map = CorrelationMap::default();
         // 8-byte header prefix: api_key=18 (ApiVersions), api_ver=3, corr_id=99
@@ -533,7 +561,8 @@ mod tests {
             ConnectionId(7),
             &frame,
             &map,
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             event.direction,
@@ -562,7 +591,8 @@ mod tests {
                 api_version: 13,
                 corr_id: 42,
             },
-        );
+        )
+        .unwrap();
         // Response wire prefix: corr_id (i32 BE) at offset 0.
         let mut frame = Vec::new();
         frame.extend_from_slice(&42i32.to_be_bytes());
@@ -573,7 +603,8 @@ mod tests {
             ConnectionId(7),
             &frame,
             &map,
-        );
+        )
+        .unwrap();
 
         assert!(matches!(
             event.direction,
@@ -603,7 +634,8 @@ mod tests {
             ConnectionId(7),
             &frame,
             &map,
-        );
+        )
+        .unwrap();
 
         assert_eq!(event.api_key, -1);
         assert_eq!(event.api_version, -1);

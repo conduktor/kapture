@@ -32,7 +32,8 @@ use crate::proxy_provisioner::BrokerProvisioner;
 /// **without** the 4-byte length prefix (the codec already stripped
 /// it). The first 4 bytes are the `correlation_id`, followed by the
 /// optional response-header tagged fields, followed by the response
-/// payload.
+/// payload. The original response header is preserved when encoding so
+/// flexible-version unknown tagged fields are not silently stripped.
 ///
 /// Returns `Ok(Some(rewritten_bytes))` on a successful rewrite,
 /// `Ok(None)` if the API doesn't need rewriting or the buffer was
@@ -76,7 +77,7 @@ async fn rewrite_metadata(
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::Metadata.response_header_version(version);
-    let _hdr = ResponseHeader::decode(&mut buf, header_version)
+    let header = ResponseHeader::decode(&mut buf, header_version)
         .map_err(|e| RewriteError::Decode(format!("metadata header: {e}")))?;
     let mut resp = MetadataResponse::decode(&mut buf, version)
         .map_err(|e| RewriteError::Decode(format!("metadata body: {e}")))?;
@@ -101,7 +102,7 @@ async fn rewrite_metadata(
         broker.port = i32::from(local);
     }
 
-    encode_response(version, &resp, ApiKey::Metadata)
+    encode_response(version, &resp, ApiKey::Metadata, &header)
 }
 
 async fn rewrite_find_coordinator(
@@ -111,7 +112,7 @@ async fn rewrite_find_coordinator(
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::FindCoordinator.response_header_version(version);
-    let _hdr = ResponseHeader::decode(&mut buf, header_version)
+    let header = ResponseHeader::decode(&mut buf, header_version)
         .map_err(|e| RewriteError::Decode(format!("find_coord header: {e}")))?;
     let mut resp = FindCoordinatorResponse::decode(&mut buf, version)
         .map_err(|e| RewriteError::Decode(format!("find_coord body: {e}")))?;
@@ -157,7 +158,7 @@ async fn rewrite_find_coordinator(
         }
     }
 
-    encode_response(version, &resp, ApiKey::FindCoordinator)
+    encode_response(version, &resp, ApiKey::FindCoordinator, &header)
 }
 
 async fn rewrite_describe_cluster(
@@ -167,7 +168,7 @@ async fn rewrite_describe_cluster(
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::DescribeCluster.response_header_version(version);
-    let _hdr = ResponseHeader::decode(&mut buf, header_version)
+    let header = ResponseHeader::decode(&mut buf, header_version)
         .map_err(|e| RewriteError::Decode(format!("describe_cluster header: {e}")))?;
     let mut resp = DescribeClusterResponse::decode(&mut buf, version)
         .map_err(|e| RewriteError::Decode(format!("describe_cluster body: {e}")))?;
@@ -192,22 +193,17 @@ async fn rewrite_describe_cluster(
         b.port = i32::from(local);
     }
 
-    encode_response(version, &resp, ApiKey::DescribeCluster)
+    encode_response(version, &resp, ApiKey::DescribeCluster, &header)
 }
 
 fn encode_response<T: Encodable>(
     version: i16,
     msg: &T,
     api: ApiKey,
+    header: &ResponseHeader,
 ) -> Result<Option<Bytes>, RewriteError> {
     let header_version = api.response_header_version(version);
     let mut out = BytesMut::with_capacity(256);
-    // ResponseHeader: just the correlation_id and (in flexible
-    // versions) tagged fields. We zero corr_id here because the
-    // caller will overwrite the first 4 bytes with the real
-    // correlation_id before forwarding — that way we don't have to
-    // round-trip the header through the body decode.
-    let header = ResponseHeader::default();
     header
         .encode(&mut out, header_version)
         .map_err(|e| RewriteError::Encode(format!("header: {e}")))?;
@@ -221,8 +217,19 @@ fn encode_response<T: Encodable>(
 mod tests {
     use super::*;
     use crate::proxy_broker_map::BrokerMap;
+    use async_trait::async_trait;
     use kafka_protocol::messages::metadata_response::MetadataResponseBroker;
     use kafka_protocol::messages::BrokerId;
+    use std::io;
+
+    struct StaticProvisioner;
+
+    #[async_trait]
+    impl BrokerProvisioner for StaticProvisioner {
+        async fn ensure(&self, _host: &str, _port: u16) -> io::Result<u16> {
+            Ok(19092)
+        }
+    }
 
     fn build_metadata_response_bytes(version: i16, brokers: Vec<(i32, &str, i32)>) -> Vec<u8> {
         let mut resp = MetadataResponse::default();
@@ -285,5 +292,38 @@ mod tests {
         // Produce response (api key 0) — not in our rewrite set.
         let result = rewrite_response(0, 9, &[0u8; 16], &map).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn preserves_flexible_response_header_unknown_tags() {
+        let provisioner = StaticProvisioner;
+        let mut resp = MetadataResponse::default();
+        let mut broker = MetadataResponseBroker::default();
+        broker.node_id = BrokerId(1);
+        broker.host = StrBytes::from_string("kafka-mb-1.local".to_owned());
+        broker.port = 39092;
+        resp.brokers.push(broker);
+
+        let mut out = BytesMut::new();
+        ResponseHeader::default()
+            .with_correlation_id(777)
+            .with_unknown_tagged_field(42, Bytes::from_static(b"tagged"))
+            .encode(&mut out, ApiKey::Metadata.response_header_version(12))
+            .unwrap();
+        resp.encode(&mut out, 12).unwrap();
+
+        let rewritten = rewrite_response(3, 12, &out, &provisioner)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut buf = rewritten;
+        let header =
+            ResponseHeader::decode(&mut buf, ApiKey::Metadata.response_header_version(12)).unwrap();
+
+        assert_eq!(header.correlation_id, 777);
+        assert_eq!(
+            header.unknown_tagged_fields.get(&42).map(Bytes::as_ref),
+            Some(b"tagged".as_slice()),
+        );
     }
 }

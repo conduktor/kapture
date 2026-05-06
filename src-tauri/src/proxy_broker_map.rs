@@ -11,15 +11,38 @@ use std::io;
 use parking_lot::RwLock;
 use tokio::net::TcpListener;
 
+/// Hard cap on broker endpoints the proxy will provision for one run.
+/// Normal Kafka clusters are far below this; the cap prevents a malicious
+/// Metadata response from consuming thousands of loopback ports and tasks.
+pub const MAX_BROKER_MAP_ENTRIES: usize = 1024;
+
+#[derive(Debug)]
+pub enum BrokerListener {
+    Existing(u16),
+    Created {
+        local_port: u16,
+        listener: std::net::TcpListener,
+    },
+}
+
+impl BrokerListener {
+    #[must_use]
+    pub const fn local_port(&self) -> u16 {
+        match self {
+            Self::Existing(local_port) | Self::Created { local_port, .. } => *local_port,
+        }
+    }
+}
+
 /// Map between upstream Kafka brokers `(host, port)` and the local
 /// loopback ports we've bound for them. The first entry is the
 /// bootstrap broker the user configured; subsequent entries are
 /// lazily added as Metadata / `FindCoordinator` / `DescribeCluster`
 /// responses reveal new brokers.
 ///
-/// Bidirectional: `ensure_listener(host, port)` allocates (or returns
-/// the cached) local port. `upstream_for_local(local)` is used by
-/// the per-listener pump to know where to forward bytes to.
+/// Bidirectional: `ensure_bound_listener(host, port)` allocates (or
+/// returns the cached) local port. `upstream_for_local(local)` is used
+/// by the per-listener pump to know where to forward bytes to.
 #[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct BrokerMap {
@@ -39,36 +62,70 @@ impl BrokerMap {
         Self::default()
     }
 
-    /// Ensure we have a local listener for the given upstream broker;
-    /// returns the local port. If one exists already, return it; if
-    /// not, bind a new ephemeral listener on `127.0.0.1` and stash it.
+    /// Ensure we have a bound local listener for the given upstream
+    /// broker. If one exists already, return its local port; if not,
+    /// bind a new ephemeral listener on `127.0.0.1`, stash it, and
+    /// return the still-open listener to the caller.
     ///
-    /// NOTE: this only allocates the *port* (via `TcpListener::bind`
-    /// followed by an immediate drop and rebind). The actual accept
-    /// loop is spawned by `ProxyHandle::ensure_listener_running`.
+    /// The returned `Created` listener closes the drop/rebind race:
+    /// production provisioning passes the socket directly into the
+    /// accept-loop task instead of dropping it and binding the same
+    /// port again later.
     ///
     /// # Errors
-    /// Bubbles up the `io::Error` if the bind fails.
-    pub async fn ensure_listener(&self, host: &str, port: u16) -> io::Result<u16> {
+    /// Bubbles up the `io::Error` if the bind fails or if the broker
+    /// cap has already been reached.
+    pub async fn ensure_bound_listener(&self, host: &str, port: u16) -> io::Result<BrokerListener> {
         {
             let inner = self.inner.read();
             if let Some(&local) = inner.by_upstream.get(&(host.to_owned(), port)) {
-                return Ok(local);
+                return Ok(BrokerListener::Existing(local));
+            }
+            if inner.by_upstream.len() >= MAX_BROKER_MAP_ENTRIES {
+                return Err(io::Error::other(format!(
+                    "proxy broker map limit reached ({MAX_BROKER_MAP_ENTRIES})"
+                )));
             }
         }
-        // Bind ephemeral, read the assigned port, drop the listener.
-        // The caller spawns the real accept loop separately.
-        let temp = TcpListener::bind("127.0.0.1:0").await?;
-        let local_port = temp.local_addr()?.port();
-        drop(temp);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let local_port = listener.local_addr()?.port();
+        let listener = listener.into_std()?;
+
         {
             let mut inner = self.inner.write();
+            if let Some(&local) = inner.by_upstream.get(&(host.to_owned(), port)) {
+                return Ok(BrokerListener::Existing(local));
+            }
+            if inner.by_upstream.len() >= MAX_BROKER_MAP_ENTRIES {
+                return Err(io::Error::other(format!(
+                    "proxy broker map limit reached ({MAX_BROKER_MAP_ENTRIES})"
+                )));
+            }
             inner
                 .by_upstream
                 .insert((host.to_owned(), port), local_port);
             inner.by_local.insert(local_port, (host.to_owned(), port));
         }
-        Ok(local_port)
+        Ok(BrokerListener::Created {
+            local_port,
+            listener,
+        })
+    }
+
+    /// Ensure we have a local port for the given upstream broker.
+    ///
+    /// Production code uses `ensure_bound_listener` to avoid dropping
+    /// the socket before the accept loop starts. This port-only helper
+    /// exists for tests and bare `BrokerMap` provisioner callers that
+    /// only need deterministic rewrite output.
+    ///
+    /// # Errors
+    /// Bubbles up the `io::Error` if the bind fails.
+    pub async fn ensure_listener(&self, host: &str, port: u16) -> io::Result<u16> {
+        self.ensure_bound_listener(host, port)
+            .await
+            .map(|listener| listener.local_port())
     }
 
     /// Reserve a specific local port for an upstream — used to seed the
