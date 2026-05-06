@@ -361,8 +361,17 @@ where
                     // Fetch response — extract records before forwarding.
                     // `bytes` is the codec output (no wire size prefix);
                     // it starts at the ResponseHeader, which is what
-                    // `extract_from_fetch_response` expects.
-                    for rec in extract_from_fetch_response(api_version, &bytes, &topic_ids) {
+                    // `extract_from_fetch_response` expects. Stamp the
+                    // (corr_id, connection_id) of this very response
+                    // frame onto each record so the Messages tab can
+                    // jump back to it.
+                    for rec in extract_from_fetch_response(
+                        api_version,
+                        &bytes,
+                        &topic_ids,
+                        event.corr_id,
+                        event.connection_id,
+                    ) {
                         record_sink(extracted_to_captured(rec, conn_id.0));
                     }
                 }

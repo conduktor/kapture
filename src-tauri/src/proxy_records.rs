@@ -22,8 +22,10 @@ use kafka_protocol::protocol::{Decodable, HeaderVersion};
 use kafka_protocol::records::RecordBatchDecoder;
 use uuid::Uuid;
 
+use crate::correlator::FetchMetadata;
 use crate::decode::{decode_payload, render_hex};
 use crate::message::{CapturedMessage, KafkaHeader};
+use crate::proto_hook::ProtoEvent;
 use crate::proxy_topic_ids::TopicIdMap;
 
 /// One Kafka record extracted from a Produce request or a Fetch
@@ -43,6 +45,17 @@ pub struct ExtractedRecord {
     pub key: Option<Bytes>,
     pub value: Option<Bytes>,
     pub headers: Vec<(String, Option<Bytes>)>,
+    /// Fetch response API version that brought this record. `None` for
+    /// Produce-side records (sent by the client — no Fetch frame to
+    /// link back to).
+    pub fetch_api_version: Option<i16>,
+    /// Correlation id of the originating Fetch response. `None` for
+    /// Produce-side records.
+    pub fetch_corr_id: Option<i32>,
+    /// Per-TCP-connection id (truncated u64 → i32, mirrors the
+    /// `ProtoFrame.connection_id` field) of the originating Fetch
+    /// response. `None` for Produce-side records.
+    pub fetch_connection_id: Option<i32>,
 }
 
 /// Decode the Produce request body sitting in `frame` and pull every
@@ -84,19 +97,37 @@ fn extract_from_produce_request_inner(version: i16, frame: &[u8]) -> Option<Vec<
 /// `topic_ids` is the cluster-wide `topic_id → name` map populated
 /// from `MetadataResponse` traffic. Only consulted on Fetch v13+ where
 /// the wire dropped the topic name in favour of a UUID.
+///
+/// `fetch_corr_id` and `fetch_connection_id` are stamped onto every
+/// returned `ExtractedRecord` so the Messages tab can backlink each
+/// record to the originating `ProtoFrame` (same `(connection_id,
+/// corr_id)` pair as the response frame in the proto correlator's ring
+/// buffer). Pass them straight from the `ProtoEvent` raised on the
+/// pump's response side.
 #[must_use]
 pub fn extract_from_fetch_response(
     version: i16,
     frame: &[u8],
     topic_ids: &TopicIdMap,
+    fetch_corr_id: i32,
+    fetch_connection_id: i32,
 ) -> Vec<ExtractedRecord> {
-    extract_from_fetch_response_inner(version, frame, topic_ids).unwrap_or_default()
+    extract_from_fetch_response_inner(
+        version,
+        frame,
+        topic_ids,
+        fetch_corr_id,
+        fetch_connection_id,
+    )
+    .unwrap_or_default()
 }
 
 fn extract_from_fetch_response_inner(
     version: i16,
     frame: &[u8],
     topic_ids: &TopicIdMap,
+    fetch_corr_id: i32,
+    fetch_connection_id: i32,
 ) -> Option<Vec<ExtractedRecord>> {
     let mut buf = Bytes::copy_from_slice(frame);
     // Fetch v0-v11: header v0 (no tagged fields). v12+: header v1.
@@ -119,10 +150,13 @@ fn extract_from_fetch_response_inner(
             if records_bytes.is_empty() {
                 continue;
             }
-            push_records(
+            push_records_fetch(
                 &topic_name,
                 partition.partition_index,
                 records_bytes.clone(),
+                version,
+                fetch_corr_id,
+                fetch_connection_id,
                 &mut out,
             );
         }
@@ -159,6 +193,9 @@ fn resolve_topic_name(
 /// are swallowed — the wire bytes are always forwarded verbatim by the
 /// caller, so partial extraction (some records, then a malformed
 /// batch) is acceptable.
+///
+/// Produce-side variant: `fetch_*` fields are all `None` because there
+/// is no Fetch frame to backlink to.
 fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec<ExtractedRecord>) {
     let mut buf = records_bytes;
     let Ok(batches) = RecordBatchDecoder::decode_all(&mut buf) else {
@@ -179,6 +216,47 @@ fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec
                 key: rec.key,
                 value: rec.value,
                 headers,
+                fetch_api_version: None,
+                fetch_corr_id: None,
+                fetch_connection_id: None,
+            });
+        }
+    }
+}
+
+/// Fetch-side variant: stamps the originating Fetch frame's coordinates
+/// onto every record so the UI can backlink Messages → Protocol.
+fn push_records_fetch(
+    topic: &str,
+    partition: i32,
+    records_bytes: Bytes,
+    fetch_api_version: i16,
+    fetch_corr_id: i32,
+    fetch_connection_id: i32,
+    out: &mut Vec<ExtractedRecord>,
+) {
+    let mut buf = records_bytes;
+    let Ok(batches) = RecordBatchDecoder::decode_all(&mut buf) else {
+        return;
+    };
+    for batch in batches {
+        for rec in batch.records {
+            let headers = rec
+                .headers
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            out.push(ExtractedRecord {
+                topic: topic.to_owned(),
+                partition,
+                offset: rec.offset,
+                timestamp_ms: rec.timestamp,
+                key: rec.key,
+                value: rec.value,
+                headers,
+                fetch_api_version: Some(fetch_api_version),
+                fetch_corr_id: Some(fetch_corr_id),
+                fetch_connection_id: Some(fetch_connection_id),
             });
         }
     }
@@ -226,6 +304,31 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
     // to 0..=i32::MAX, so the try_from cannot fail in practice.
     let connection_id = i32::try_from(conn_id & 0x7FFF_FFFF).unwrap_or(i32::MAX);
 
+    // Fetch-side records carry a backlink to the originating Fetch
+    // protocol frame so the Messages tab can switch to the Protocol
+    // tab and select that frame. We populate the existing
+    // `FetchMetadata` field used by the (now-removed-soon) rdkafka
+    // path so the UI doesn't need a parallel field. `response_size`
+    // and `rtt_ms` aren't measured here — the proto frame itself has
+    // them; setting `0` / `0.0` keeps the row compact and the
+    // backlink is the only thing the UI actually consumes from this.
+    let fetch = match (
+        rec.fetch_api_version,
+        rec.fetch_corr_id,
+        rec.fetch_connection_id,
+    ) {
+        (Some(api_version), Some(corr_id), Some(fetch_conn_id)) => Some(FetchMetadata {
+            api_key: 1,
+            api_name: ProtoEvent::api_name(1),
+            api_version: i32::from(api_version),
+            connection_id: fetch_conn_id,
+            corr_id,
+            response_size: 0,
+            rtt_ms: 0.0,
+        }),
+        _ => None,
+    };
+
     CapturedMessage {
         id: Uuid::new_v4().to_string(),
         timestamp,
@@ -239,7 +342,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         headers,
         payload: decode_payload(value_bytes),
         raw_hex,
-        fetch: None,
+        fetch,
         connection_id: Some(connection_id),
     }
 }
@@ -427,12 +530,15 @@ mod tests {
         // v12 carries the topic name on the wire; the topic_id_map is
         // unused on this path. Pass an empty one to prove that.
         let topic_ids = TopicIdMap::new();
-        let extracted = extract_from_fetch_response(12, &bytes, &topic_ids);
+        let extracted = extract_from_fetch_response(12, &bytes, &topic_ids, 555, 7);
         assert_eq!(extracted.len(), 5);
         for (i, rec) in extracted.iter().enumerate() {
             assert_eq!(rec.topic, "records-test");
             assert_eq!(rec.partition, 0);
             assert_eq!(rec.offset, i64::try_from(i).unwrap());
+            assert_eq!(rec.fetch_corr_id, Some(555));
+            assert_eq!(rec.fetch_connection_id, Some(7));
+            assert_eq!(rec.fetch_api_version, Some(12));
         }
     }
 
@@ -449,7 +555,7 @@ mod tests {
         let topic_ids = TopicIdMap::new();
         topic_ids.record(id, "records-test".to_owned());
 
-        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids);
+        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids, 0, 0);
         assert_eq!(extracted.len(), 3);
         for rec in &extracted {
             assert_eq!(rec.topic, "records-test");
@@ -465,7 +571,7 @@ mod tests {
 
         // Empty map — id was never observed.
         let topic_ids = TopicIdMap::new();
-        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids);
+        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids, 0, 0);
         assert_eq!(extracted.len(), 1);
         let expected = format!("[topic-id {id}]");
         assert_eq!(extracted[0].topic, expected);
@@ -506,9 +612,9 @@ mod tests {
         // Must not panic on bogus input.
         let topic_ids = TopicIdMap::new();
         assert!(extract_from_produce_request(9, &[0u8; 4]).is_empty());
-        assert!(extract_from_fetch_response(13, &[0u8; 4], &topic_ids).is_empty());
+        assert!(extract_from_fetch_response(13, &[0u8; 4], &topic_ids, 0, 0).is_empty());
         assert!(extract_from_produce_request(9, &[]).is_empty());
-        assert!(extract_from_fetch_response(13, &[], &topic_ids).is_empty());
+        assert!(extract_from_fetch_response(13, &[], &topic_ids, 0, 0).is_empty());
     }
 
     #[test]
@@ -525,6 +631,9 @@ mod tests {
             key: Some(Bytes::from_static(b"my-key")),
             value: Some(Bytes::from_static(b"\"hello\"")),
             headers,
+            fetch_api_version: None,
+            fetch_corr_id: None,
+            fetch_connection_id: None,
         };
         let captured = extracted_to_captured(rec, 99);
         assert_eq!(captured.topic, "t");
@@ -540,6 +649,32 @@ mod tests {
         assert!(captured.fetch.is_none());
         assert!(!captured.id.is_empty());
         assert!(!captured.timestamp.is_empty());
+    }
+
+    #[test]
+    fn extracted_to_captured_populates_fetch_backlink() {
+        let rec = ExtractedRecord {
+            topic: "t".to_owned(),
+            partition: 0,
+            offset: 1,
+            timestamp_ms: 0,
+            key: None,
+            value: Some(Bytes::from_static(b"hi")),
+            headers: vec![],
+            fetch_api_version: Some(16),
+            fetch_corr_id: Some(123),
+            fetch_connection_id: Some(42),
+        };
+        let captured = extracted_to_captured(rec, 42);
+        let fetch = captured.fetch.unwrap();
+        assert_eq!(fetch.api_key, 1);
+        assert_eq!(fetch.api_name, "Fetch");
+        assert_eq!(fetch.api_version, 16);
+        assert_eq!(fetch.corr_id, 123);
+        assert_eq!(fetch.connection_id, 42);
+        // CapturedMessage.connection_id always reflects the proxy
+        // connection regardless of fetch backlink.
+        assert_eq!(captured.connection_id, Some(42));
     }
 
     /// End-to-end pump test: drive a real `ProduceRequest v9` (with one

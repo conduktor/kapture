@@ -12,12 +12,14 @@ import type { KafkaMessage } from "../types";
 import type { FilterTarget } from "./FilterMenu";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
+type JumpToFetchFrame = (connectionId: number, corrId: number) => void;
 
 interface Props {
   messages: KafkaMessage[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
+  onJumpToFetchFrame: JumpToFetchFrame;
 }
 
 interface RowProps {
@@ -25,6 +27,7 @@ interface RowProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
+  onJumpToFetchFrame: JumpToFetchFrame;
 }
 
 const ROW_HEIGHT = 26;
@@ -34,10 +37,11 @@ export function MessageList({
   selectedId,
   onSelect,
   onOpenFilterMenu,
+  onJumpToFetchFrame,
 }: Props): JSX.Element {
   const rowProps = useMemo<RowProps>(
-    () => ({ messages, selectedId, onSelect, onOpenFilterMenu }),
-    [messages, selectedId, onSelect, onOpenFilterMenu],
+    () => ({ messages, selectedId, onSelect, onOpenFilterMenu, onJumpToFetchFrame }),
+    [messages, selectedId, onSelect, onOpenFilterMenu, onJumpToFetchFrame],
   );
   // react-window manages its own scrolling container. Driving body
   // scrollTop directly (an earlier attempt) didn't work because the
@@ -83,6 +87,9 @@ export function MessageList({
         <span className="msglist__col msglist__col--key">key</span>
         <span className="msglist__col msglist__col--schema">schema</span>
         <span className="msglist__col msglist__col--size">size</span>
+        <span className="msglist__col msglist__col--fetch" title="Originating Fetch frame">
+          fetch
+        </span>
       </div>
       <div className="msglist__body">
         {messages.length === 0 ? (
@@ -114,6 +121,7 @@ function MessageRow({
   selectedId,
   onSelect,
   onOpenFilterMenu,
+  onJumpToFetchFrame,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const message = messages[index];
   if (!message) {
@@ -226,6 +234,30 @@ function MessageRow({
         )
       )}
       <span className="msglist__col msglist__col--size">{message.sizeBytes}b</span>
+      {message.fetch === null ? (
+        <span className="msglist__col msglist__col--fetch">
+          <em className="muted">—</em>
+        </span>
+      ) : (
+        <span className="msglist__col msglist__col--fetch">
+          <button
+            type="button"
+            className="msglist__fetch-link"
+            title={`Jump to Fetch frame (conn ${String(message.fetch.connectionId)}, corr ${String(
+              message.fetch.corrId,
+            )})`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (message.fetch !== null) {
+                onJumpToFetchFrame(message.fetch.connectionId, message.fetch.corrId);
+              }
+            }}
+          >
+            ↗ Fetch
+          </button>
+        </span>
+      )}
     </button>
   );
 }

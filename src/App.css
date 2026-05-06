@@ -275,7 +275,7 @@ body,
 .msglist__head,
 .msglist__row {
   display: grid;
-  grid-template-columns: 110px 1fr 40px 110px 100px 1fr 70px;
+  grid-template-columns: 110px 1fr 40px 110px 100px 1fr 70px 90px;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -654,6 +654,24 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 .msglist__col--topic {
   color: var(--accent);
   font-weight: 500;
+}
+.msglist__col--fetch {
+  text-align: right;
+  color: var(--text-muted);
+}
+.msglist__fetch-link {
+  background: transparent;
+  border: 0;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 3px;
+  transition: background 80ms ease;
+}
+.msglist__fetch-link:hover {
+  background: var(--bg-hover);
 }
 .msglist__empty {
   padding: 32px;
