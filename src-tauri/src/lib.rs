@@ -10,6 +10,7 @@ mod message;
 mod profiles;
 mod proto_decode;
 mod proto_hook;
+mod proxy;
 mod ring_buffer;
 mod schema_registry;
 mod state;
