@@ -493,20 +493,8 @@ export function ConnectionDialog({
                     }}
                   >
                     <option value="PLAIN">SASL/PLAIN</option>
-                    <option
-                      value="SCRAM-SHA-256"
-                      disabled
-                      title="Coming soon — only PLAIN is supported in this build"
-                    >
-                      SASL/SCRAM-SHA-256 (coming soon)
-                    </option>
-                    <option
-                      value="SCRAM-SHA-512"
-                      disabled
-                      title="Coming soon — only PLAIN is supported in this build"
-                    >
-                      SASL/SCRAM-SHA-512 (coming soon)
-                    </option>
+                    <option value="SCRAM-SHA-256">SASL/SCRAM-SHA-256</option>
+                    <option value="SCRAM-SHA-512">SASL/SCRAM-SHA-512</option>
                   </select>
                 </label>
                 <label className="dialog__field">
