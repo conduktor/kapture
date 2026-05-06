@@ -31,12 +31,18 @@
 //!  * `kafka_list_profiles` — saved profile metadata, no secrets
 //!  * `kafka_inspect_message` — full layer details for a single id
 //!  * `kafka_connect_profile` / `kafka_disconnect` — capture lifecycle
+//!  * `kafka_proto_frames` — recent Kafka API protocol frames
+//!    (Metadata / Fetch / Heartbeat / …) as lightweight summaries
+//!  * `kafka_inspect_frame` — full `ProtoFrame` for one id (captured
+//!    bytes + decoded body via the `kafka-protocol` crate)
 //!
 //! ### Resource surface (read-only views)
 //!
 //!  * `kapture://stats/current`    — same payload as `kafka_stats`
 //!  * `kapture://messages/recent`  — same payload as `kafka_snapshot` capped
 //!    at the server hard limit, filter applied
+//!  * `kapture://protocol/recent`  — same payload as `kafka_proto_frames`
+//!    capped at the server hard limit
 //!
 //! Resources mirror tools intentionally: agents that subscribe (clients that
 //! cache or poll resources) get the same view as agents that call tools, so a
@@ -75,7 +81,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::capture::{self, AuthConfig, CaptureConfig, SaslMechanism, TlsCreds};
-use crate::correlator::ProtoCorrelator;
+use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::profiles::{LoadedProfile, ProfileMetadata};
@@ -167,6 +173,32 @@ struct InspectResponse {
     message: Option<CapturedMessage>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+struct ProtoFramesParams {
+    /// Maximum number of frames to return. Server caps at 500.
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct ProtoFramesResponse {
+    returned: usize,
+    frames: Vec<ProtoFrameSummary>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct InspectFrameParams {
+    /// Frame id (UUID) to look up. Matches the `id` field of any item
+    /// previously returned by `kafka_proto_frames`.
+    id: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+struct InspectFrameResponse {
+    found: bool,
+    frame: Option<ProtoFrame>,
+}
+
 #[derive(Serialize, JsonSchema)]
 struct AckResponse {
     ok: bool,
@@ -177,6 +209,24 @@ struct AckResponse {
 // read_resource match arms can never drift out of sync.
 const RESOURCE_STATS_URI: &str = "kapture://stats/current";
 const RESOURCE_MESSAGES_URI: &str = "kapture://messages/recent";
+const RESOURCE_PROTOCOL_URI: &str = "kapture://protocol/recent";
+/// Cap on protocol frames returned via the MCP surface. Same intent as
+/// `SNAPSHOT_HARD_LIMIT` for messages: keep replies bounded against
+/// hostile or buggy callers.
+const PROTO_FRAMES_HARD_LIMIT: usize = 500;
+/// Cap on the `decoded` Debug string returned via `kafka_inspect_frame`.
+/// `Debug`-pretty-printing a Fetch response can balloon to MBs;
+/// truncate at the MCP boundary so a single tool call can't blow up
+/// JSON memory. The GUI path is unaffected.
+const PROTO_DECODED_HARD_LIMIT: usize = 32 * 1024;
+/// Kafka API keys whose payloads carry credentials and must be redacted
+/// before crossing the MCP boundary, even on a localhost-bound,
+/// bearer-authenticated channel. The GUI surfaces these locally because
+/// the user is inspecting their own traffic; redacting in MCP keeps an
+/// agent driving Kapture from accidentally dumping a SASL/PLAIN
+/// password into a chat log.
+const SASL_HANDSHAKE_API_KEY: i32 = 17;
+const SASL_AUTHENTICATE_API_KEY: i32 = 36;
 
 #[tool_router]
 impl KaptureMcp {
@@ -291,6 +341,45 @@ impl KaptureMcp {
         Ok(Json(InspectResponse {
             found: message.is_some(),
             message,
+        }))
+    }
+
+    #[tool(
+        description = "Return up to `limit` (cap 500) recent Kafka API protocol frames as lightweight summaries (no payload bytes, no decoded body). Use `kafka_inspect_frame` to fetch the full payload + decoded fields for one id."
+    )]
+    fn kafka_proto_frames(
+        &self,
+        Parameters(ProtoFramesParams { limit }): Parameters<ProtoFramesParams>,
+    ) -> Result<Json<ProtoFramesResponse>, ErrorData> {
+        let state = self.state()?;
+        let cap = limit.map_or(PROTO_FRAMES_HARD_LIMIT, |n| {
+            (n as usize).min(PROTO_FRAMES_HARD_LIMIT)
+        });
+        let frames = state
+            .correlator()
+            .map(|c| c.summaries(cap))
+            .unwrap_or_default();
+        Ok(Json(ProtoFramesResponse {
+            returned: frames.len(),
+            frames,
+        }))
+    }
+
+    #[tool(
+        description = "Return the full ProtoFrame for one id — captured wire bytes (lowercase hex, capped at 64 KiB) plus a pretty-printed Debug of the decoded request/response body via the kafka-protocol crate when the api is supported. SASL frames are redacted; the decoded string is truncated at 32 KiB."
+    )]
+    fn kafka_inspect_frame(
+        &self,
+        Parameters(InspectFrameParams { id }): Parameters<InspectFrameParams>,
+    ) -> Result<Json<InspectFrameResponse>, ErrorData> {
+        let state = self.state()?;
+        let frame = state
+            .correlator()
+            .and_then(|c| c.frame_detail(&id))
+            .map(redact_frame_for_mcp);
+        Ok(Json(InspectFrameResponse {
+            found: frame.is_some(),
+            frame,
         }))
     }
 
@@ -414,7 +503,7 @@ impl ServerHandler for KaptureMcp {
         _params: Option<PaginatedRequestParams>,
         _ctx: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        // No pagination: only two resources, both fit in a single page.
+        // No pagination: three resources, fit in a single page.
         let stats = RawResource::new(RESOURCE_STATS_URI, "Capture stats")
             .with_description(
                 "Current ring-buffer stats + throughput. Same payload as \
@@ -430,7 +519,19 @@ impl ServerHandler for KaptureMcp {
             )
             .with_mime_type("application/json")
             .no_annotation();
-        Ok(ListResourcesResult::with_all_items(vec![stats, messages]))
+        let protocol = RawResource::new(RESOURCE_PROTOCOL_URI, "Recent protocol frames")
+            .with_description(
+                "Up to the server hard limit of recent Kafka API protocol \
+                 frames as lightweight summaries (no payload bytes, no \
+                 decoded body). Same payload as kafka_proto_frames called \
+                 without an explicit limit. Use kafka_inspect_frame to \
+                 fetch the full payload + decoded fields for one id.",
+            )
+            .with_mime_type("application/json")
+            .no_annotation();
+        Ok(ListResourcesResult::with_all_items(vec![
+            stats, messages, protocol,
+        ]))
     }
 
     async fn read_resource(
@@ -453,11 +554,17 @@ impl ServerHandler for KaptureMcp {
                 serde_json::to_string(&payload)
                     .map_err(|err| ErrorData::internal_error(err.to_string(), None))?
             }
-            other => {
-                return Err(ErrorData::invalid_params(
-                    format!("unknown resource URI: {other}"),
-                    None,
-                ));
+            RESOURCE_PROTOCOL_URI => {
+                let Json(payload) =
+                    self.kafka_proto_frames(Parameters(ProtoFramesParams { limit: None }))?;
+                serde_json::to_string(&payload)
+                    .map_err(|err| ErrorData::internal_error(err.to_string(), None))?
+            }
+            _ => {
+                // Codex review: don't echo the caller-supplied URI back —
+                // it ends up in JSON-RPC error logs and could carry
+                // attacker-controlled junk.
+                return Err(ErrorData::invalid_params("unknown resource URI", None));
             }
         };
         Ok(ReadResourceResult::new(vec![ResourceContents::text(
@@ -465,6 +572,38 @@ impl ServerHandler for KaptureMcp {
             &params.uri,
         )]))
     }
+}
+
+/// Redact / truncate a `ProtoFrame` before it crosses the MCP boundary.
+///
+/// Two protections:
+///  1. **SASL credentials**. `SaslHandshake` (key 17) and
+///     `SaslAuthenticate` (key 36) request payloads carry the raw SASL
+///     blob — for SASL/PLAIN this is `\0username\0password` in the
+///     clear. The proto-hook captures these so the GUI can show the
+///     handshake locally; we MUST NOT propagate them to MCP callers
+///     (an agent could echo them into a chat log).
+///  2. **Decoded-body bomb**. Pretty-printed `Debug` of a Fetch
+///     response with hundreds of records can balloon to MBs. Truncate
+///     at `PROTO_DECODED_HARD_LIMIT` so a single `inspect_frame` call
+///     can't blow up the JSON response.
+fn redact_frame_for_mcp(mut f: ProtoFrame) -> ProtoFrame {
+    if matches!(
+        f.api_key,
+        SASL_HANDSHAKE_API_KEY | SASL_AUTHENTICATE_API_KEY
+    ) {
+        f.payload_hex = String::new();
+        f.captured = 0;
+        f.decoded = Some("[redacted: SASL credentials]".to_owned());
+        return f;
+    }
+    if let Some(d) = f.decoded.as_mut() {
+        if d.len() > PROTO_DECODED_HARD_LIMIT {
+            d.truncate(PROTO_DECODED_HARD_LIMIT);
+            d.push_str("\n... [truncated by MCP boundary]");
+        }
+    }
+    f
 }
 
 fn start_capture_from_profile(
