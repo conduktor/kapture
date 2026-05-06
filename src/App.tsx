@@ -51,7 +51,10 @@ function App(): JSX.Element {
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
-  const [editing, setEditing] = useState(false);
+  // Open the dialog automatically on first launch when nothing is
+  // connected. Cancelling the dialog flips this to false and we stay in
+  // the disconnected workspace; the user re-opens via the cluster pill.
+  const [editing, setEditing] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
@@ -275,8 +278,26 @@ function App(): JSX.Element {
     }
   }, []);
 
-  const showDialog =
-    connection.status === "disconnected" || connection.status === "error" || editing;
+  // Always allow the user to escape the dialog. Real-world traps this
+  // unblocks:
+  //   1. Connect fails with "AlreadyCapturing" (zombie slot from a previous
+  //      run): cancel fires `disconnect` best-effort to clear the slot,
+  //      then drops the dialog into the disconnected state.
+  //   2. User just changed their mind: cancel returns them to the previous
+  //      workspace (disconnected → empty, connected → still capturing).
+  const cancelDialog = (): void => {
+    if (connection.status === "error") {
+      void invoke("disconnect").catch(() => {
+        /* best-effort cleanup of zombie capture slot */
+      });
+      setConnection(INITIAL_CONNECTION);
+    }
+    setEditing(false);
+  };
+
+  // Dialog is visible whenever the user is editing OR we're in the middle
+  // of a connect attempt. Cancel always returns to the workspace.
+  const showDialog = editing || connection.status === "connecting" || connection.status === "error";
   const isEditing = editing && connection.status === "connected";
   const initialPrefill = isEditing
     ? {
@@ -337,13 +358,7 @@ function App(): JSX.Element {
           initial={initialPrefill}
           isEditing={isEditing}
           onConnect={handleConnect}
-          onCancel={
-            isEditing
-              ? () => {
-                  setEditing(false);
-                }
-              : undefined
-          }
+          onCancel={cancelDialog}
           pending={connection.status === "connecting"}
           error={connection.error}
         />
