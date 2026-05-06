@@ -217,7 +217,14 @@ function DebugNodeView({
   node: DebugNode;
   name?: string;
   onAddDecodedFilter?: AddDecodedFn;
-}): JSX.Element {
+}): JSX.Element | null {
+  // Hide kafka-protocol's empty `unknown_tagged_fields: {}` lines —
+  // they're meaningless noise (every struct has one, almost always
+  // empty). When the field is non-empty (rare, only when the broker
+  // sent unknown KIP tags), let it render normally.
+  if (name === "unknown_tagged_fields" && node.kind === "struct" && node.fields.length === 0) {
+    return null;
+  }
   if (node.kind === "struct") {
     return (
       <details className="tree-node" open>
@@ -269,7 +276,9 @@ function DebugNodeView({
   if (node.kind === "tuple") {
     // Single-item tuple wrappers (`Some(x)`, `TopicName("foo")`) are
     // visually noisy when nested — flatten by combining the wrapper
-    // name into the field label.
+    // name into the field label. `Some` specifically is hidden: it's
+    // pure Rust noise (Option::Some) — the value's presence already
+    // implies it. `Ok(_)` is treated the same way for symmetry.
     if (node.items.length === 1) {
       const inner = node.items[0];
       if (!inner) {
@@ -281,7 +290,8 @@ function DebugNodeView({
           />
         );
       }
-      const label = name ? `${name} (${node.name})` : node.name;
+      const isOptionalWrapper = node.name === "Some" || node.name === "Ok";
+      const label = isOptionalWrapper ? (name ?? "") : name ? `${name} (${node.name})` : node.name;
       return (
         <DebugNodeView
           node={inner}

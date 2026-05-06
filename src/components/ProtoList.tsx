@@ -195,14 +195,43 @@ export function ProtoList({
         />
       ) : null}
       <div className="msglist__head">
-        <span className="proto__col proto__col--ts">ts</span>
-        <span className="proto__col proto__col--dir">dir</span>
-        <span className="proto__col proto__col--api">api</span>
-        <span className="proto__col proto__col--v">v</span>
-        <span className="proto__col proto__col--broker">conn</span>
-        <span className="proto__col proto__col--corr">corr</span>
-        <span className="proto__col proto__col--size">size</span>
-        <span className="proto__col proto__col--rtt">rtt (ms)</span>
+        <span className="proto__col proto__col--dir" aria-hidden="true" />
+        <span
+          className="proto__col proto__col--ts"
+          title="Wall-clock time the frame was observed (HH:MM:SS.µs); the dim suffix shows the delta since the previous visible frame."
+        >
+          ts
+        </span>
+        <span
+          className="proto__col proto__col--api"
+          title="Kafka protocol API name + version (e.g. Metadata v12, Fetch v16). Version is the dim suffix."
+        >
+          api
+        </span>
+        <span
+          className="proto__col proto__col--broker"
+          title="Connection ID — unique per TCP connection accepted by the proxy. Group rows with the same conn to see one client session."
+        >
+          conn
+        </span>
+        <span
+          className="proto__col proto__col--corr"
+          title="Correlation ID — pairs a request with its response on the same connection."
+        >
+          corr
+        </span>
+        <span
+          className="proto__col proto__col--size"
+          title="Wire size of the frame in bytes (4-byte length prefix + body)."
+        >
+          size
+        </span>
+        <span
+          className="proto__col proto__col--rtt"
+          title="Round-trip time in milliseconds. Only meaningful on Recv frames — the time between the matching Send and this Recv."
+        >
+          rtt (ms)
+        </span>
       </div>
       <div className="msglist__body">
         {visibleFrames.length === 0 ? (
@@ -480,10 +509,6 @@ function ProtoRow({
       aria-setsize={ariaAttributes["aria-setsize"]}
       aria-selected={isSelected}
     >
-      <span className="proto__col proto__col--ts">
-        {ts}
-        {delta !== null ? <span className="proto__ts-delta"> {delta}</span> : null}
-      </span>
       <FilterableCell
         className="proto__col proto__col--dir"
         kind="direction"
@@ -495,6 +520,10 @@ function ProtoRow({
           {frame.direction === "send" ? "→" : "←"}
         </span>
       </FilterableCell>
+      <span className="proto__col proto__col--ts">
+        {ts}
+        {delta !== null ? <span className="proto__ts-delta"> {delta}</span> : null}
+      </span>
       <FilterableCell
         className="proto__col proto__col--api"
         kind="apiName"
@@ -502,8 +531,8 @@ function ProtoRow({
         onAdd={onAddPredicate}
       >
         {frame.apiName}
+        <span className="proto__api-ver"> v{frame.apiVersion}</span>
       </FilterableCell>
-      <span className="proto__col proto__col--v">v{frame.apiVersion}</span>
       <FilterableCell
         className="proto__col proto__col--broker"
         kind="connectionId"

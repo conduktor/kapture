@@ -286,6 +286,51 @@ body,
   min-height: 0;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
+  /* Enable container-query-driven progressive column hiding. The
+   * Protocol tab can be made very narrow via the horizontal splitter;
+   * we hide RTT → size → v → ts → conn/corr in priority order so the
+   * API and direction columns stay visible. */
+  container-type: inline-size;
+}
+/* Progressive disclosure for the Protocol tab grid. Order of removal
+ * (least useful first when space is tight): rtt, size, ts, v. We
+ * always keep dir + api + conn + corr visible because those are how
+ * users find what they're looking for. */
+section.msglist[aria-label="Protocol frames"] {
+  /* Tighten gap to claw back room before we start hiding. */
+}
+@container (max-width: 720px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--rtt {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      minmax(0, 30px) minmax(0, 200px) minmax(180px, 1fr)
+      minmax(0, 60px) minmax(0, 90px) minmax(0, 70px);
+  }
+}
+@container (max-width: 600px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--size {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      minmax(0, 30px) minmax(0, 200px) minmax(180px, 1fr)
+      minmax(0, 60px) minmax(0, 90px);
+  }
+}
+@container (max-width: 500px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--ts {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      minmax(0, 30px) minmax(140px, 1fr)
+      minmax(0, 60px) minmax(0, 90px);
+  }
 }
 .msglist__virtual {
   height: 100% !important;
@@ -347,7 +392,8 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.proto__ts-delta {
+.proto__ts-delta,
+.proto__api-ver {
   color: var(--text-faint);
   font-size: 11px;
   margin-left: 6px;
@@ -364,7 +410,7 @@ body,
 section.msglist[aria-label="Protocol frames"] .msglist__head,
 section.msglist[aria-label="Protocol frames"] .msglist__row {
   grid-template-columns:
-    minmax(0, 200px) minmax(0, 30px) minmax(0, 1fr) minmax(0, 36px)
+    minmax(0, 30px) minmax(0, 200px) minmax(180px, 1fr)
     minmax(0, 60px) minmax(0, 90px) minmax(0, 70px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
