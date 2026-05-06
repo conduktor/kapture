@@ -101,7 +101,13 @@ function App(): JSX.Element {
     })();
   }, []);
 
-  // Subscribe to live events while connected
+  // Subscribe to live events while connected.
+  //
+  // Messages arrive one-per-event. Naively calling setMessages in each
+  // event handler does an O(n) concat + splice and a React reconcile
+  // per message — at 10 msg/s with 5 k rows that's ~50 k array ops/s
+  // and 10 list re-renders/s. We batch through rAF so the renderer
+  // sees at most one update per frame regardless of event rate.
   useEffect(() => {
     if (connection.status !== "connected") {
       return;
@@ -109,15 +115,30 @@ function App(): JSX.Element {
     let messageUnlisten: UnlistenFn | null = null;
     let statsUnlisten: UnlistenFn | null = null;
     let cancelled = false;
+    const pending: KafkaMessage[] = [];
+    let rafScheduled = false;
+
+    const flush = (): void => {
+      rafScheduled = false;
+      if (cancelled || pending.length === 0) {
+        return;
+      }
+      const drained = pending.splice(0, pending.length);
+      const next = messagesRef.current.concat(drained);
+      if (next.length > UI_MAX_MESSAGES) {
+        next.splice(0, next.length - UI_MAX_MESSAGES);
+      }
+      messagesRef.current = next;
+      setMessages(next);
+    };
 
     void (async () => {
       messageUnlisten = await listen<KafkaMessage>("kapture:message", (event) => {
-        const next = messagesRef.current.concat([event.payload]);
-        if (next.length > UI_MAX_MESSAGES) {
-          next.splice(0, next.length - UI_MAX_MESSAGES);
+        pending.push(event.payload);
+        if (!rafScheduled) {
+          rafScheduled = true;
+          window.requestAnimationFrame(flush);
         }
-        messagesRef.current = next;
-        setMessages(next);
       });
       statsUnlisten = await listen<CaptureStats>("kapture:stats", (event) => {
         if (!cancelled) {
