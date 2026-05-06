@@ -5,7 +5,12 @@
 //! `ProtoCorrelator` so the Protocol tab shows the wire-level traffic
 //! of the *client*, not of Kapture itself. See `docs/specs/proxy-mode.md`.
 //!
-//! Phase 1: single broker, plain TCP, no SASL, no TLS.
+//! Phase 2 (in progress): the listener fleet grows on demand — the
+//! response rewriter calls `BrokerProvisioner::ensure` whenever it
+//! sees a new broker in a `Metadata` / `FindCoordinator` /
+//! `DescribeCluster` response, which in turn binds a local listener
+//! and spawns its accept loop. Bootstrap broker is pre-seeded into
+//! `BrokerMap` so its listener is reused on rewrite (no double-bind).
 
 use std::collections::HashMap;
 use std::io;
@@ -17,14 +22,13 @@ use std::time::Instant;
 use bytes::{Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
-use tokio::task::JoinHandle;
+use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::correlator::ProtoCorrelator;
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
+use crate::proxy_provisioner::BrokerProvisioner;
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
 /// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
@@ -256,7 +260,7 @@ pub async fn run_pump_with_rewrite(
     upstream: TcpStream,
     correlator: Arc<ProtoCorrelator>,
     corr_map: Arc<CorrelationMap>,
-    broker_map: Arc<BrokerMap>,
+    provisioner: Arc<dyn BrokerProvisioner>,
 ) -> io::Result<()> {
     let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
@@ -297,7 +301,7 @@ pub async fn run_pump_with_rewrite(
                         api_key,
                         api_version,
                         &bytes,
-                        &broker_map,
+                        provisioner.as_ref(),
                     )
                     .await
                     {
@@ -395,133 +399,8 @@ pub fn build_proto_event(
     }
 }
 
-/// A running proxy listener. Drop / `stop()` to tear down.
-pub struct ProxyHandle {
-    stop_tx: watch::Sender<bool>,
-    accept_task: Option<JoinHandle<()>>,
-    local_addr: SocketAddr,
-    upstream: String,
-}
-
-impl std::fmt::Debug for ProxyHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProxyHandle")
-            .field("local_addr", &self.local_addr)
-            .field("upstream", &self.upstream)
-            .field("running", &self.accept_task.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-impl ProxyHandle {
-    /// Bind the listener and spawn the accept loop.
-    ///
-    /// # Errors
-    /// Returns the underlying `io::Error` if the bind fails (port in
-    /// use, permission denied, …).
-    pub async fn start(config: ProxyConfig, correlator: Arc<ProtoCorrelator>) -> io::Result<Self> {
-        let listener = TcpListener::bind(config.listen_addr()).await?;
-        let local_addr = listener.local_addr()?;
-        let (stop_tx, mut stop_rx) = watch::channel(false);
-        let upstream = config.upstream.clone();
-        let upstream_for_task = upstream.clone();
-
-        let accept_task = tokio::spawn(async move {
-            info!(listen = %local_addr, upstream = %upstream_for_task, "proxy listening");
-            loop {
-                tokio::select! {
-                    changed = stop_rx.changed() => {
-                        if changed.is_ok() && *stop_rx.borrow() {
-                            info!("proxy accept loop stopping");
-                            break;
-                        }
-                    }
-                    accepted = listener.accept() => {
-                        match accepted {
-                            Ok((client_sock, peer)) => {
-                                let conn_id = next_connection_id();
-                                let upstream_target = upstream_for_task.clone();
-                                let correlator = Arc::clone(&correlator);
-                                let corr_map = Arc::new(CorrelationMap::default());
-                                tokio::spawn(async move {
-                                    let upstream_sock = match TcpStream::connect(&upstream_target).await {
-                                        Ok(s) => s,
-                                        Err(err) => {
-                                            warn!(conn = conn_id.0, error = %err, "upstream connect failed");
-                                            return;
-                                        }
-                                    };
-                                    info!(conn = conn_id.0, peer = %peer, "proxy connection opened");
-                                    let corr_map_for_tap = Arc::clone(&corr_map);
-                                    let result = run_pump(
-                                        conn_id,
-                                        client_sock,
-                                        upstream_sock,
-                                        move |dir, conn, payload| {
-                                            let event = build_proto_event(
-                                                dir,
-                                                conn,
-                                                payload,
-                                                &corr_map_for_tap,
-                                            );
-                                            correlator.record_event(&event);
-                                        },
-                                    )
-                                    .await;
-                                    if let Err(err) = result {
-                                        warn!(conn = conn_id.0, error = %err, "proxy pump error");
-                                    }
-                                    info!(conn = conn_id.0, "proxy connection closed");
-                                });
-                            }
-                            Err(err) => {
-                                warn!(error = %err, "proxy accept failed");
-                            }
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(Self {
-            stop_tx,
-            accept_task: Some(accept_task),
-            local_addr,
-            upstream,
-        })
-    }
-
-    #[must_use]
-    pub const fn local_addr(&self) -> SocketAddr {
-        self.local_addr
-    }
-
-    /// Diagnostic accessor — exposed for future `SidePanel` summary
-    /// ("proxy :9092 → upstream:9092"). Phase 1 doesn't render this.
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn upstream(&self) -> &str {
-        &self.upstream
-    }
-
-    pub async fn stop(mut self) {
-        let _ = self.stop_tx.send(true);
-        if let Some(task) = self.accept_task.take() {
-            let _ = task.await;
-        }
-    }
-}
-
-impl Drop for ProxyHandle {
-    fn drop(&mut self) {
-        let _ = self.stop_tx.send(true);
-        if let Some(task) = self.accept_task.take() {
-            task.abort();
-        }
-    }
-}
-
 pub use crate::proxy_broker_map::BrokerMap;
+pub use crate::proxy_handle::ProxyHandle;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -533,6 +412,7 @@ mod tests {
     use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
     use parking_lot::Mutex as PMutex;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     /// Local copy of the `proxy_rewrite::tests` helper. Duplicated
     /// rather than re-exported so production code stays free of test
@@ -872,6 +752,7 @@ mod tests {
         let correlator_for_test = Arc::clone(&correlator);
         let broker_map_for_test = Arc::clone(&broker_map);
 
+        let provisioner: Arc<dyn BrokerProvisioner> = broker_map;
         let pump_task = tokio::spawn(async move {
             let (client_sock, _) = client_listener.accept().await.unwrap();
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
@@ -881,7 +762,7 @@ mod tests {
                 upstream_sock,
                 correlator,
                 corr_map,
-                broker_map,
+                provisioner,
             )
             .await
             .unwrap();

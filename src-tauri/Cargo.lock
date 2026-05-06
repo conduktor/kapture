@@ -2189,6 +2189,7 @@ name = "kapture"
 version = "0.1.0"
 dependencies = [
  "apache-avro",
+ "async-trait",
  "axum",
  "bytes",
  "chrono",

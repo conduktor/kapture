@@ -23,7 +23,7 @@ use kafka_protocol::messages::{
 };
 use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
 
-use crate::proxy::BrokerMap;
+use crate::proxy_provisioner::BrokerProvisioner;
 
 /// Try to rewrite a response frame body so its broker / coordinator
 /// addresses point at our local proxy listeners.
@@ -42,15 +42,15 @@ pub async fn rewrite_response(
     api_key: i16,
     api_version: i16,
     frame: &[u8],
-    broker_map: &BrokerMap,
+    provisioner: &dyn BrokerProvisioner,
 ) -> Result<Option<Bytes>, RewriteError> {
     let Ok(api) = ApiKey::try_from(api_key) else {
         return Ok(None);
     };
     match api {
-        ApiKey::Metadata => rewrite_metadata(api_version, frame, broker_map).await,
-        ApiKey::FindCoordinator => rewrite_find_coordinator(api_version, frame, broker_map).await,
-        ApiKey::DescribeCluster => rewrite_describe_cluster(api_version, frame, broker_map).await,
+        ApiKey::Metadata => rewrite_metadata(api_version, frame, provisioner).await,
+        ApiKey::FindCoordinator => rewrite_find_coordinator(api_version, frame, provisioner).await,
+        ApiKey::DescribeCluster => rewrite_describe_cluster(api_version, frame, provisioner).await,
         _ => Ok(None),
     }
 }
@@ -72,7 +72,7 @@ pub enum RewriteError {
 async fn rewrite_metadata(
     version: i16,
     frame: &[u8],
-    broker_map: &BrokerMap,
+    provisioner: &dyn BrokerProvisioner,
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::Metadata.response_header_version(version);
@@ -89,8 +89,8 @@ async fn rewrite_metadata(
         if port == 0 {
             continue;
         }
-        let local = broker_map
-            .ensure_listener(&host, port)
+        let local = provisioner
+            .ensure(&host, port)
             .await
             .map_err(|err| RewriteError::Bind {
                 host: host.clone(),
@@ -107,7 +107,7 @@ async fn rewrite_metadata(
 async fn rewrite_find_coordinator(
     version: i16,
     frame: &[u8],
-    broker_map: &BrokerMap,
+    provisioner: &dyn BrokerProvisioner,
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::FindCoordinator.response_header_version(version);
@@ -121,14 +121,15 @@ async fn rewrite_find_coordinator(
         let host = resp.host.to_string();
         if let Ok(port) = u16::try_from(resp.port) {
             if port != 0 {
-                let local = broker_map
-                    .ensure_listener(&host, port)
-                    .await
-                    .map_err(|err| RewriteError::Bind {
-                        host: host.clone(),
-                        port,
-                        err,
-                    })?;
+                let local =
+                    provisioner
+                        .ensure(&host, port)
+                        .await
+                        .map_err(|err| RewriteError::Bind {
+                            host: host.clone(),
+                            port,
+                            err,
+                        })?;
                 resp.host = StrBytes::from_string("127.0.0.1".to_owned());
                 resp.port = i32::from(local);
             }
@@ -142,14 +143,15 @@ async fn rewrite_find_coordinator(
             if port == 0 {
                 continue;
             }
-            let local = broker_map
-                .ensure_listener(&host, port)
-                .await
-                .map_err(|err| RewriteError::Bind {
-                    host: host.clone(),
-                    port,
-                    err,
-                })?;
+            let local =
+                provisioner
+                    .ensure(&host, port)
+                    .await
+                    .map_err(|err| RewriteError::Bind {
+                        host: host.clone(),
+                        port,
+                        err,
+                    })?;
             c.host = StrBytes::from_string("127.0.0.1".to_owned());
             c.port = i32::from(local);
         }
@@ -161,7 +163,7 @@ async fn rewrite_find_coordinator(
 async fn rewrite_describe_cluster(
     version: i16,
     frame: &[u8],
-    broker_map: &BrokerMap,
+    provisioner: &dyn BrokerProvisioner,
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::DescribeCluster.response_header_version(version);
@@ -178,8 +180,8 @@ async fn rewrite_describe_cluster(
         if port == 0 {
             continue;
         }
-        let local = broker_map
-            .ensure_listener(&host, port)
+        let local = provisioner
+            .ensure(&host, port)
             .await
             .map_err(|err| RewriteError::Bind {
                 host: host.clone(),
@@ -218,6 +220,7 @@ fn encode_response<T: Encodable>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::proxy_broker_map::BrokerMap;
     use kafka_protocol::messages::metadata_response::MetadataResponseBroker;
     use kafka_protocol::messages::BrokerId;
 

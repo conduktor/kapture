@@ -12,6 +12,8 @@ mod proto_decode;
 mod proto_hook;
 mod proxy;
 mod proxy_broker_map;
+mod proxy_handle;
+mod proxy_provisioner;
 mod proxy_rewrite;
 mod ring_buffer;
 mod schema_registry;
