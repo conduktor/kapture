@@ -279,134 +279,143 @@ export function ConnectionDialog({
           </button>
         </div>
         {profileError !== null ? <p className="dialog__error">{profileError}</p> : null}
-        <label className="dialog__field">
-          <span className="dialog__label">Upstream broker</span>
-          <input
-            className="dialog__input"
-            value={upstream}
-            onChange={(e) => {
-              setUpstream(e.target.value);
-            }}
-            placeholder="kafka.example.com:9092"
-            spellCheck={false}
-            autoComplete="off"
-            required
-          />
-        </label>
-        <label className="dialog__field">
-          <span className="dialog__label">Listen port (127.0.0.1)</span>
-          <input
-            className="dialog__input"
-            type="number"
-            value={listenPort}
-            onChange={(e) => {
-              setListenPort(Number(e.target.value));
-            }}
-            min={1}
-            max={65535}
-            required
-          />
-        </label>
-        <label className="dialog__check">
-          <input
-            type="checkbox"
-            checked={useTls}
-            onChange={(e) => {
-              setUseTls(e.target.checked);
-            }}
-          />
-          <span>Upstream uses TLS</span>
-        </label>
-        {useTls ? (
-          <>
-            <label className="dialog__field">
-              <span className="dialog__label">
-                CA certificate path (optional)
-                <span className="dialog__hint-inline">empty = system roots</span>
-              </span>
-              <input
-                className="dialog__input"
-                value={tlsCaPath}
-                onChange={(e) => {
-                  setTlsCaPath(e.target.value);
-                }}
-                placeholder="/path/to/ca.pem"
-                spellCheck={false}
-                autoComplete="off"
-              />
-            </label>
-            <label className="dialog__check">
-              <input
-                type="checkbox"
-                checked={tlsSkipHostname}
-                onChange={(e) => {
-                  setTlsSkipHostname(e.target.checked);
-                }}
-              />
-              <span>Skip hostname verification (UNSAFE)</span>
-            </label>
-            {tlsSkipHostname ? (
-              <p className="dialog__warn" role="alert">
-                WARNING: only enable for self-signed clusters with no hostname match. Defeats cert
-                chain validation.
-              </p>
-            ) : null}
-          </>
-        ) : null}
-        <label className="dialog__check">
-          <input
-            type="checkbox"
-            checked={useSasl}
-            onChange={(e) => {
-              setUseSasl(e.target.checked);
-            }}
-          />
-          <span>Upstream requires SASL</span>
-        </label>
-        {useSasl ? (
-          <>
-            <label className="dialog__field">
-              <span className="dialog__label">Mechanism</span>
-              <select
-                className="dialog__input"
-                value={saslMechanism}
-                onChange={(e) => {
-                  setSaslMechanism(e.target.value as SaslMechanism);
-                }}
-              >
-                <option value="PLAIN">SASL/PLAIN</option>
-                <option value="SCRAM-SHA-256">SASL/SCRAM-SHA-256</option>
-                <option value="SCRAM-SHA-512">SASL/SCRAM-SHA-512</option>
-              </select>
-            </label>
-            <label className="dialog__field">
-              <span className="dialog__label">Username</span>
-              <input
-                className="dialog__input"
-                value={saslUsername}
-                onChange={(e) => {
-                  setSaslUsername(e.target.value);
-                }}
-                spellCheck={false}
-                autoComplete="off"
-                required
-              />
-            </label>
-            <label className="dialog__field">
-              <span className="dialog__label">Password</span>
-              <input
-                type="password"
-                className="dialog__input"
-                value={saslPassword}
-                onChange={(e) => {
-                  setSaslPassword(e.target.value);
-                }}
-                autoComplete="off"
-                required
-              />
-            </label>
-          </>
-        ) : null}
+        <fieldset className="dialog__section">
+          <legend>Upstream</legend>
+          <label className="dialog__field">
+            <span className="dialog__label">Upstream broker</span>
+            <input
+              className="dialog__input"
+              value={upstream}
+              onChange={(e) => {
+                setUpstream(e.target.value);
+              }}
+              placeholder="kafka.example.com:9092"
+              spellCheck={false}
+              autoComplete="off"
+              required
+            />
+          </label>
+          <label className="dialog__check">
+            <input
+              type="checkbox"
+              checked={useTls}
+              onChange={(e) => {
+                setUseTls(e.target.checked);
+              }}
+            />
+            <span>Upstream uses TLS</span>
+          </label>
+          {useTls ? (
+            <>
+              <label className="dialog__field">
+                <span className="dialog__label">
+                  CA certificate path (optional)
+                  <span className="dialog__hint-inline">empty = system roots</span>
+                </span>
+                <input
+                  className="dialog__input"
+                  value={tlsCaPath}
+                  onChange={(e) => {
+                    setTlsCaPath(e.target.value);
+                  }}
+                  placeholder="/path/to/ca.pem"
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+              </label>
+              <label className="dialog__check">
+                <input
+                  type="checkbox"
+                  checked={tlsSkipHostname}
+                  onChange={(e) => {
+                    setTlsSkipHostname(e.target.checked);
+                  }}
+                />
+                <span>Skip hostname verification (UNSAFE)</span>
+              </label>
+              {tlsSkipHostname ? (
+                <p className="dialog__warn" role="alert">
+                  WARNING: only enable for self-signed clusters with no hostname match. Defeats cert
+                  chain validation.
+                </p>
+              ) : null}
+            </>
+          ) : null}
+          <label className="dialog__check">
+            <input
+              type="checkbox"
+              checked={useSasl}
+              onChange={(e) => {
+                setUseSasl(e.target.checked);
+              }}
+            />
+            <span>Upstream requires SASL</span>
+          </label>
+          {useSasl ? (
+            <>
+              <label className="dialog__field">
+                <span className="dialog__label">Mechanism</span>
+                <select
+                  className="dialog__input"
+                  value={saslMechanism}
+                  onChange={(e) => {
+                    setSaslMechanism(e.target.value as SaslMechanism);
+                  }}
+                >
+                  <option value="PLAIN">SASL/PLAIN</option>
+                  <option value="SCRAM-SHA-256">SASL/SCRAM-SHA-256</option>
+                  <option value="SCRAM-SHA-512">SASL/SCRAM-SHA-512</option>
+                </select>
+              </label>
+              <label className="dialog__field">
+                <span className="dialog__label">Username</span>
+                <input
+                  className="dialog__input"
+                  value={saslUsername}
+                  onChange={(e) => {
+                    setSaslUsername(e.target.value);
+                  }}
+                  spellCheck={false}
+                  autoComplete="off"
+                  required
+                />
+              </label>
+              <label className="dialog__field">
+                <span className="dialog__label">Password</span>
+                <input
+                  type="password"
+                  className="dialog__input"
+                  value={saslPassword}
+                  onChange={(e) => {
+                    setSaslPassword(e.target.value);
+                  }}
+                  autoComplete="off"
+                  required
+                />
+              </label>
+            </>
+          ) : null}
+        </fieldset>
+        <fieldset className="dialog__section">
+          <legend>Local</legend>
+          <label className="dialog__field">
+            <span className="dialog__label">Listen port (127.0.0.1)</span>
+            <input
+              className="dialog__input"
+              type="number"
+              value={listenPort}
+              onChange={(e) => {
+                setListenPort(Number(e.target.value));
+              }}
+              min={1}
+              max={65535}
+              required
+            />
+            <span className="dialog__hint">
+              Bound to 127.0.0.1 — only reachable from this machine.
+            </span>
+          </label>
+        </fieldset>
         {validationError !== null ? <p className="dialog__error">{validationError}</p> : null}
         {error !== null ? <p className="dialog__error">{error}</p> : null}
         <div className="dialog__actions">

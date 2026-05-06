@@ -1073,8 +1073,9 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 }
 .dialog__hint {
   margin: 0;
+  margin-top: 4px;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 .dialog__hint code {
   font-family: var(--mono);
@@ -1234,6 +1235,24 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 }
 .field--filterable {
   cursor: pointer;
+}
+.dialog__section {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.dialog__section legend {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 0 6px;
 }
 .dialog__field {
   display: flex;
