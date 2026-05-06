@@ -73,7 +73,11 @@ pub struct ProtoEvent {
     pub api_key: i32,
     pub api_version: i32,
     pub corr_id: i32,
-    pub broker_id: i32,
+    /// Opaque identifier for the protocol channel that produced this
+    /// frame. In client (rdkafka) mode it's the librdkafka `broker_id`
+    /// passed by the patched `proto_hook_cb`; in proxy mode it's the
+    /// proxy's monotonic per-TCP-connection id (truncated to i32).
+    pub connection_id: i32,
     pub payload_size: usize,
     pub rtt_ms: f64,
     /// Captured wire-payload prefix (≤ `PROTO_PAYLOAD_CAP`). Empty if
@@ -175,7 +179,9 @@ unsafe extern "C" fn proto_hook_trampoline(
         api_key,
         api_version,
         corr_id,
-        broker_id,
+        // The C side passes `broker_id` from librdkafka — we re-export
+        // it as `connection_id` to share the field with proxy mode.
+        connection_id: broker_id,
         payload_size,
         rtt_ms,
         payload,

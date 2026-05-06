@@ -13,7 +13,7 @@ export interface FetchMetadata {
   apiKey: number;
   apiName: string;
   apiVersion: number;
-  brokerId: number;
+  connectionId: number;
   corrId: number;
   responseSize: number;
   rttMs: number;
@@ -34,7 +34,7 @@ export interface ProtoFrame {
   apiKey: number;
   apiName: string;
   apiVersion: number;
-  brokerId: number;
+  connectionId: number;
   corrId: number;
   /** True wire size. */
   size: number;

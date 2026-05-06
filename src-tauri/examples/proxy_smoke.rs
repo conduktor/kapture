@@ -132,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             s.api_name,
                             s.api_version,
                             s.corr_id,
-                            s.broker_id,
+                            s.connection_id,
                             s.size,
                             s.rtt_ms,
                         );

@@ -185,10 +185,9 @@ fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec
 }
 
 /// Build a `CapturedMessage` from one `ExtractedRecord`. The `conn_id`
-/// is currently dropped on the floor — `CapturedMessage` doesn't have
-/// a connection slot yet, and Phase 1.5 explicitly defers wiring one
-/// in (the per-broker_id paint in client mode is the librdkafka-only
-/// concept). The id is a fresh v4 UUID.
+/// is forwarded into `CapturedMessage::connection_id` so the Messages
+/// tab can group records by which proxy TCP connection carried them.
+/// The id is a fresh v4 UUID.
 #[must_use]
 pub fn extracted_to_captured(rec: ExtractedRecord, _conn_id: u64) -> CapturedMessage {
     let value_bytes: Option<&[u8]> = rec.value.as_deref();

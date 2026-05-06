@@ -42,7 +42,7 @@ pub struct FetchMetadata {
     pub api_key: i32,
     pub api_name: &'static str,
     pub api_version: i32,
-    pub broker_id: i32,
+    pub connection_id: i32,
     pub corr_id: i32,
     pub response_size: usize,
     pub rtt_ms: f64,
@@ -63,7 +63,7 @@ pub struct ProtoFrameSummary {
     pub api_key: i32,
     pub api_name: &'static str,
     pub api_version: i32,
-    pub broker_id: i32,
+    pub connection_id: i32,
     pub corr_id: i32,
     pub size: usize,
     pub captured: usize,
@@ -79,7 +79,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             api_key: f.api_key,
             api_name: f.api_name,
             api_version: f.api_version,
-            broker_id: f.broker_id,
+            connection_id: f.connection_id,
             corr_id: f.corr_id,
             size: f.size,
             captured: f.captured,
@@ -90,7 +90,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
 
 /// One observed Kafka protocol frame. Either a request (Send) or a
 /// response (Recv); pairing happens at view time on the frontend
-/// (group by `corrId`+`brokerId`). RTT is broker-side measurement,
+/// (group by `corrId`+`connectionId`). RTT is broker-side measurement,
 /// only meaningful on Recv.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -102,7 +102,7 @@ pub struct ProtoFrame {
     pub api_key: i32,
     pub api_name: &'static str,
     pub api_version: i32,
-    pub broker_id: i32,
+    pub connection_id: i32,
     pub corr_id: i32,
     /// True wire size (request size on Send, response size on Recv).
     pub size: usize,
@@ -132,7 +132,7 @@ pub struct ProtoCorrelator {
 
 #[derive(Debug, Default)]
 struct CorrelatorState {
-    by_broker: HashMap<i32, FetchMetadata>,
+    by_connection: HashMap<i32, FetchMetadata>,
     latest: Option<FetchMetadata>,
 }
 
@@ -177,7 +177,7 @@ impl ProtoCorrelator {
                 api_key: event.api_key,
                 api_name: ProtoEvent::api_name(event.api_key),
                 api_version: event.api_version,
-                broker_id: event.broker_id,
+                connection_id: event.connection_id,
                 corr_id: event.corr_id,
                 size: event.payload_size,
                 captured,
@@ -206,13 +206,15 @@ impl ProtoCorrelator {
             api_key: event.api_key,
             api_name: ProtoEvent::api_name(event.api_key),
             api_version: event.api_version,
-            broker_id: event.broker_id,
+            connection_id: event.connection_id,
             corr_id: event.corr_id,
             response_size: event.payload_size,
             rtt_ms: event.rtt_ms,
         };
         let mut state = self.state.write();
-        state.by_broker.insert(event.broker_id, meta.clone());
+        state
+            .by_connection
+            .insert(event.connection_id, meta.clone());
         state.latest = Some(meta);
     }
 
@@ -254,12 +256,12 @@ impl ProtoCorrelator {
         self.state.read().latest.clone()
     }
 
-    /// Snapshot of the per-broker map. Useful for diagnostics; not yet
+    /// Snapshot of the per-connection map. Useful for diagnostics; not yet
     /// surfaced to the UI.
     #[must_use]
     #[allow(dead_code)]
-    pub fn per_broker(&self) -> HashMap<i32, FetchMetadata> {
-        self.state.read().by_broker.clone()
+    pub fn per_connection(&self) -> HashMap<i32, FetchMetadata> {
+        self.state.read().by_connection.clone()
     }
 }
 
@@ -269,13 +271,13 @@ mod tests {
     use super::*;
     use crate::proto_hook::ProtoDirection;
 
-    fn ev(direction: ProtoDirection, api_key: i32, broker_id: i32, rtt_ms: f64) -> ProtoEvent {
+    fn ev(direction: ProtoDirection, api_key: i32, connection_id: i32, rtt_ms: f64) -> ProtoEvent {
         ProtoEvent {
             direction,
             api_key,
             api_version: 11,
             corr_id: 42,
-            broker_id,
+            connection_id,
             payload_size: 1024,
             rtt_ms,
             payload: Vec::new(),
@@ -293,18 +295,18 @@ mod tests {
 
         c.record_event(&ev(ProtoDirection::Recv, 1, 0, 2.5));
         let meta = c.lookup("orders.raw", 0).unwrap();
-        assert_eq!(meta.broker_id, 0);
+        assert_eq!(meta.connection_id, 0);
         assert!((meta.rtt_ms - 2.5).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn updates_per_broker_and_latest() {
+    fn updates_per_connection_and_latest() {
         let c = ProtoCorrelator::new();
         c.record_event(&ev(ProtoDirection::Recv, 1, 0, 1.0));
         c.record_event(&ev(ProtoDirection::Recv, 1, 1, 2.0));
-        let map = c.per_broker();
+        let map = c.per_connection();
         assert_eq!(map.len(), 2);
         let latest = c.lookup("any", 0).unwrap();
-        assert_eq!(latest.broker_id, 1);
+        assert_eq!(latest.connection_id, 1);
     }
 }

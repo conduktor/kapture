@@ -460,7 +460,7 @@ fn resolve_fetch<'a>(rest: &[String], message: &'a CapturedMessage) -> Value<'a>
         "api_key" => Value::Number(f64::from(fetch.api_key)),
         "api_version" => Value::Number(f64::from(fetch.api_version)),
         "api_name" => Value::String(fetch.api_name),
-        "broker_id" => Value::Number(f64::from(fetch.broker_id)),
+        "connection_id" => Value::Number(f64::from(fetch.connection_id)),
         "corr_id" => Value::Number(f64::from(fetch.corr_id)),
         "response_size" => Value::Number(fetch.response_size as f64),
         "rtt_ms" => Value::Number(fetch.rtt_ms),
@@ -646,7 +646,7 @@ mod tests {
                 api_key: 1,
                 api_name: "Fetch",
                 api_version: 11,
-                broker_id: 0,
+                connection_id: 0,
                 corr_id: 0x12,
                 response_size: 5_711,
                 rtt_ms: 1.7,
@@ -809,7 +809,7 @@ mod tests {
 
     #[test]
     fn fetch_numeric_paths() {
-        assert!(matches("fetch.broker_id == 0"));
+        assert!(matches("fetch.connection_id == 0"));
         assert!(matches("fetch.api_version == 11"));
         assert!(matches("fetch.response_size > 1000"));
         assert!(!matches("fetch.response_size > 1000000"));
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn fetch_combined_with_payload() {
         assert!(matches(
-            "fetch.broker_id == 0 && payload.amount > 1000 && fetch.rtt_ms < 5"
+            "fetch.connection_id == 0 && payload.amount > 1000 && fetch.rtt_ms < 5"
         ));
     }
 }

@@ -20,12 +20,12 @@ const ROW_HEIGHT = 24;
 
 // Wireshark-style protocol view. Lists every Kafka API frame the proto-hook
 // observed (Send + Recv) in chronological order. Pairing of request to
-// response is left to the eye for now (same corr_id + broker_id) — backend
+// response is left to the eye for now (same corr_id + connection_id) — backend
 // pairing is a follow-up.
 export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element {
   // Find the request/response partner of the selected frame.
   //
-  // Why `(brokerId, corrId)` alone isn't a unique key: librdkafka
+  // Why `(connectionId, corrId)` alone isn't a unique key: librdkafka
   // tracks corrId per `rd_kafka_broker_t::rkb_corrid` and the *logical*
   // bootstrap broker (broker_id = -1) is reused across every TCP
   // connection during discovery. Each new bootstrap connection restarts
@@ -50,7 +50,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
       return null;
     }
     const matches = (f: ProtoFrame): boolean =>
-      f.corrId === sel.corrId && f.brokerId === sel.brokerId;
+      f.corrId === sel.corrId && f.connectionId === sel.connectionId;
     if (sel.direction === "send") {
       for (let i = idx + 1; i < frames.length; i += 1) {
         const f = frames[i];
@@ -117,7 +117,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         <span className="proto__col proto__col--dir">dir</span>
         <span className="proto__col proto__col--api">api</span>
         <span className="proto__col proto__col--v">v</span>
-        <span className="proto__col proto__col--broker">broker</span>
+        <span className="proto__col proto__col--broker">conn</span>
         <span className="proto__col proto__col--corr">corr</span>
         <span className="proto__col proto__col--size">size</span>
         <span className="proto__col proto__col--rtt">rtt (ms)</span>
@@ -186,7 +186,7 @@ function ProtoRow({
       </span>
       <span className="proto__col proto__col--api">{frame.apiName}</span>
       <span className="proto__col proto__col--v">v{frame.apiVersion}</span>
-      <span className="proto__col proto__col--broker">{frame.brokerId}</span>
+      <span className="proto__col proto__col--broker">{frame.connectionId}</span>
       <span className="proto__col proto__col--corr">{frame.corrId}</span>
       <span className="proto__col proto__col--size">{frame.size}b</span>
       <span className="proto__col proto__col--rtt">

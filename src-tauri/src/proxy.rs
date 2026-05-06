@@ -186,8 +186,9 @@ impl CorrelationMap {
 }
 
 /// Monotonic, never-zero connection identifier. Used as the pairing
-/// key for `(corr_id, connection_id)` in the inspector — replaces
-/// the `broker_id` semantics from the rdkafka-client mode.
+/// key for `(corr_id, connection_id)` in the inspector — same field
+/// as the rdkafka-client mode's `connection_id` (which forwards the
+/// librdkafka `broker_id`).
 #[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(pub u64);
@@ -370,7 +371,10 @@ pub async fn run_pump_with_rewrite(
 /// (encoding the body length, i.e. `frame.len()`) so the existing
 /// `proto_decode::decode_frame` parser keeps working unchanged. The
 /// `payload_size` is the WIRE size including that prefix, matching
-/// the librdkafka FFI semantics.
+/// the librdkafka FFI semantics. The `connection_id` field on the
+/// returned event is the proxy's per-TCP-connection id (truncated
+/// to i32) — the same slot that the rdkafka path fills with the
+/// librdkafka `broker_id`.
 #[allow(dead_code)] // wired into the pump tap in Task 6
 pub fn build_proto_event(
     dir: ProxyDirection,
@@ -384,7 +388,7 @@ pub fn build_proto_event(
     let mut payload = Vec::with_capacity(body_take + 4);
     payload.extend_from_slice(&body_len_i32.to_be_bytes());
     payload.extend_from_slice(&frame[..body_take]);
-    let broker_id = i32::try_from(conn_id.0 & 0x7FFF_FFFF).unwrap_or(i32::MAX);
+    let connection_id = i32::try_from(conn_id.0 & 0x7FFF_FFFF).unwrap_or(i32::MAX);
 
     let event = match dir {
         ProxyDirection::ClientToUpstream => {
@@ -408,7 +412,7 @@ pub fn build_proto_event(
                 api_key: api_key_i32,
                 api_version: header.map_or(-1, |h| i32::from(h.api_version)),
                 corr_id: header.map_or(0, |h| h.corr_id),
-                broker_id,
+                connection_id,
                 payload_size,
                 rtt_ms: 0.0,
                 payload: inspector_payload,
@@ -428,7 +432,7 @@ pub fn build_proto_event(
                 api_key: pending.map_or(-1, |p| i32::from(p.header.api_key)),
                 api_version: pending.map_or(-1, |p| i32::from(p.header.api_version)),
                 corr_id,
-                broker_id,
+                connection_id,
                 payload_size,
                 rtt_ms,
                 payload,
@@ -609,7 +613,7 @@ mod tests {
         assert_eq!(event.api_key, 18);
         assert_eq!(event.api_version, 3);
         assert_eq!(event.corr_id, 99);
-        assert_eq!(event.broker_id, 7);
+        assert_eq!(event.connection_id, 7);
         assert_eq!(event.payload_size, frame.len() + 4);
         let body_len = i32::try_from(frame.len()).unwrap();
         assert_eq!(&event.payload[..4], &body_len.to_be_bytes());
@@ -651,7 +655,7 @@ mod tests {
         assert_eq!(event.api_key, 1);
         assert_eq!(event.api_version, 13);
         assert_eq!(event.corr_id, 42);
-        assert_eq!(event.broker_id, 7);
+        assert_eq!(event.connection_id, 7);
         assert_eq!(event.payload_size, frame.len() + 4);
         let body_len = i32::try_from(frame.len()).unwrap();
         assert_eq!(&event.payload[..4], &body_len.to_be_bytes());

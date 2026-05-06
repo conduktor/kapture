@@ -25,7 +25,7 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
           <Field name="direction" value={frame.direction} />
           <Field name="api" value={`${frame.apiName} (${frame.apiKey})`} />
           <Field name="api_version" value={`v${frame.apiVersion}`} />
-          <Field name="broker_id" value={String(frame.brokerId)} />
+          <Field name="connection_id" value={String(frame.connectionId)} />
           <Field name="corr_id" value={String(frame.corrId)} />
           <Field name="size (wire)" value={`${frame.size} bytes`} />
           <Field

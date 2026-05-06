@@ -357,7 +357,7 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 }
 
 /* Pair highlight: when a frame is selected, its request/response
- * partner (same corrId+brokerId, opposite dir) gets a dashed accent
+ * partner (same corrId+connectionId, opposite dir) gets a dashed accent
  * border on the left so the eye can pair them across rows. */
 .msglist__row.is-paired {
   background: rgba(79, 70, 229, 0.04);

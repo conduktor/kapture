@@ -90,11 +90,11 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             onOpenFilterMenu={onOpenFilterMenu}
           />
           <Field
-            name="broker_id"
-            value={String(message.fetch.brokerId)}
+            name="connection_id"
+            value={String(message.fetch.connectionId)}
             target={{
-              path: "fetch.broker_id",
-              literal: { kind: "number", value: String(message.fetch.brokerId) },
+              path: "fetch.connection_id",
+              literal: { kind: "number", value: String(message.fetch.connectionId) },
             }}
             onOpenFilterMenu={onOpenFilterMenu}
           />

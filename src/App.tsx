@@ -492,7 +492,7 @@ function App(): JSX.Element {
           return (
             f.apiName.toLowerCase().includes(q) ||
             f.direction.toLowerCase().includes(q) ||
-            String(f.brokerId).includes(q) ||
+            String(f.connectionId).includes(q) ||
             String(f.corrId).includes(q)
           );
         });
