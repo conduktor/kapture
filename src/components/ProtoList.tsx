@@ -406,6 +406,39 @@ function FilterableCell({
   );
 }
 
+/** Parse an RFC3339 µs timestamp to milliseconds-since-epoch with
+ *  sub-ms precision. `Date.parse` truncates to ms; we splice the µs
+ *  trailer back in so the inter-frame deltas reflect the wire ordering
+ *  even on bursts (multiple frames in the same ms). */
+function tsToMs(ts: string): number {
+  const d = new Date(ts).getTime();
+  const dotIdx = ts.indexOf(".");
+  const zIdx = ts.indexOf("Z");
+  if (dotIdx < 0 || zIdx < 0 || zIdx <= dotIdx) {
+    return d;
+  }
+  const frac = ts.slice(dotIdx + 1, zIdx);
+  if (frac.length <= 3) {
+    return d;
+  }
+  const tail = frac.slice(3, 6).padEnd(3, "0");
+  const micro = Number.parseInt(tail, 10);
+  return Number.isNaN(micro) ? d : d + micro / 1000;
+}
+
+function formatDelta(deltaMs: number): string {
+  if (deltaMs < 1) {
+    return "+<1ms";
+  }
+  if (deltaMs < 1000) {
+    return `+${Math.round(deltaMs).toString()}ms`;
+  }
+  if (deltaMs < 60_000) {
+    return `+${(deltaMs / 1000).toFixed(1)}s`;
+  }
+  return `+${Math.floor(deltaMs / 60_000).toString()}m`;
+}
+
 function ProtoRow({
   ariaAttributes,
   index,
@@ -425,6 +458,9 @@ function ProtoRow({
   // Trim to time-of-day for the list; full timestamp is in the detail view.
   // Backend emits RFC3339 with microseconds → keep HH:MM:SS.ffffff.
   const ts = frame.timestamp.slice(11, 26);
+  const prev = index > 0 ? frames[index - 1] : undefined;
+  const delta =
+    prev !== undefined ? formatDelta(tsToMs(frame.timestamp) - tsToMs(prev.timestamp)) : null;
   return (
     <div
       style={style}
@@ -444,7 +480,10 @@ function ProtoRow({
       aria-setsize={ariaAttributes["aria-setsize"]}
       aria-selected={isSelected}
     >
-      <span className="proto__col proto__col--ts">{ts}</span>
+      <span className="proto__col proto__col--ts">
+        {ts}
+        {delta !== null ? <span className="proto__ts-delta"> {delta}</span> : null}
+      </span>
       <FilterableCell
         className="proto__col proto__col--dir"
         kind="direction"

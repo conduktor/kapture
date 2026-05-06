@@ -395,14 +395,8 @@ export function ConnectionDialog({
                     setTlsSkipHostname(e.target.checked);
                   }}
                 />
-                <span>Skip hostname verification (UNSAFE)</span>
+                <span>Skip hostname verification</span>
               </label>
-              {tlsSkipHostname ? (
-                <p className="dialog__warn" role="alert">
-                  WARNING: only enable for self-signed clusters with no hostname match. Defeats cert
-                  chain validation.
-                </p>
-              ) : null}
             </>
           ) : null}
           <label className="dialog__check">

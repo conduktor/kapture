@@ -347,6 +347,11 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.proto__ts-delta {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: 6px;
+}
 /* Match grid template to the columns in ProtoList. The ts column needs
  * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
  * suffix from `slice(11, 26)` actually fits without an ellipsis. The
@@ -359,7 +364,7 @@ body,
 section.msglist[aria-label="Protocol frames"] .msglist__head,
 section.msglist[aria-label="Protocol frames"] .msglist__row {
   grid-template-columns:
-    minmax(0, 140px) minmax(0, 30px) minmax(0, 1fr) minmax(0, 36px)
+    minmax(0, 200px) minmax(0, 30px) minmax(0, 1fr) minmax(0, 36px)
     minmax(0, 60px) minmax(0, 90px) minmax(0, 70px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
