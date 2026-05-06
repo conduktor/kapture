@@ -25,6 +25,7 @@
 // public types live behind `dead_code`.
 #![allow(dead_code)]
 
+mod scram;
 mod tls;
 
 #[cfg(test)]
@@ -56,18 +57,25 @@ const SASL_AUTHENTICATE_VERSION: i16 = 2;
 /// can't OOM us with a huge length field during the handshake.
 const MAX_RESPONSE_FRAME_BYTES: usize = 100 * 1024 * 1024;
 
-/// SASL mechanism this module supports. Step 1 = PLAIN only; SCRAM
-/// is a multi-roundtrip exchange and ships in a follow-up.
+/// SASL mechanism this module supports.
+///
+/// Step 1 shipped PLAIN; step 6 adds SCRAM-SHA-256 / SCRAM-SHA-512
+/// (RFC 5802 / 7677). The SCRAM variants are 2-roundtrip; see
+/// `scram.rs` for the message-level state machine and
+/// `run_sasl_handshake` for the Kafka-wire framing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamSaslMechanism {
     Plain,
-    // ScramSha256 / ScramSha512 land in step 2.
+    ScramSha256,
+    ScramSha512,
 }
 
 impl UpstreamSaslMechanism {
     const fn label(self) -> &'static str {
         match self {
             Self::Plain => "PLAIN",
+            Self::ScramSha256 => "SCRAM-SHA-256",
+            Self::ScramSha512 => "SCRAM-SHA-512",
         }
     }
 }
@@ -219,29 +227,82 @@ where
     send_sasl_handshake(stream, corr_id, cfg.mechanism).await?;
     recv_sasl_handshake(stream, corr_id, cfg.mechanism).await?;
 
-    // Step 3: SaslAuthenticate — actually present the credentials.
+    // Step 3: SaslAuthenticate — present credentials. PLAIN is
+    // single-roundtrip; SCRAM is two roundtrips (client-first /
+    // server-first / client-final / server-final).
     corr_id += 1;
-    let auth_bytes = build_auth_bytes(cfg);
-    send_sasl_authenticate(stream, corr_id, auth_bytes).await?;
-    recv_sasl_authenticate(stream, corr_id).await?;
+    match cfg.mechanism {
+        UpstreamSaslMechanism::Plain => {
+            let auth_bytes = build_plain_auth_bytes(cfg);
+            send_sasl_authenticate(stream, corr_id, auth_bytes).await?;
+            let _ = recv_sasl_authenticate(stream, corr_id).await?;
+        }
+        UpstreamSaslMechanism::ScramSha256 => {
+            run_scram::<scram::Sha256Hash, _>(stream, &mut corr_id, cfg).await?;
+        }
+        UpstreamSaslMechanism::ScramSha512 => {
+            run_scram::<scram::Sha512Hash, _>(stream, &mut corr_id, cfg).await?;
+        }
+    }
     Ok(())
 }
 
 /// PLAIN SASL token format: `[authzid] \0 username \0 password`.
-/// Authzid is empty (the standard Kafka usage). Mechanism dispatch
-/// here is trivial today; once SCRAM lands, this function grows a
-/// match arm and returns the client-first message instead.
-fn build_auth_bytes(cfg: &UpstreamSaslConfig) -> Bytes {
-    match cfg.mechanism {
-        UpstreamSaslMechanism::Plain => {
-            let mut buf = Vec::with_capacity(2 + cfg.username.len() + cfg.password.len());
-            buf.push(0);
-            buf.extend_from_slice(cfg.username.as_bytes());
-            buf.push(0);
-            buf.extend_from_slice(cfg.password.as_bytes());
-            Bytes::from(buf)
-        }
-    }
+/// Authzid is empty (the standard Kafka usage).
+fn build_plain_auth_bytes(cfg: &UpstreamSaslConfig) -> Bytes {
+    let mut buf = Vec::with_capacity(2 + cfg.username.len() + cfg.password.len());
+    buf.push(0);
+    buf.extend_from_slice(cfg.username.as_bytes());
+    buf.push(0);
+    buf.extend_from_slice(cfg.password.as_bytes());
+    Bytes::from(buf)
+}
+
+/// Drive a SCRAM-SHA-{256,512} exchange to completion. Each SCRAM
+/// message is wrapped in a `SaslAuthenticateRequest::auth_bytes`
+/// frame; the broker replies in kind. We verify the server-final
+/// signature before accepting the auth.
+///
+/// PBKDF2 inside `ScramClient::server_first` is CPU-bound but at the
+/// 4096–8192 iteration counts Kafka brokers actually use it's a
+/// few-millisecond operation. We keep it inline rather than offloading
+/// to `spawn_blocking`: offloading would force the stream to be
+/// `'static + Send`, which the generic `S` here is not. If a broker
+/// ever advertises a malicious iteration count we cap it at
+/// `1_000_000` inside the SCRAM client.
+async fn run_scram<H, S>(
+    stream: &mut S,
+    corr_id: &mut i32,
+    cfg: &UpstreamSaslConfig,
+) -> Result<(), UpstreamConnectError>
+where
+    H: scram::ScramHash,
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut client = scram::ScramClient::<H>::new(cfg.username.clone(), cfg.password.clone());
+
+    // Roundtrip 1: client-first → server-first.
+    let client_first = client.client_first_message();
+    send_sasl_authenticate(stream, *corr_id, Bytes::from(client_first.into_bytes())).await?;
+    let server_first_bytes = recv_sasl_authenticate(stream, *corr_id).await?;
+    let server_first = std::str::from_utf8(&server_first_bytes).map_err(|e| {
+        UpstreamConnectError::SaslAuthenticate(format!("server-first not UTF-8: {e}"))
+    })?;
+    let client_final = client.server_first(server_first).map_err(|e| {
+        UpstreamConnectError::SaslAuthenticate(format!("{} server-first: {e}", H::NAME))
+    })?;
+
+    // Roundtrip 2: client-final → server-final + verify signature.
+    *corr_id += 1;
+    send_sasl_authenticate(stream, *corr_id, Bytes::from(client_final.into_bytes())).await?;
+    let server_final_bytes = recv_sasl_authenticate(stream, *corr_id).await?;
+    let server_final = std::str::from_utf8(&server_final_bytes).map_err(|e| {
+        UpstreamConnectError::SaslAuthenticate(format!("server-final not UTF-8: {e}"))
+    })?;
+    client.server_final(server_final).map_err(|e| {
+        UpstreamConnectError::SaslAuthenticate(format!("{} server-final: {e}", H::NAME))
+    })?;
+    Ok(())
 }
 
 async fn send_api_versions<S>(stream: &mut S, corr_id: i32) -> Result<(), UpstreamConnectError>
@@ -373,7 +434,7 @@ where
 async fn recv_sasl_authenticate<S>(
     stream: &mut S,
     expected_corr_id: i32,
-) -> Result<(), UpstreamConnectError>
+) -> Result<Bytes, UpstreamConnectError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -401,7 +462,7 @@ where
             resp.error_code, detail
         )));
     }
-    Ok(())
+    Ok(resp.auth_bytes)
 }
 
 fn make_request_header(api: ApiKey, api_version: i16, corr_id: i32) -> RequestHeader {
@@ -687,6 +748,51 @@ mod tests {
             }
             Err(other) => panic!("expected SaslAuthenticate, got {other:?}"),
         }
+    }
+
+    /// SCRAM-SHA-256 happy path. Fake broker drives a real SCRAM
+    /// roundtrip with a fixed salt+iterations and verifies the
+    /// client's proof against an independently-computed expected
+    /// value (via `fake_broker_scram_sha256`). True round-trip — if
+    /// any HMAC / PBKDF2 / XOR wiring drifts, the server's
+    /// verification fails the test.
+    #[tokio::test]
+    async fn open_upstream_scram_sha256_happy_path() {
+        use super::test_support::fake_broker_scram_sha256;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            fake_broker_scram_sha256(
+                &mut sock,
+                "alice",
+                "scram-secret",
+                b"saltysaltysalty!",
+                4096,
+                "SERVERAPPENDIX-1234",
+            )
+            .await;
+            let mut keepalive = [0u8; 1];
+            let _ = sock.read(&mut keepalive).await;
+        });
+
+        let cfg = UpstreamSaslConfig {
+            mechanism: UpstreamSaslMechanism::ScramSha256,
+            username: "alice".to_owned(),
+            password: "scram-secret".to_owned(),
+        };
+        let mut stream = open_upstream("127.0.0.1", port, None, Some(&cfg))
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(
+            &buf, b"X",
+            "post-SCRAM-handshake stream lost or buffered bytes"
+        );
     }
 
     /// Bind a listener, capture its port, drop it. The OS will not

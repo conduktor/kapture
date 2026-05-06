@@ -221,8 +221,9 @@ struct SetProxyTargetParams {
     /// the proxy connects in plaintext.
     #[serde(default)]
     upstream_tls: Option<McpProxyTlsArgs>,
-    /// Optional SASL credentials (PLAIN only for now). When omitted no
-    /// SASL handshake is performed against the upstream.
+    /// Optional SASL credentials (`PLAIN`, `SCRAM-SHA-256`, or
+    /// `SCRAM-SHA-512`). When omitted no SASL handshake is performed
+    /// against the upstream.
     #[serde(default)]
     upstream_sasl: Option<McpProxySaslArgs>,
 }
@@ -240,7 +241,7 @@ struct McpProxyTlsArgs {
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct McpProxySaslArgs {
-    /// `"PLAIN"` only for now.
+    /// One of `"PLAIN"`, `"SCRAM-SHA-256"`, `"SCRAM-SHA-512"`. Case-insensitive.
     mechanism: String,
     username: String,
     password: String,
@@ -565,10 +566,12 @@ impl KaptureMcp {
             Some(s) => {
                 let mech = match s.mechanism.to_uppercase().as_str() {
                     "PLAIN" => crate::proxy::UpstreamSaslMechanism::Plain,
+                    "SCRAM-SHA-256" => crate::proxy::UpstreamSaslMechanism::ScramSha256,
+                    "SCRAM-SHA-512" => crate::proxy::UpstreamSaslMechanism::ScramSha512,
                     other => {
                         return Err(ErrorData::invalid_request(
                             format!(
-                                "unsupported upstream SASL mechanism `{other}` (only PLAIN supported)"
+                                "unsupported upstream SASL mechanism `{other}` (supported: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)"
                             ),
                             None,
                         ));

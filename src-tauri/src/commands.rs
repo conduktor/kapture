@@ -419,12 +419,12 @@ impl ProxyTlsArgs {
     }
 }
 
-/// SASL credentials for the upstream connection. Step 3 supports
-/// `PLAIN` only — SCRAM lands in a follow-up.
+/// SASL credentials for the upstream connection. Supports `PLAIN`,
+/// `SCRAM-SHA-256`, and `SCRAM-SHA-512` (case-insensitive).
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxySaslArgs {
-    /// `"PLAIN"` only for step 3. Case-insensitive.
+    /// One of `"PLAIN"`, `"SCRAM-SHA-256"`, `"SCRAM-SHA-512"`. Case-insensitive.
     pub mechanism: String,
     pub username: String,
     pub password: String,
@@ -444,9 +444,11 @@ impl ProxySaslArgs {
     fn into_config(self) -> Result<UpstreamSaslConfig> {
         let mechanism = match self.mechanism.to_uppercase().as_str() {
             "PLAIN" => UpstreamSaslMechanism::Plain,
+            "SCRAM-SHA-256" => UpstreamSaslMechanism::ScramSha256,
+            "SCRAM-SHA-512" => UpstreamSaslMechanism::ScramSha512,
             other => {
                 return Err(KaptureError::Config(format!(
-                    "unsupported upstream SASL mechanism `{other}` (only PLAIN supported)"
+                    "unsupported upstream SASL mechanism `{other}` (supported: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512)"
                 )));
             }
         };
