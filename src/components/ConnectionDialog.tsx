@@ -296,10 +296,6 @@ export function ConnectionDialog({
         }}
       >
         <h2 className="dialog__title">{isEditing ? "Edit connection" : "Connect to Kafka"}</h2>
-        <p className="dialog__hint">
-          Local dev: Redpanda <code>localhost:19092</code> or Apache Kafka{" "}
-          <code>localhost:29092</code>.
-        </p>
         <div className="dialog__profile-row">
           <select
             className="dialog__input"
