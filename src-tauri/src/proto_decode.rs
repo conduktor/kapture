@@ -147,6 +147,32 @@ fn decode_one<T: Decodable + std::fmt::Debug>(buf: &mut Bytes, version: i16) -> 
     Some(format!("{msg:#?}"))
 }
 
+// Both dispatch tables below are EXHAUSTIVE on `ApiKey` by design:
+// the catch-all `_ => None` arm is intentionally absent so that
+// regenerating the kafka-protocol fork against a newer apache/kafka
+// schema (which may add new ApiKey variants) breaks the build until a
+// human classifies each new variant as either:
+//
+//   * decode_one::<XxxRequest/Response>(buf, version) — a real
+//     client-facing API that proxies see on the wire.
+//   * `=> None` with a `// broker-internal` comment — a control-plane
+//     RPC (KRaft consensus, broker registration, share-coordinator
+//     state replication, etc.) that never crosses a client proxy and
+//     so has no useful decoded view to surface.
+//
+// Arms are sorted by ApiKey numeric value to make schema diffs trivial.
+//
+// The two clippy lints disabled below would otherwise undermine the
+// scheme:
+//
+//   * `too_many_lines`: the whole point is one explicit arm per
+//     variant; the function is "too long" by design.
+//   * `match_same_arms`: collapsing the broker-internal `=> None`
+//     arms via `|`-patterns would still preserve exhaustiveness, but
+//     it would obscure which specific variant belongs to which
+//     control-plane subsystem — defeating the human-review value.
+
+#[allow(clippy::too_many_lines, clippy::match_same_arms)]
 fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> {
     match api {
         ApiKey::Produce => decode_one::<ProduceRequest>(buf, version),
@@ -172,26 +198,68 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> 
         ApiKey::AddPartitionsToTxn => decode_one::<AddPartitionsToTxnRequest>(buf, version),
         ApiKey::AddOffsetsToTxn => decode_one::<AddOffsetsToTxnRequest>(buf, version),
         ApiKey::EndTxn => decode_one::<EndTxnRequest>(buf, version),
+        ApiKey::WriteTxnMarkers => decode_one::<WriteTxnMarkersRequest>(buf, version),
         ApiKey::TxnOffsetCommit => decode_one::<TxnOffsetCommitRequest>(buf, version),
         ApiKey::DescribeAcls => decode_one::<DescribeAclsRequest>(buf, version),
         ApiKey::CreateAcls => decode_one::<CreateAclsRequest>(buf, version),
         ApiKey::DeleteAcls => decode_one::<DeleteAclsRequest>(buf, version),
         ApiKey::DescribeConfigs => decode_one::<DescribeConfigsRequest>(buf, version),
         ApiKey::AlterConfigs => decode_one::<AlterConfigsRequest>(buf, version),
+        ApiKey::AlterReplicaLogDirs => decode_one::<AlterReplicaLogDirsRequest>(buf, version),
+        ApiKey::DescribeLogDirs => decode_one::<DescribeLogDirsRequest>(buf, version),
         ApiKey::SaslAuthenticate => decode_one::<SaslAuthenticateRequest>(buf, version),
         ApiKey::CreatePartitions => decode_one::<CreatePartitionsRequest>(buf, version),
+        ApiKey::CreateDelegationToken => decode_one::<CreateDelegationTokenRequest>(buf, version),
+        ApiKey::RenewDelegationToken => decode_one::<RenewDelegationTokenRequest>(buf, version),
+        ApiKey::ExpireDelegationToken => decode_one::<ExpireDelegationTokenRequest>(buf, version),
+        ApiKey::DescribeDelegationToken => {
+            decode_one::<DescribeDelegationTokenRequest>(buf, version)
+        }
         ApiKey::DeleteGroups => decode_one::<DeleteGroupsRequest>(buf, version),
         ApiKey::ElectLeaders => decode_one::<ElectLeadersRequest>(buf, version),
         ApiKey::IncrementalAlterConfigs => {
             decode_one::<IncrementalAlterConfigsRequest>(buf, version)
         }
+        ApiKey::AlterPartitionReassignments => {
+            decode_one::<AlterPartitionReassignmentsRequest>(buf, version)
+        }
+        ApiKey::ListPartitionReassignments => {
+            decode_one::<ListPartitionReassignmentsRequest>(buf, version)
+        }
         ApiKey::OffsetDelete => decode_one::<OffsetDeleteRequest>(buf, version),
+        ApiKey::DescribeClientQuotas => decode_one::<DescribeClientQuotasRequest>(buf, version),
+        ApiKey::AlterClientQuotas => decode_one::<AlterClientQuotasRequest>(buf, version),
+        ApiKey::DescribeUserScramCredentials => {
+            decode_one::<DescribeUserScramCredentialsRequest>(buf, version)
+        }
+        ApiKey::AlterUserScramCredentials => {
+            decode_one::<AlterUserScramCredentialsRequest>(buf, version)
+        }
+        ApiKey::Vote => None,             // broker-internal: KRaft consensus
+        ApiKey::BeginQuorumEpoch => None, // broker-internal: KRaft consensus
+        ApiKey::EndQuorumEpoch => None,   // broker-internal: KRaft consensus
+        ApiKey::DescribeQuorum => None,   // broker-internal: KRaft consensus
+        ApiKey::AlterPartition => None,   // broker-internal: broker -> controller
+        ApiKey::UpdateFeatures => decode_one::<UpdateFeaturesRequest>(buf, version),
+        ApiKey::Envelope => None, // broker-internal: KRaft envelope routing
+        ApiKey::FetchSnapshot => None, // broker-internal: KRaft snapshot replication
         ApiKey::DescribeCluster => decode_one::<DescribeClusterRequest>(buf, version),
         ApiKey::DescribeProducers => decode_one::<DescribeProducersRequest>(buf, version),
+        ApiKey::BrokerRegistration => None, // broker-internal: KRaft cluster mgmt
+        ApiKey::BrokerHeartbeat => None,    // broker-internal: KRaft cluster mgmt
+        ApiKey::UnregisterBroker => None,   // broker-internal: KRaft cluster mgmt
         ApiKey::DescribeTransactions => decode_one::<DescribeTransactionsRequest>(buf, version),
         ApiKey::ListTransactions => decode_one::<ListTransactionsRequest>(buf, version),
+        ApiKey::AllocateProducerIds => None, // broker-internal: broker -> controller
         ApiKey::ConsumerGroupHeartbeat => decode_one::<ConsumerGroupHeartbeatRequest>(buf, version),
         ApiKey::ConsumerGroupDescribe => decode_one::<ConsumerGroupDescribeRequest>(buf, version),
+        ApiKey::ControllerRegistration => None, // broker-internal: KRaft cluster mgmt
+        ApiKey::GetTelemetrySubscriptions => {
+            decode_one::<GetTelemetrySubscriptionsRequest>(buf, version)
+        }
+        ApiKey::PushTelemetry => decode_one::<PushTelemetryRequest>(buf, version),
+        ApiKey::AssignReplicasToDirs => None, // broker-internal: broker storage
+        ApiKey::ListConfigResources => decode_one::<ListConfigResourcesRequest>(buf, version),
         ApiKey::DescribeTopicPartitions => {
             decode_one::<DescribeTopicPartitionsRequest>(buf, version)
         }
@@ -199,10 +267,27 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> 
         ApiKey::ShareGroupDescribe => decode_one::<ShareGroupDescribeRequest>(buf, version),
         ApiKey::ShareFetch => decode_one::<ShareFetchRequest>(buf, version),
         ApiKey::ShareAcknowledge => decode_one::<ShareAcknowledgeRequest>(buf, version),
-        _ => None,
+        ApiKey::AddRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::RemoveRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::UpdateRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::InitializeShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::ReadShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::WriteShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::DeleteShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::ReadShareGroupStateSummary => None, // broker-internal: share coordinator state
+        ApiKey::StreamsGroupHeartbeat => decode_one::<StreamsGroupHeartbeatRequest>(buf, version),
+        ApiKey::StreamsGroupDescribe => decode_one::<StreamsGroupDescribeRequest>(buf, version),
+        ApiKey::DescribeShareGroupOffsets => {
+            decode_one::<DescribeShareGroupOffsetsRequest>(buf, version)
+        }
+        ApiKey::AlterShareGroupOffsets => decode_one::<AlterShareGroupOffsetsRequest>(buf, version),
+        ApiKey::DeleteShareGroupOffsets => {
+            decode_one::<DeleteShareGroupOffsetsRequest>(buf, version)
+        }
     }
 }
 
+#[allow(clippy::too_many_lines, clippy::match_same_arms)]
 fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> {
     match api {
         ApiKey::Produce => decode_one::<ProduceResponse>(buf, version),
@@ -228,28 +313,70 @@ fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String>
         ApiKey::AddPartitionsToTxn => decode_one::<AddPartitionsToTxnResponse>(buf, version),
         ApiKey::AddOffsetsToTxn => decode_one::<AddOffsetsToTxnResponse>(buf, version),
         ApiKey::EndTxn => decode_one::<EndTxnResponse>(buf, version),
+        ApiKey::WriteTxnMarkers => decode_one::<WriteTxnMarkersResponse>(buf, version),
         ApiKey::TxnOffsetCommit => decode_one::<TxnOffsetCommitResponse>(buf, version),
         ApiKey::DescribeAcls => decode_one::<DescribeAclsResponse>(buf, version),
         ApiKey::CreateAcls => decode_one::<CreateAclsResponse>(buf, version),
         ApiKey::DeleteAcls => decode_one::<DeleteAclsResponse>(buf, version),
         ApiKey::DescribeConfigs => decode_one::<DescribeConfigsResponse>(buf, version),
         ApiKey::AlterConfigs => decode_one::<AlterConfigsResponse>(buf, version),
+        ApiKey::AlterReplicaLogDirs => decode_one::<AlterReplicaLogDirsResponse>(buf, version),
+        ApiKey::DescribeLogDirs => decode_one::<DescribeLogDirsResponse>(buf, version),
         ApiKey::SaslAuthenticate => decode_one::<SaslAuthenticateResponse>(buf, version),
         ApiKey::CreatePartitions => decode_one::<CreatePartitionsResponse>(buf, version),
+        ApiKey::CreateDelegationToken => decode_one::<CreateDelegationTokenResponse>(buf, version),
+        ApiKey::RenewDelegationToken => decode_one::<RenewDelegationTokenResponse>(buf, version),
+        ApiKey::ExpireDelegationToken => decode_one::<ExpireDelegationTokenResponse>(buf, version),
+        ApiKey::DescribeDelegationToken => {
+            decode_one::<DescribeDelegationTokenResponse>(buf, version)
+        }
         ApiKey::DeleteGroups => decode_one::<DeleteGroupsResponse>(buf, version),
         ApiKey::ElectLeaders => decode_one::<ElectLeadersResponse>(buf, version),
         ApiKey::IncrementalAlterConfigs => {
             decode_one::<IncrementalAlterConfigsResponse>(buf, version)
         }
+        ApiKey::AlterPartitionReassignments => {
+            decode_one::<AlterPartitionReassignmentsResponse>(buf, version)
+        }
+        ApiKey::ListPartitionReassignments => {
+            decode_one::<ListPartitionReassignmentsResponse>(buf, version)
+        }
         ApiKey::OffsetDelete => decode_one::<OffsetDeleteResponse>(buf, version),
+        ApiKey::DescribeClientQuotas => decode_one::<DescribeClientQuotasResponse>(buf, version),
+        ApiKey::AlterClientQuotas => decode_one::<AlterClientQuotasResponse>(buf, version),
+        ApiKey::DescribeUserScramCredentials => {
+            decode_one::<DescribeUserScramCredentialsResponse>(buf, version)
+        }
+        ApiKey::AlterUserScramCredentials => {
+            decode_one::<AlterUserScramCredentialsResponse>(buf, version)
+        }
+        ApiKey::Vote => None,             // broker-internal: KRaft consensus
+        ApiKey::BeginQuorumEpoch => None, // broker-internal: KRaft consensus
+        ApiKey::EndQuorumEpoch => None,   // broker-internal: KRaft consensus
+        ApiKey::DescribeQuorum => None,   // broker-internal: KRaft consensus
+        ApiKey::AlterPartition => None,   // broker-internal: broker -> controller
+        ApiKey::UpdateFeatures => decode_one::<UpdateFeaturesResponse>(buf, version),
+        ApiKey::Envelope => None, // broker-internal: KRaft envelope routing
+        ApiKey::FetchSnapshot => None, // broker-internal: KRaft snapshot replication
         ApiKey::DescribeCluster => decode_one::<DescribeClusterResponse>(buf, version),
         ApiKey::DescribeProducers => decode_one::<DescribeProducersResponse>(buf, version),
+        ApiKey::BrokerRegistration => None, // broker-internal: KRaft cluster mgmt
+        ApiKey::BrokerHeartbeat => None,    // broker-internal: KRaft cluster mgmt
+        ApiKey::UnregisterBroker => None,   // broker-internal: KRaft cluster mgmt
         ApiKey::DescribeTransactions => decode_one::<DescribeTransactionsResponse>(buf, version),
         ApiKey::ListTransactions => decode_one::<ListTransactionsResponse>(buf, version),
+        ApiKey::AllocateProducerIds => None, // broker-internal: broker -> controller
         ApiKey::ConsumerGroupHeartbeat => {
             decode_one::<ConsumerGroupHeartbeatResponse>(buf, version)
         }
         ApiKey::ConsumerGroupDescribe => decode_one::<ConsumerGroupDescribeResponse>(buf, version),
+        ApiKey::ControllerRegistration => None, // broker-internal: KRaft cluster mgmt
+        ApiKey::GetTelemetrySubscriptions => {
+            decode_one::<GetTelemetrySubscriptionsResponse>(buf, version)
+        }
+        ApiKey::PushTelemetry => decode_one::<PushTelemetryResponse>(buf, version),
+        ApiKey::AssignReplicasToDirs => None, // broker-internal: broker storage
+        ApiKey::ListConfigResources => decode_one::<ListConfigResourcesResponse>(buf, version),
         ApiKey::DescribeTopicPartitions => {
             decode_one::<DescribeTopicPartitionsResponse>(buf, version)
         }
@@ -257,7 +384,25 @@ fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String>
         ApiKey::ShareGroupDescribe => decode_one::<ShareGroupDescribeResponse>(buf, version),
         ApiKey::ShareFetch => decode_one::<ShareFetchResponse>(buf, version),
         ApiKey::ShareAcknowledge => decode_one::<ShareAcknowledgeResponse>(buf, version),
-        _ => None,
+        ApiKey::AddRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::RemoveRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::UpdateRaftVoter => None, // broker-internal: KRaft membership
+        ApiKey::InitializeShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::ReadShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::WriteShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::DeleteShareGroupState => None, // broker-internal: share coordinator state
+        ApiKey::ReadShareGroupStateSummary => None, // broker-internal: share coordinator state
+        ApiKey::StreamsGroupHeartbeat => decode_one::<StreamsGroupHeartbeatResponse>(buf, version),
+        ApiKey::StreamsGroupDescribe => decode_one::<StreamsGroupDescribeResponse>(buf, version),
+        ApiKey::DescribeShareGroupOffsets => {
+            decode_one::<DescribeShareGroupOffsetsResponse>(buf, version)
+        }
+        ApiKey::AlterShareGroupOffsets => {
+            decode_one::<AlterShareGroupOffsetsResponse>(buf, version)
+        }
+        ApiKey::DeleteShareGroupOffsets => {
+            decode_one::<DeleteShareGroupOffsetsResponse>(buf, version)
+        }
     }
 }
 
