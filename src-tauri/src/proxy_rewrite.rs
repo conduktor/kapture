@@ -24,6 +24,7 @@ use kafka_protocol::messages::{
 use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
 
 use crate::proxy_provisioner::BrokerProvisioner;
+use crate::proxy_topic_ids::TopicIdMap;
 
 /// Try to rewrite a response frame body so its broker / coordinator
 /// addresses point at our local proxy listeners.
@@ -44,12 +45,13 @@ pub async fn rewrite_response(
     api_version: i16,
     frame: &[u8],
     provisioner: &dyn BrokerProvisioner,
+    topic_ids: &TopicIdMap,
 ) -> Result<Option<Bytes>, RewriteError> {
     let Ok(api) = ApiKey::try_from(api_key) else {
         return Ok(None);
     };
     match api {
-        ApiKey::Metadata => rewrite_metadata(api_version, frame, provisioner).await,
+        ApiKey::Metadata => rewrite_metadata(api_version, frame, provisioner, topic_ids).await,
         ApiKey::FindCoordinator => rewrite_find_coordinator(api_version, frame, provisioner).await,
         ApiKey::DescribeCluster => rewrite_describe_cluster(api_version, frame, provisioner).await,
         _ => Ok(None),
@@ -74,6 +76,7 @@ async fn rewrite_metadata(
     version: i16,
     frame: &[u8],
     provisioner: &dyn BrokerProvisioner,
+    topic_ids: &TopicIdMap,
 ) -> Result<Option<Bytes>, RewriteError> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::Metadata.response_header_version(version);
@@ -81,6 +84,15 @@ async fn rewrite_metadata(
         .map_err(|e| RewriteError::Decode(format!("metadata header: {e}")))?;
     let mut resp = MetadataResponse::decode(&mut buf, version)
         .map_err(|e| RewriteError::Decode(format!("metadata body: {e}")))?;
+
+    // Stash any (topic_id, name) pairs for later Fetch v13+ resolution.
+    // Pre-v10 Metadata leaves topic_id at Uuid::nil() and TopicIdMap::record
+    // skips that, so this is safe across all versions.
+    for topic in &resp.topics {
+        if let Some(name) = topic.name.as_ref() {
+            topic_ids.record(topic.topic_id, name.0.to_string());
+        }
+    }
 
     for broker in &mut resp.brokers {
         let host = broker.host.to_string();
@@ -218,9 +230,12 @@ mod tests {
     use super::*;
     use crate::proxy_broker_map::BrokerMap;
     use async_trait::async_trait;
-    use kafka_protocol::messages::metadata_response::MetadataResponseBroker;
-    use kafka_protocol::messages::BrokerId;
+    use kafka_protocol::messages::metadata_response::{
+        MetadataResponseBroker, MetadataResponseTopic,
+    };
+    use kafka_protocol::messages::{BrokerId, TopicName};
     use std::io;
+    use uuid::Uuid;
 
     struct StaticProvisioner;
 
@@ -265,7 +280,8 @@ mod tests {
                 (3, "kafka-mb-3.local", 39094),
             ],
         );
-        let rewritten = rewrite_response(3, 12, &bytes, &map)
+        let topic_ids = TopicIdMap::new();
+        let rewritten = rewrite_response(3, 12, &bytes, &map, &topic_ids)
             .await
             .unwrap()
             .unwrap();
@@ -290,8 +306,54 @@ mod tests {
     async fn passes_unknown_api_through() {
         let map = BrokerMap::new();
         // Produce response (api key 0) — not in our rewrite set.
-        let result = rewrite_response(0, 9, &[0u8; 16], &map).await.unwrap();
+        let topic_ids = TopicIdMap::new();
+        let result = rewrite_response(0, 9, &[0u8; 16], &map, &topic_ids)
+            .await
+            .unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn rewrite_metadata_records_topic_ids() {
+        // Build a Metadata v12 response with two topics, each with a
+        // distinct topic_id + name. After rewrite, both must land in
+        // the TopicIdMap.
+        let provisioner = StaticProvisioner;
+        let mut resp = MetadataResponse::default();
+        // Need at least one broker for the rewriter to walk; rewriting
+        // brokers is incidental to this test but exercises the full path.
+        let mut broker = MetadataResponseBroker::default();
+        broker.node_id = BrokerId(1);
+        broker.host = StrBytes::from_string("kafka-mb-1.local".to_owned());
+        broker.port = 39092;
+        resp.brokers.push(broker);
+
+        let id_a = Uuid::from_u128(0x0123_4567_89AB_CDEF_FEDC_BA98_7654_3210);
+        let id_b = Uuid::from_u128(0xDEAD_BEEF_CAFE_BABE_0000_1111_2222_3333);
+
+        let mut t_a = MetadataResponseTopic::default();
+        t_a.name = Some(TopicName(StrBytes::from_string("alpha".to_owned())));
+        t_a.topic_id = id_a;
+        let mut t_b = MetadataResponseTopic::default();
+        t_b.name = Some(TopicName(StrBytes::from_string("beta".to_owned())));
+        t_b.topic_id = id_b;
+        resp.topics = vec![t_a, t_b];
+
+        let mut out = BytesMut::new();
+        ResponseHeader::default()
+            .encode(&mut out, ApiKey::Metadata.response_header_version(12))
+            .unwrap();
+        resp.encode(&mut out, 12).unwrap();
+
+        let topic_ids = TopicIdMap::new();
+        let rewritten = rewrite_response(3, 12, &out, &provisioner, &topic_ids)
+            .await
+            .unwrap();
+        assert!(rewritten.is_some(), "metadata rewrite should produce bytes");
+
+        assert_eq!(topic_ids.lookup(id_a).as_deref(), Some("alpha"));
+        assert_eq!(topic_ids.lookup(id_b).as_deref(), Some("beta"));
+        assert_eq!(topic_ids.len(), 2);
     }
 
     #[tokio::test]
@@ -312,7 +374,8 @@ mod tests {
             .unwrap();
         resp.encode(&mut out, 12).unwrap();
 
-        let rewritten = rewrite_response(3, 12, &out, &provisioner)
+        let topic_ids = TopicIdMap::new();
+        let rewritten = rewrite_response(3, 12, &out, &provisioner, &topic_ids)
             .await
             .unwrap()
             .unwrap();

@@ -33,6 +33,7 @@ use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_records::{
     extract_from_fetch_response, extract_from_produce_request, extracted_to_captured,
 };
+use crate::proxy_topic_ids::TopicIdMap;
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
 /// `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` so the Protocol tab's hex view +
@@ -270,6 +271,7 @@ where
 /// # Errors
 /// Bubbles up `io::Error` from the underlying TCP read/write.
 #[allow(dead_code)] // wired into ProxyHandle::start in Task 16
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pump_with_rewrite(
     conn_id: ConnectionId,
     client: TcpStream,
@@ -278,6 +280,7 @@ pub async fn run_pump_with_rewrite(
     corr_map: Arc<CorrelationMap>,
     provisioner: Arc<dyn BrokerProvisioner>,
     record_sink: RecordSink,
+    topic_ids: Arc<TopicIdMap>,
 ) -> io::Result<()> {
     let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
@@ -325,7 +328,7 @@ pub async fn run_pump_with_rewrite(
                     // `bytes` is the codec output (no wire size prefix);
                     // it starts at the ResponseHeader, which is what
                     // `extract_from_fetch_response` expects.
-                    for rec in extract_from_fetch_response(api_version, &bytes) {
+                    for rec in extract_from_fetch_response(api_version, &bytes, &topic_ids) {
                         record_sink(extracted_to_captured(rec, conn_id.0));
                     }
                 }
@@ -336,6 +339,7 @@ pub async fn run_pump_with_rewrite(
                         api_version,
                         &bytes,
                         provisioner.as_ref(),
+                        &topic_ids,
                     )
                     .await
                     {
@@ -809,6 +813,7 @@ mod tests {
 
         let provisioner: Arc<dyn BrokerProvisioner> = broker_map;
         let no_op_sink: crate::proxy_handle::RecordSink = Arc::new(|_msg| {});
+        let topic_id_map = Arc::new(crate::proxy_topic_ids::TopicIdMap::new());
         let pump_task = tokio::spawn(async move {
             let (client_sock, _) = client_listener.accept().await.unwrap();
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
@@ -820,6 +825,7 @@ mod tests {
                 corr_map,
                 provisioner,
                 no_op_sink,
+                topic_id_map,
             )
             .await
             .unwrap();

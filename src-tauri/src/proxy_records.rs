@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::decode::{decode_payload, render_hex};
 use crate::message::{CapturedMessage, KafkaHeader};
+use crate::proxy_topic_ids::TopicIdMap;
 
 /// One Kafka record extracted from a Produce request or a Fetch
 /// response. Topic + partition come from the surrounding wire envelope;
@@ -79,12 +80,24 @@ fn extract_from_produce_request_inner(version: i16, frame: &[u8]) -> Option<Vec<
 
 /// Decode the Fetch response body sitting in `frame` and pull every
 /// record out. Same error semantics as `extract_from_produce_request`.
+///
+/// `topic_ids` is the cluster-wide `topic_id → name` map populated
+/// from `MetadataResponse` traffic. Only consulted on Fetch v13+ where
+/// the wire dropped the topic name in favour of a UUID.
 #[must_use]
-pub fn extract_from_fetch_response(version: i16, frame: &[u8]) -> Vec<ExtractedRecord> {
-    extract_from_fetch_response_inner(version, frame).unwrap_or_default()
+pub fn extract_from_fetch_response(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> Vec<ExtractedRecord> {
+    extract_from_fetch_response_inner(version, frame, topic_ids).unwrap_or_default()
 }
 
-fn extract_from_fetch_response_inner(version: i16, frame: &[u8]) -> Option<Vec<ExtractedRecord>> {
+fn extract_from_fetch_response_inner(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> Option<Vec<ExtractedRecord>> {
     let mut buf = Bytes::copy_from_slice(frame);
     // Fetch v0-v11: header v0 (no tagged fields). v12+: header v1.
     let header_version = ApiKey::Fetch.response_header_version(version);
@@ -93,7 +106,12 @@ fn extract_from_fetch_response_inner(version: i16, frame: &[u8]) -> Option<Vec<E
 
     let mut out = Vec::new();
     for topic in &resp.responses {
-        let topic_name = topic.topic.0.to_string();
+        let topic_name = resolve_topic_name(
+            version,
+            &topic.topic.0.to_string(),
+            topic.topic_id,
+            topic_ids,
+        );
         for partition in &topic.partitions {
             let Some(records_bytes) = &partition.records else {
                 continue;
@@ -110,6 +128,30 @@ fn extract_from_fetch_response_inner(version: i16, frame: &[u8]) -> Option<Vec<E
         }
     }
     Some(out)
+}
+
+/// Pick the best name we can: on v0..=v12 the wire carries it; on v13+
+/// we consult `topic_ids`; if the lookup misses, we surface a visually
+/// distinct placeholder so the Messages tab still groups by topic.
+fn resolve_topic_name(
+    version: i16,
+    wire_name: &str,
+    topic_id: Uuid,
+    topic_ids: &TopicIdMap,
+) -> String {
+    if !wire_name.is_empty() {
+        return wire_name.to_owned();
+    }
+    if let Some(name) = topic_ids.lookup(topic_id) {
+        return name;
+    }
+    if topic_id.is_nil() {
+        // Truly nothing to go on (very early Fetch versions, or a
+        // malformed response). Empty string preserves prior behaviour.
+        return String::new();
+    }
+    let _ = version; // version is kept in the signature for future hooks.
+    format!("[topic-id {topic_id}]")
 }
 
 /// Decode every `RecordBatch` in `records_bytes` and push the
@@ -274,6 +316,39 @@ mod tests {
         out.to_vec()
     }
 
+    fn build_fetch_response_bytes_v13(
+        version: i16,
+        topic_id: Uuid,
+        partition: i32,
+        records: &[Record],
+    ) -> Vec<u8> {
+        let mut resp = FetchResponse::default();
+        resp.throttle_time_ms = 0;
+        resp.error_code = 0;
+        resp.session_id = 0;
+        let mut topic_resp = FetchableTopicResponse::default();
+        // v13+ leaves `topic` empty on the wire; only topic_id is sent.
+        topic_resp.topic = TopicName(StrBytes::from_static_str(""));
+        topic_resp.topic_id = topic_id;
+        let mut p = PartitionData::default();
+        p.partition_index = partition;
+        p.error_code = 0;
+        p.high_watermark = i64::try_from(records.len()).unwrap_or(0);
+        p.last_stable_offset = p.high_watermark;
+        p.log_start_offset = 0;
+        p.records = Some(encode_record_batch(records));
+        topic_resp.partitions = vec![p];
+        resp.responses = vec![topic_resp];
+
+        let header_version = ApiKey::Fetch.response_header_version(version);
+        let mut out = BytesMut::new();
+        ResponseHeader::default()
+            .encode(&mut out, header_version)
+            .unwrap();
+        resp.encode(&mut out, version).unwrap();
+        out.to_vec()
+    }
+
     fn build_fetch_response_bytes(
         version: i16,
         topic: &str,
@@ -343,13 +418,51 @@ mod tests {
         // wire. The proxy still works on v13 — it just emits records
         // with an empty topic field.
         let bytes = build_fetch_response_bytes(12, "records-test", 0, &records);
-        let extracted = extract_from_fetch_response(12, &bytes);
+        // v12 carries the topic name on the wire; the topic_id_map is
+        // unused on this path. Pass an empty one to prove that.
+        let topic_ids = TopicIdMap::new();
+        let extracted = extract_from_fetch_response(12, &bytes, &topic_ids);
         assert_eq!(extracted.len(), 5);
         for (i, rec) in extracted.iter().enumerate() {
             assert_eq!(rec.topic, "records-test");
             assert_eq!(rec.partition, 0);
             assert_eq!(rec.offset, i64::try_from(i).unwrap());
         }
+    }
+
+    #[test]
+    fn extract_from_fetch_response_v13_resolves_topic_name_from_map() {
+        // Fetch v13 omits the topic name; the extractor must consult the
+        // topic_id_map to surface the actual name.
+        let records: Vec<_> = (0u8..3)
+            .map(|i| make_record(i64::from(i), &[b'k', b'0' + i], &[b'v', b'0' + i]))
+            .collect();
+        let id = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+        let bytes = build_fetch_response_bytes_v13(13, id, 0, &records);
+
+        let topic_ids = TopicIdMap::new();
+        topic_ids.record(id, "records-test".to_owned());
+
+        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids);
+        assert_eq!(extracted.len(), 3);
+        for rec in &extracted {
+            assert_eq!(rec.topic, "records-test");
+            assert_eq!(rec.partition, 0);
+        }
+    }
+
+    #[test]
+    fn extract_from_fetch_response_v13_unresolved_topic_id_uses_placeholder() {
+        let records = vec![make_record(0, b"k", b"v")];
+        let id = Uuid::from_u128(0xAAAA_BBBB_CCCC_DDDD_EEEE_FFFF_0000_1111);
+        let bytes = build_fetch_response_bytes_v13(13, id, 0, &records);
+
+        // Empty map — id was never observed.
+        let topic_ids = TopicIdMap::new();
+        let extracted = extract_from_fetch_response(13, &bytes, &topic_ids);
+        assert_eq!(extracted.len(), 1);
+        let expected = format!("[topic-id {id}]");
+        assert_eq!(extracted[0].topic, expected);
     }
 
     #[test]
@@ -385,10 +498,11 @@ mod tests {
     #[test]
     fn extract_garbage_returns_empty() {
         // Must not panic on bogus input.
+        let topic_ids = TopicIdMap::new();
         assert!(extract_from_produce_request(9, &[0u8; 4]).is_empty());
-        assert!(extract_from_fetch_response(13, &[0u8; 4]).is_empty());
+        assert!(extract_from_fetch_response(13, &[0u8; 4], &topic_ids).is_empty());
         assert!(extract_from_produce_request(9, &[]).is_empty());
-        assert!(extract_from_fetch_response(13, &[]).is_empty());
+        assert!(extract_from_fetch_response(13, &[], &topic_ids).is_empty());
     }
 
     #[test]
@@ -471,6 +585,7 @@ mod tests {
             captured_for_sink.lock().push(msg);
         });
 
+        let topic_id_map = Arc::new(TopicIdMap::new());
         let pump_task = tokio::spawn(async move {
             let (client_sock, _) = client_listener.accept().await.unwrap();
             let upstream_sock = TcpStream::connect(upstream_target).await.unwrap();
@@ -482,6 +597,7 @@ mod tests {
                 corr_map,
                 provisioner,
                 sink,
+                topic_id_map,
             )
             .await
             .unwrap();

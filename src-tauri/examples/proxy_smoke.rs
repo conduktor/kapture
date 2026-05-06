@@ -143,12 +143,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let topic_id_map = handle.topic_id_map();
     handle.stop().await;
     let final_summaries = correlator.summaries(500);
+    let topic_snapshot = topic_id_map.snapshot();
     println!(
-        "proxy_smoke: stopped. total frames observed: {} | captured {} messages",
+        "proxy_smoke: stopped. total frames observed: {} | captured {} messages | topic_id_map size: {}",
         final_summaries.len(),
         captured_count.load(Ordering::Relaxed),
+        topic_snapshot.len(),
     );
+    for (id, name) in &topic_snapshot {
+        println!("  topic_id {id} -> {name}");
+    }
     Ok(())
 }

@@ -16,6 +16,7 @@ mod proxy_handle;
 mod proxy_provisioner;
 mod proxy_records;
 mod proxy_rewrite;
+mod proxy_topic_ids;
 mod ring_buffer;
 mod schema_registry;
 mod state;
@@ -32,6 +33,7 @@ pub mod example_api {
     pub use crate::proto_hook::ProtoDirection;
     pub use crate::proxy::ProxyConfig;
     pub use crate::proxy_handle::{ProxyHandle, RecordSink};
+    pub use crate::proxy_topic_ids::TopicIdMap;
 }
 
 use std::sync::Arc;

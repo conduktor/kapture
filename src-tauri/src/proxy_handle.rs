@@ -28,6 +28,7 @@ use crate::proxy::{
 };
 use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
+use crate::proxy_topic_ids::TopicIdMap;
 
 /// Sink for `CapturedMessage` instances extracted from Produce
 /// requests / Fetch responses traversing the proxy. Invoked
@@ -51,6 +52,7 @@ pub struct ProxyInner {
     bootstrap_upstream: String,
     correlator: Arc<ProtoCorrelator>,
     broker_map: Arc<BrokerMap>,
+    topic_id_map: Arc<TopicIdMap>,
     record_sink: RecordSink,
     /// Serialises lazy listener provisioning so a discovered broker is
     /// inserted into `BrokerMap` and has its accept loop spawned as one
@@ -185,6 +187,7 @@ fn spawn_accept_loop(
     let mut stop_rx = inner.stop_tx.subscribe();
     let correlator = Arc::clone(&inner.correlator);
     let record_sink = Arc::clone(&inner.record_sink);
+    let topic_id_map = Arc::clone(&inner.topic_id_map);
     let provisioner: Arc<dyn BrokerProvisioner> = inner.clone();
 
     tokio::spawn(async move {
@@ -207,6 +210,7 @@ fn spawn_accept_loop(
                                 let provisioner = Arc::clone(&provisioner);
                                 let pump_inner = Arc::clone(&inner);
                                 let record_sink = Arc::clone(&record_sink);
+                                let topic_id_map = Arc::clone(&topic_id_map);
                                 let (start_tx, start_rx) = oneshot::channel();
                                 let task = tokio::spawn(async move {
                                     let _ = start_rx.await;
@@ -227,6 +231,7 @@ fn spawn_accept_loop(
                                     corr_map,
                                     provisioner,
                                     record_sink,
+                                    topic_id_map,
                                 )
                                 .await;
                                     if let Err(err) = result {
@@ -279,6 +284,7 @@ impl ProxyHandle {
             bootstrap_upstream: config.upstream.clone(),
             correlator,
             broker_map,
+            topic_id_map: Arc::new(TopicIdMap::new()),
             record_sink,
             provision_lock: TokioMutex::new(()),
             weak_self: Mutex::new(Weak::new()),
@@ -327,6 +333,15 @@ impl ProxyHandle {
     #[must_use]
     pub fn broker_map(&self) -> Arc<BrokerMap> {
         Arc::clone(&self.0.broker_map)
+    }
+
+    /// Shared `TopicIdMap`. Examples (`proxy_smoke`) and tests use this
+    /// to assert that the proxy observed Metadata responses and can
+    /// resolve `topic_id → name` for Fetch v13+ records.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn topic_id_map(&self) -> Arc<TopicIdMap> {
+        Arc::clone(&self.0.topic_id_map)
     }
 
     pub async fn stop(self) {
