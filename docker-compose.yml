@@ -268,11 +268,43 @@ services:
     restart: "no"
     networks: [kafka-scram]
 
+  # ──────────── Apache Kafka 3.7.0 — legacy decoder smoke ────────────
+  # Pinned to the OLDEST apache/kafka image tag (Apache only started
+  # publishing the official Docker image with 3.7). Used to verify
+  # the proxy decoder still understands frames from a broker that
+  # speaks older Fetch / Metadata / ApiVersions / Coordinator versions.
+  # Modern librdkafka clients negotiating against this broker exercise
+  # the KIP-511 fallback paths.
+  kafka-legacy:
+    image: apache/kafka:3.7.0
+    container_name: kapture-kafka-legacy
+    profiles: ["legacy"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:39096,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-legacy:9092,EXTERNAL://localhost:39096"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-legacy:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      CLUSTER_ID: "kapture-legacy-cluster"
+    ports:
+      - "39096:39096"
+    networks: [kafka-legacy]
+
 networks:
   redpanda:
     name: kapture-redpanda
   kafka:
     name: kapture-kafka
+  kafka-legacy:
+    name: kapture-kafka-legacy
   kafka-mb:
     name: kapture-kafka-mb
   kafka-sasl:

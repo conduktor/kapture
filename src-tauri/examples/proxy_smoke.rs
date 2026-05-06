@@ -19,6 +19,7 @@
 //! Ctrl-C exits cleanly (drains listeners). The poll loop also has an
 //! upper bound (`--seconds`) so CI runs terminate without a TTY.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -206,5 +207,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (id, name) in &topic_snapshot {
         println!("  topic_id {id} -> {name}");
     }
+
+    print_decoder_stats(&final_summaries, &correlator);
     Ok(())
+}
+
+/// Per-(api, version, direction) decode-success table dumped at exit.
+/// Lets us spot decoder gaps after a smoke run (legacy vs latest
+/// broker, SASL, etc).
+fn print_decoder_stats(
+    summaries: &[kapture_lib::example_api::ProtoFrameSummary],
+    correlator: &kapture_lib::example_api::ProtoCorrelator,
+) {
+    let mut stats: BTreeMap<(String, i32, &'static str), (usize, usize)> = BTreeMap::new();
+    for s in summaries {
+        if let Some(frame) = correlator.frame_detail(&s.id) {
+            let dir = match frame.direction {
+                kapture_lib::example_api::ProtoDirection::Send => "send",
+                kapture_lib::example_api::ProtoDirection::Recv => "recv",
+            };
+            let key = (frame.api_name.to_owned(), frame.api_version, dir);
+            let entry = stats.entry(key).or_insert((0, 0));
+            if frame.decoded.is_some() {
+                entry.0 += 1;
+            } else {
+                entry.1 += 1;
+            }
+        }
+    }
+    println!("\n=== Decoder stats ===");
+    println!(
+        "{:<32} {:>4} {:>4} {:>9} {:>9}",
+        "api+ver+dir", "OK", "MISS", "ok-rate", "frames"
+    );
+    for ((name, ver, dir), (ok, miss)) in &stats {
+        let total = ok + miss;
+        #[allow(clippy::cast_precision_loss)]
+        let rate = if total > 0 {
+            (*ok as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        let label = format!("{name} v{ver} {dir}");
+        println!("{label:<32} {ok:>4} {miss:>4} {rate:>8.1}% {total:>9}");
+    }
 }

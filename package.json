@@ -32,6 +32,8 @@
     "stack:down:sasl": "docker compose --profile sasl down",
     "stack:up:scram": "docker compose --profile scram up -d",
     "stack:down:scram": "docker compose --profile scram down",
+    "stack:up:legacy": "docker compose --profile legacy up -d",
+    "stack:down:legacy": "docker compose --profile legacy down",
     "stack:down": "docker compose down",
     "stack:logs": "docker compose logs -f",
     "seed": "node tools/seed.mjs",
