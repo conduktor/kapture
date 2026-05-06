@@ -6,7 +6,9 @@ import type {
   LoadedProfile,
   ProbeResult,
   ProfileMetadata,
+  ProxySaslArgs,
   ProxyStatus,
+  ProxyTlsArgs,
   SaslMechanism,
   SaveProfileArgs,
   SaveProfileAuth,
@@ -77,6 +79,17 @@ export function ConnectionDialog({
   const [mode, setMode] = useState<ConnectionMode>("client");
   const [proxyUpstream, setProxyUpstream] = useState("localhost:9092");
   const [proxyListenPort, setProxyListenPort] = useState(9092);
+  // Upstream TLS (proxy mode). Defence in depth: secrets never round-trip
+  // through localStorage / profiles, so these always start blank on edit.
+  const [proxyUseTls, setProxyUseTls] = useState(false);
+  const [proxyTlsCaPath, setProxyTlsCaPath] = useState("");
+  const [proxyTlsSkipHostname, setProxyTlsSkipHostname] = useState(false);
+  // Upstream SASL (proxy mode). Backend accepts PLAIN only for now.
+  const [proxyUseSasl, setProxyUseSasl] = useState(false);
+  const [proxySaslMechanism, setProxySaslMechanism] = useState<SaslMechanism>("PLAIN");
+  const [proxySaslUsername, setProxySaslUsername] = useState("");
+  const [proxySaslPassword, setProxySaslPassword] = useState("");
+  const [proxyValidationError, setProxyValidationError] = useState<string | null>(null);
   const [bootstrap, setBootstrap] = useState(initial?.bootstrap ?? defaultBootstrap);
   const [topicPattern, setTopicPattern] = useState(initial?.topicPattern ?? "");
   const [showAdvanced, setShowAdvanced] = useState((initial?.topicPattern ?? "").trim() !== "");
@@ -285,12 +298,36 @@ export function ConnectionDialog({
   const submit = (): void => {
     if (mode === "proxy") {
       const upstream = proxyUpstream.trim();
+      if (proxyUseSasl) {
+        if (proxySaslUsername.trim() === "" || proxySaslPassword === "") {
+          setProxyValidationError("Upstream SASL requires both username and password.");
+          return;
+        }
+      }
+      setProxyValidationError(null);
+      const upstreamTls: ProxyTlsArgs | null = proxyUseTls
+        ? {
+            // Empty string lets the backend derive SNI from the bootstrap host.
+            serverName: "",
+            caPath: proxyTlsCaPath.trim() === "" ? null : proxyTlsCaPath.trim(),
+            skipHostnameVerification: proxyTlsSkipHostname,
+          }
+        : null;
+      const upstreamSasl: ProxySaslArgs | null = proxyUseSasl
+        ? {
+            mechanism: proxySaslMechanism,
+            username: proxySaslUsername,
+            password: proxySaslPassword,
+          }
+        : null;
       onProxyStarting();
       void (async () => {
         try {
           const status = await invoke<ProxyStatus>("start_proxy", {
             upstream,
             listenPort: proxyListenPort,
+            upstreamTls,
+            upstreamSasl,
           });
           onProxyStarted(status);
         } catch (err) {
@@ -388,6 +425,119 @@ export function ConnectionDialog({
                 required
               />
             </label>
+            <label className="dialog__check">
+              <input
+                type="checkbox"
+                checked={proxyUseTls}
+                onChange={(e) => {
+                  setProxyUseTls(e.target.checked);
+                }}
+              />
+              <span>Upstream uses TLS</span>
+            </label>
+            {proxyUseTls ? (
+              <>
+                <label className="dialog__field">
+                  <span className="dialog__label">
+                    CA certificate path (optional)
+                    <span className="dialog__hint-inline">empty = system roots</span>
+                  </span>
+                  <input
+                    className="dialog__input"
+                    value={proxyTlsCaPath}
+                    onChange={(e) => {
+                      setProxyTlsCaPath(e.target.value);
+                    }}
+                    placeholder="/path/to/ca.pem"
+                    spellCheck={false}
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="dialog__check">
+                  <input
+                    type="checkbox"
+                    checked={proxyTlsSkipHostname}
+                    onChange={(e) => {
+                      setProxyTlsSkipHostname(e.target.checked);
+                    }}
+                  />
+                  <span>Skip hostname verification (UNSAFE)</span>
+                </label>
+                {proxyTlsSkipHostname ? (
+                  <p className="dialog__warn" role="alert">
+                    WARNING: only enable for self-signed clusters with no hostname match. Defeats
+                    cert chain validation.
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+            <label className="dialog__check">
+              <input
+                type="checkbox"
+                checked={proxyUseSasl}
+                onChange={(e) => {
+                  setProxyUseSasl(e.target.checked);
+                }}
+              />
+              <span>Upstream requires SASL</span>
+            </label>
+            {proxyUseSasl ? (
+              <>
+                <label className="dialog__field">
+                  <span className="dialog__label">Mechanism</span>
+                  <select
+                    className="dialog__input"
+                    value={proxySaslMechanism}
+                    onChange={(e) => {
+                      setProxySaslMechanism(e.target.value as SaslMechanism);
+                    }}
+                  >
+                    <option value="PLAIN">SASL/PLAIN</option>
+                    <option
+                      value="SCRAM-SHA-256"
+                      disabled
+                      title="Coming soon — only PLAIN is supported in this build"
+                    >
+                      SASL/SCRAM-SHA-256 (coming soon)
+                    </option>
+                    <option
+                      value="SCRAM-SHA-512"
+                      disabled
+                      title="Coming soon — only PLAIN is supported in this build"
+                    >
+                      SASL/SCRAM-SHA-512 (coming soon)
+                    </option>
+                  </select>
+                </label>
+                <label className="dialog__field">
+                  <span className="dialog__label">Username</span>
+                  <input
+                    className="dialog__input"
+                    value={proxySaslUsername}
+                    onChange={(e) => {
+                      setProxySaslUsername(e.target.value);
+                    }}
+                    spellCheck={false}
+                    autoComplete="off"
+                    required
+                  />
+                </label>
+                <label className="dialog__field">
+                  <span className="dialog__label">Password</span>
+                  <input
+                    type="password"
+                    className="dialog__input"
+                    value={proxySaslPassword}
+                    onChange={(e) => {
+                      setProxySaslPassword(e.target.value);
+                    }}
+                    autoComplete="off"
+                    required
+                  />
+                </label>
+              </>
+            ) : null}
+            {proxyValidationError ? <p className="dialog__error">{proxyValidationError}</p> : null}
           </>
         ) : (
           <>

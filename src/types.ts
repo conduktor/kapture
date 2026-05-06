@@ -105,6 +105,27 @@ export interface ProxyStatus {
 }
 
 /**
+ * TLS args for the upstream hop in proxy mode. Mirrors the Rust
+ * `ProxyTlsArgs` struct (camelCase serde). `serverName` empty string
+ * means "use the bootstrap host parsed from `upstream`".
+ */
+export interface ProxyTlsArgs {
+  serverName: string;
+  caPath: string | null;
+  skipHostnameVerification: boolean;
+}
+
+/**
+ * SASL credentials for the upstream hop. Mirrors `ProxySaslArgs`.
+ * Backend currently accepts `mechanism === "PLAIN"` only.
+ */
+export interface ProxySaslArgs {
+  mechanism: SaslMechanism;
+  username: string;
+  password: string;
+}
+
+/**
  * Snapshot of the running proxy. Returned by the `proxy_status`
  * command (polled by the SidePanel) and the `kapture_proxy_status`
  * MCP tool. `listening: false` when no proxy is active — the rest
