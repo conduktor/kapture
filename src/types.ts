@@ -46,7 +46,8 @@ export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "er
 export interface ConnectionState {
   status: ConnectionStatus;
   cluster: string | null;
-  topics: string[];
+  /** Topic regex actually in effect on the broker side (default ^[^_].*). */
+  topicPattern: string | null;
   error: string | null;
   // Non-secret connection params remembered locally so the edit dialog
   // can prefill them. Secrets (auth.password, tls.keyPassword) are NOT
@@ -95,10 +96,25 @@ export interface AuthArgs {
 
 export interface ConnectArgs {
   bootstrapServers: string;
-  topics: string[];
+  /** `null` to subscribe to every non-internal topic. */
+  topicPattern: string | null;
   fromBeginning: boolean;
   schemaRegistryUrl: string | null;
   auth: AuthArgs | null;
+}
+
+export interface TestConnectionResponse {
+  ok: boolean;
+  brokers: number;
+  topics: number;
+  message: string;
+}
+
+export interface ProbeResult {
+  bootstrapServers: string | null;
+  schemaRegistryUrl: string | null;
+  /** Friendly cluster name (e.g. "Redpanda", "Apache Kafka"). */
+  flavour: string | null;
 }
 
 export interface ProfileTlsMetadata {
@@ -121,7 +137,8 @@ export interface ProfileAuthMetadata {
 export interface ProfileMetadata {
   name: string;
   bootstrapServers: string;
-  topics: string[];
+  /** `null` means "use the default pattern" (every non-internal topic). */
+  topicPattern: string | null;
   schemaRegistryUrl: string | null;
   auth: ProfileAuthMetadata | null;
   fromBeginning: boolean;
@@ -152,7 +169,8 @@ export interface SaveProfileAuth {
 export interface SaveProfileArgs {
   name: string;
   bootstrapServers: string;
-  topics: string[];
+  /** `null` records the default-pattern intent (every non-internal topic). */
+  topicPattern: string | null;
   schemaRegistryUrl: string | null;
   auth: SaveProfileAuth | null;
   fromBeginning: boolean;

@@ -13,7 +13,6 @@ import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
 
 const DEFAULT_BOOTSTRAP = "localhost:19092";
-const DEFAULT_TOPICS = "orders.raw, orders.enriched, users.events, orders.avro, orders.jsonschema";
 const DEFAULT_REGISTRY = "http://localhost:18081";
 const UI_MAX_MESSAGES = 5_000;
 const FILTER_DEBOUNCE_MS = 250;
@@ -31,7 +30,7 @@ const INITIAL_STATS: CaptureStats = {
 const INITIAL_CONNECTION: ConnectionState = {
   status: "disconnected",
   cluster: null,
-  topics: [],
+  topicPattern: null,
   error: null,
   schemaRegistryUrl: null,
   fromBeginning: true,
@@ -164,7 +163,7 @@ function App(): JSX.Element {
 
   const handleConnect = (
     bootstrap: string,
-    topicList: string[],
+    topicPattern: string | null,
     fromBeginning: boolean,
     schemaRegistryUrl: string | null,
     auth: AuthArgs | null,
@@ -172,7 +171,7 @@ function App(): JSX.Element {
     setConnection({
       status: "connecting",
       cluster: bootstrap,
-      topics: topicList,
+      topicPattern,
       error: null,
       schemaRegistryUrl,
       fromBeginning,
@@ -200,7 +199,7 @@ function App(): JSX.Element {
         }
         await invoke("connect", {
           bootstrapServers: bootstrap,
-          topics: topicList,
+          topicPattern,
           fromBeginning,
           schemaRegistryUrl,
           auth,
@@ -213,7 +212,7 @@ function App(): JSX.Element {
           ...prev,
           status: "connected",
           cluster: bootstrap,
-          topics: topicList,
+          topicPattern,
           error: null,
         }));
       } catch (err) {
@@ -222,7 +221,7 @@ function App(): JSX.Element {
           ...prev,
           status: "error",
           cluster: bootstrap,
-          topics: topicList,
+          topicPattern,
           error: message,
         }));
       }
@@ -268,7 +267,7 @@ function App(): JSX.Element {
   const initialPrefill = isEditing
     ? {
         bootstrap: connection.cluster ?? DEFAULT_BOOTSTRAP,
-        topics: connection.topics.join(", "),
+        topicPattern: connection.topicPattern ?? "",
         registry: connection.schemaRegistryUrl ?? "",
         fromBeginning: connection.fromBeginning,
         ...(connection.authPrefill
@@ -319,7 +318,6 @@ function App(): JSX.Element {
       {showDialog ? (
         <ConnectionDialog
           defaultBootstrap={DEFAULT_BOOTSTRAP}
-          defaultTopics={DEFAULT_TOPICS}
           defaultRegistry={DEFAULT_REGISTRY}
           initial={initialPrefill}
           isEditing={isEditing}

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
 use rdkafka::message::Headers;
 use rdkafka::Message;
 use tokio::sync::watch;
@@ -77,11 +77,20 @@ impl Drop for CaptureHandle {
     }
 }
 
+/// Default topic pattern: every topic whose name does not begin with an
+/// underscore. Skips `__consumer_offsets`, `_schemas`, `__transaction_state`,
+/// and similar broker-internal topics.
+pub const DEFAULT_TOPIC_PATTERN: &str = "^[^_].*";
+
 /// Configuration for a capture session.
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub bootstrap_servers: String,
-    pub topics: Vec<String>,
+    /// Topic regex passed verbatim to librdkafka's pattern subscribe. MUST
+    /// start with `^` so librdkafka recognises it as a regex. An empty /
+    /// missing pattern from the GUI is normalised to `DEFAULT_TOPIC_PATTERN`
+    /// at the command boundary, so this field is always populated.
+    pub topic_pattern: String,
     pub group_id: String,
     pub from_beginning: bool,
     pub auth: Option<AuthConfig>,
@@ -205,13 +214,13 @@ impl std::fmt::Debug for TlsCreds {
 impl CaptureConfig {
     pub fn new(
         bootstrap_servers: String,
-        topics: Vec<String>,
+        topic_pattern: String,
         from_beginning: bool,
         auth: Option<AuthConfig>,
     ) -> Self {
         Self {
             bootstrap_servers,
-            topics,
+            topic_pattern,
             group_id: format!("kapture-{}", Uuid::new_v4().simple()),
             from_beginning,
             auth,
@@ -219,24 +228,12 @@ impl CaptureConfig {
     }
 }
 
-/// Spawn a capture task. Each delivered message is decoded (with optional
-/// schema-registry resolution + proto correlation) and then handed to
-/// `on_message`.
-pub fn start<F>(
-    config: CaptureConfig,
-    sr_client: Option<Arc<SchemaRegistryClient>>,
-    correlator: Arc<ProtoCorrelator>,
-    on_message: F,
-) -> Result<CaptureHandle>
-where
-    F: Fn(CapturedMessage) + Send + Sync + 'static,
-{
-    if config.topics.is_empty() {
-        return Err(KaptureError::Config(
-            "at least one topic is required".to_owned(),
-        ));
-    }
-
+/// Build the rdkafka `ClientConfig` for both live captures and the connection
+/// test. Pulled out into a free function so the test-connection path goes
+/// through exactly the same SASL / TLS plumbing as `start` — otherwise a
+/// successful test could lull the user into trying a connect that fails for
+/// auth reasons that the test never exercised.
+fn build_client_config(config: &CaptureConfig) -> ClientConfig {
     let mut client_config = ClientConfig::new();
     client_config
         .set("bootstrap.servers", &config.bootstrap_servers)
@@ -281,9 +278,77 @@ where
         }
     }
 
+    client_config
+}
+
+/// Try a metadata fetch against the cluster without starting a capture. Used
+/// by the GUI's "Test connection" button. Returns the broker count + topic
+/// count on success, or a human-readable error.
+///
+/// Why a separate path: `start` returns a `StreamConsumer` that runs forever
+/// until dropped. Here we want a single bounded operation that holds no
+/// resources and exits within `timeout`. We use `BaseConsumer::fetch_metadata`,
+/// which is what librdkafka offers for a one-shot probe.
+pub fn test_connection(config: &CaptureConfig, timeout: Duration) -> Result<TestConnectionReport> {
+    let client_config = build_client_config(config);
+    let consumer: BaseConsumer = client_config.create()?;
+    let metadata = consumer.fetch_metadata(None, timeout)?;
+    Ok(TestConnectionReport {
+        brokers: metadata.brokers().len(),
+        topics: metadata.topics().len(),
+    })
+}
+
+/// Result payload of `test_connection`. Kept tight: surfacing topic names
+/// here would leak schema information to a caller that hasn't yet committed
+/// to the connection.
+#[derive(Debug, Clone, Copy)]
+pub struct TestConnectionReport {
+    pub brokers: usize,
+    pub topics: usize,
+}
+
+/// Normalise a user-supplied topic pattern: strip surrounding whitespace,
+/// substitute the default if the result is empty, and prepend `^` if the
+/// caller forgot it (librdkafka requires it to recognise regex syntax).
+#[must_use]
+pub fn normalise_topic_pattern(input: Option<&str>) -> String {
+    let trimmed = input.map_or("", str::trim);
+    if trimmed.is_empty() {
+        return DEFAULT_TOPIC_PATTERN.to_owned();
+    }
+    if trimmed.starts_with('^') {
+        trimmed.to_owned()
+    } else {
+        format!("^{trimmed}")
+    }
+}
+
+/// Spawn a capture task. Each delivered message is decoded (with optional
+/// schema-registry resolution + proto correlation) and then handed to
+/// `on_message`.
+pub fn start<F>(
+    config: CaptureConfig,
+    sr_client: Option<Arc<SchemaRegistryClient>>,
+    correlator: Arc<ProtoCorrelator>,
+    on_message: F,
+) -> Result<CaptureHandle>
+where
+    F: Fn(CapturedMessage) + Send + Sync + 'static,
+{
+    if config.topic_pattern.is_empty() {
+        return Err(KaptureError::Config(
+            "topic pattern must not be empty (use the default ^[^_].*)".to_owned(),
+        ));
+    }
+
+    let client_config = build_client_config(&config);
     let consumer: StreamConsumer = client_config.create()?;
-    let topic_refs: Vec<&str> = config.topics.iter().map(String::as_str).collect();
-    consumer.subscribe(&topic_refs)?;
+    // librdkafka's regex pattern subscribe — a leading `^` is the trigger.
+    // The broker delivers every topic whose name matches; our default
+    // `^[^_].*` excludes internal topics. The DSL filter on the UI side
+    // narrows further at view time.
+    consumer.subscribe(&[config.topic_pattern.as_str()])?;
 
     // Wire the proto hook before subscribing to avoid missing the very
     // first ApiVersions / Metadata exchanges. The hook updates the
@@ -304,7 +369,7 @@ where
 
     let task = tokio::spawn(async move {
         info!(
-            topics = ?config.topics,
+            pattern = %config.topic_pattern,
             bootstrap = %config.bootstrap_servers,
             sr = sr_client.is_some(),
             "capture task started"

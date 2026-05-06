@@ -1,13 +1,15 @@
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AuthArgs,
   LoadedProfile,
+  ProbeResult,
   ProfileMetadata,
   SaslMechanism,
   SaveProfileArgs,
   SaveProfileAuth,
   SaveProfileTls,
+  TestConnectionResponse,
   TlsArgs,
 } from "../types";
 
@@ -17,7 +19,7 @@ const SASL_MECHANISMS: SaslMechanism[] = ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-5
 
 interface Initial {
   bootstrap: string;
-  topics: string;
+  topicPattern: string;
   registry: string;
   authMethod: AuthMethod;
   username: string;
@@ -32,13 +34,12 @@ interface Initial {
 
 interface Props {
   defaultBootstrap: string;
-  defaultTopics: string;
   defaultRegistry: string;
   initial?: Partial<Initial> | undefined;
   isEditing: boolean;
   onConnect: (
     bootstrap: string,
-    topics: string[],
+    topicPattern: string | null,
     fromBeginning: boolean,
     schemaRegistryUrl: string | null,
     auth: AuthArgs | null,
@@ -50,7 +51,6 @@ interface Props {
 
 export function ConnectionDialog({
   defaultBootstrap,
-  defaultTopics,
   defaultRegistry,
   initial,
   isEditing,
@@ -60,7 +60,8 @@ export function ConnectionDialog({
   error,
 }: Props): JSX.Element {
   const [bootstrap, setBootstrap] = useState(initial?.bootstrap ?? defaultBootstrap);
-  const [topics, setTopics] = useState(initial?.topics ?? defaultTopics);
+  const [topicPattern, setTopicPattern] = useState(initial?.topicPattern ?? "");
+  const [showAdvanced, setShowAdvanced] = useState((initial?.topicPattern ?? "").trim() !== "");
   const [registry, setRegistry] = useState(initial?.registry ?? defaultRegistry);
   const [fromBeginning, setFromBeginning] = useState(initial?.fromBeginning ?? true);
   const [authMethod, setAuthMethod] = useState<AuthMethod>(initial?.authMethod ?? "none");
@@ -76,6 +77,50 @@ export function ConnectionDialog({
   const [selectedProfile, setSelectedProfile] = useState<string>("");
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
+
+  // Test connection state. `null` = not tested yet; otherwise carries the
+  // backend's verdict so the UI can show ✓ green / ✗ red.
+  type TestState =
+    | { phase: "idle" }
+    | { phase: "testing" }
+    | { phase: "ok"; message: string }
+    | { phase: "fail"; message: string };
+  const [testState, setTestState] = useState<TestState>({ phase: "idle" });
+
+  // Auto-detect: probe localhost on mount only when the user is starting from
+  // the blank "New connection" state. We don't overwrite any field the user
+  // has already typed. Fires once.
+  const detectedRef = useRef(false);
+  useEffect(() => {
+    if (detectedRef.current || isEditing || initial !== undefined) {
+      return;
+    }
+    detectedRef.current = true;
+    void (async () => {
+      try {
+        const probe = await invoke<ProbeResult>("probe_localhost_brokers");
+        if (probe.bootstrapServers) {
+          setBootstrap((current) =>
+            current.trim() === defaultBootstrap || current.trim() === ""
+              ? (probe.bootstrapServers ?? current)
+              : current,
+          );
+        }
+        if (probe.schemaRegistryUrl) {
+          setRegistry((current) =>
+            current.trim() === defaultRegistry || current.trim() === ""
+              ? (probe.schemaRegistryUrl ?? current)
+              : current,
+          );
+        }
+      } catch (err) {
+        // Probe is best-effort; never surface to the user.
+        console.warn("probe_localhost failed", err);
+      }
+    })();
+    // Run-once-on-mount: the deps are intentionally only read, not tracked.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     void refreshProfiles();
@@ -100,7 +145,8 @@ export function ConnectionDialog({
     try {
       const profile = await invoke<LoadedProfile>("load_profile", { name });
       setBootstrap(profile.bootstrapServers);
-      setTopics(profile.topics.join(", "));
+      setTopicPattern(profile.topicPattern ?? "");
+      setShowAdvanced((profile.topicPattern ?? "").trim() !== "");
       setRegistry(profile.schemaRegistryUrl ?? "");
       setFromBeginning(profile.fromBeginning);
       if (profile.auth) {
@@ -135,18 +181,11 @@ export function ConnectionDialog({
     if (!name) {
       return;
     }
-    const list = topics
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (list.length === 0) {
-      setProfileError("Topics must not be empty");
-      return;
-    }
+    const trimmedPattern = topicPattern.trim();
     const args: SaveProfileArgs = {
       name,
       bootstrapServers: bootstrap.trim(),
-      topics: list,
+      topicPattern: trimmedPattern === "" ? null : trimmedPattern,
       schemaRegistryUrl: registry.trim() === "" ? null : registry.trim(),
       auth: buildSaveAuth(
         authMethod,
@@ -193,14 +232,8 @@ export function ConnectionDialog({
     }
   }
 
-  const submit = (): void => {
-    const list = topics
-      .split(",")
-      .map((t) => t.trim())
-      .filter(Boolean);
-    if (list.length === 0) {
-      return;
-    }
+  async function runTest(): Promise<void> {
+    setTestState({ phase: "testing" });
     const registryUrl = registry.trim();
     const auth: AuthArgs | null =
       authMethod === "none"
@@ -212,7 +245,43 @@ export function ConnectionDialog({
             useTls,
             tls: useTls ? buildTlsArgs(caPath, certPath, keyPath, keyPassword) : null,
           };
-    onConnect(bootstrap.trim(), list, fromBeginning, registryUrl === "" ? null : registryUrl, auth);
+    try {
+      const result = await invoke<TestConnectionResponse>("test_connection", {
+        bootstrapServers: bootstrap.trim(),
+        schemaRegistryUrl: registryUrl === "" ? null : registryUrl,
+        auth,
+      });
+      setTestState(
+        result.ok
+          ? { phase: "ok", message: result.message }
+          : { phase: "fail", message: result.message },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setTestState({ phase: "fail", message });
+    }
+  }
+
+  const submit = (): void => {
+    const registryUrl = registry.trim();
+    const trimmedPattern = topicPattern.trim();
+    const auth: AuthArgs | null =
+      authMethod === "none"
+        ? null
+        : {
+            mechanism: authMethod,
+            username,
+            password,
+            useTls,
+            tls: useTls ? buildTlsArgs(caPath, certPath, keyPath, keyPassword) : null,
+          };
+    onConnect(
+      bootstrap.trim(),
+      trimmedPattern === "" ? null : trimmedPattern,
+      fromBeginning,
+      registryUrl === "" ? null : registryUrl,
+      auth,
+    );
   };
 
   return (
@@ -272,20 +341,11 @@ export function ConnectionDialog({
             required
           />
         </label>
-        <label className="dialog__field">
-          <span className="dialog__label">Topics (comma-separated)</span>
-          <input
-            className="dialog__input"
-            value={topics}
-            onChange={(e) => {
-              setTopics(e.target.value);
-            }}
-            placeholder="orders.raw, orders.enriched"
-            spellCheck={false}
-            autoComplete="off"
-            required
-          />
-        </label>
+        <p className="dialog__hint dialog__hint--note">
+          Subscribes to every non-internal topic by default (<code>^[^_].*</code>). Filter further
+          at view time with the Wireshark-style filter bar (e.g.{" "}
+          <code>topic =~ &quot;orders\..*&quot;</code>).
+        </p>
         <label className="dialog__field">
           <span className="dialog__label">Schema Registry URL (optional)</span>
           <input
@@ -299,6 +359,37 @@ export function ConnectionDialog({
             autoComplete="off"
           />
         </label>
+        <button
+          type="button"
+          className="dialog__disclosure"
+          onClick={() => {
+            setShowAdvanced((s) => !s);
+          }}
+          aria-expanded={showAdvanced}
+        >
+          {showAdvanced ? "▾ Advanced" : "▸ Advanced"}
+        </button>
+        {showAdvanced ? (
+          <label className="dialog__field">
+            <span className="dialog__label">
+              Topic pattern (regex, optional)
+              <span className="dialog__hint-inline">
+                {" "}
+                e.g. <code>^orders\..*</code> — narrows broker-side subscription
+              </span>
+            </span>
+            <input
+              className="dialog__input"
+              value={topicPattern}
+              onChange={(e) => {
+                setTopicPattern(e.target.value);
+              }}
+              placeholder="^[^_].*"
+              spellCheck={false}
+              autoComplete="off"
+            />
+          </label>
+        ) : null}
         <label className="dialog__field">
           <span className="dialog__label">Authentication</span>
           <select
@@ -427,7 +518,37 @@ export function ConnectionDialog({
           <span>Read from beginning</span>
         </label>
         {error ? <p className="dialog__error">{error}</p> : null}
+        {testState.phase !== "idle" ? (
+          <p
+            className={
+              testState.phase === "ok"
+                ? "dialog__test dialog__test--ok"
+                : testState.phase === "fail"
+                  ? "dialog__test dialog__test--fail"
+                  : "dialog__test dialog__test--pending"
+            }
+            role="status"
+            aria-live="polite"
+          >
+            {testState.phase === "testing"
+              ? "Testing…"
+              : testState.phase === "ok"
+                ? `✓ ${testState.message}`
+                : `✗ ${testState.message}`}
+          </p>
+        ) : null}
         <div className="dialog__actions">
+          <button
+            type="button"
+            className="btn"
+            onClick={() => {
+              void runTest();
+            }}
+            disabled={testState.phase === "testing"}
+            title="Probe broker + Schema Registry without starting a capture"
+          >
+            {testState.phase === "testing" ? "Testing…" : "Test"}
+          </button>
           <button
             type="button"
             className="btn"

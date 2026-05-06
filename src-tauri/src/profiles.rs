@@ -1,6 +1,6 @@
 //! Persisted connection profiles.
 //!
-//! Profile metadata (name, bootstrap, topics, SR URL, auth mechanism,
+//! Profile metadata (name, bootstrap, `topic_pattern`, SR URL, auth mechanism,
 //! username, TLS flag, cert paths) lives in a JSON file under Tauri's
 //! `app_config_dir`. Secrets (SASL password and TLS key password) are
 //! stored in the OS keychain via the `keyring` crate, keyed by
@@ -73,7 +73,11 @@ pub enum ProfileError {
 pub struct ProfileMetadata {
     pub name: String,
     pub bootstrap_servers: String,
-    pub topics: Vec<String>,
+    /// Topic regex (librdkafka-style; leading `^` required). `None` means
+    /// the default pattern (every non-internal topic) — the field is
+    /// optional for forward-compat with simpler future profiles.
+    #[serde(default)]
+    pub topic_pattern: Option<String>,
     /// `null` when the profile does not use a Schema Registry.
     pub schema_registry_url: Option<String>,
     /// `None` for PLAINTEXT.
@@ -385,7 +389,7 @@ mod tests {
         ProfileMetadata {
             name: name.to_owned(),
             bootstrap_servers: "localhost:19092".to_owned(),
-            topics: vec!["orders.raw".to_owned()],
+            topic_pattern: Some("^orders\\..*".to_owned()),
             schema_registry_url: None,
             auth: None,
             from_beginning: true,

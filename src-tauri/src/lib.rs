@@ -69,6 +69,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info,
             commands::connect,
+            commands::test_connection,
+            commands::probe_localhost_brokers,
             commands::disconnect,
             commands::snapshot,
             commands::stats,

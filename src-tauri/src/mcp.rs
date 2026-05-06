@@ -522,7 +522,7 @@ fn start_capture_from_profile(
 
     let config = CaptureConfig::new(
         profile.meta.bootstrap_servers,
-        profile.meta.topics,
+        capture::normalise_topic_pattern(profile.meta.topic_pattern.as_deref()),
         profile.meta.from_beginning,
         auth,
     );

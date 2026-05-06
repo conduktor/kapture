@@ -36,7 +36,7 @@ pub const fn app_info() -> AppInfo {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectResponse {
-    pub topics: Vec<String>,
+    pub topic_pattern: String,
     pub bootstrap_servers: String,
 }
 
@@ -159,7 +159,7 @@ pub fn connect(
     state: State<'_, AppState>,
     app: AppHandle,
     bootstrap_servers: String,
-    topics: Vec<String>,
+    topic_pattern: Option<String>,
     from_beginning: bool,
     schema_registry_url: Option<String>,
     auth: Option<AuthArgs>,
@@ -182,9 +182,10 @@ pub fn connect(
 
     let parsed_auth = auth.map(AuthArgs::parse).transpose()?;
     let auth_label = parsed_auth.as_ref().map(|a| a.mechanism.label());
+    let pattern = capture::normalise_topic_pattern(topic_pattern.as_deref());
     let config = CaptureConfig::new(
         bootstrap_servers.clone(),
-        topics.clone(),
+        pattern.clone(),
         from_beginning,
         parsed_auth,
     );
@@ -210,15 +211,153 @@ pub fn connect(
 
     info!(
         bootstrap = %bootstrap_servers,
-        topics = ?topics,
+        pattern = %pattern,
         sr = schema_registry_url.as_deref().unwrap_or("none"),
         auth = auth_label.unwrap_or("none"),
         "capture started"
     );
     Ok(ConnectResponse {
-        topics,
+        topic_pattern: pattern,
         bootstrap_servers,
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestConnectionResponse {
+    pub ok: bool,
+    pub brokers: usize,
+    pub topics: usize,
+    pub message: String,
+}
+
+/// Probe a Kafka cluster without starting a capture. Used by the
+/// "Test connection" button in the GUI. The 5 s timeout is hard-coded:
+/// any healthy broker answers metadata in well under a second; longer
+/// is almost certainly a hung TCP path or a wrong port.
+#[tauri::command]
+pub async fn test_connection(
+    bootstrap_servers: String,
+    schema_registry_url: Option<String>,
+    auth: Option<AuthArgs>,
+) -> Result<TestConnectionResponse> {
+    let parsed_auth = auth.map(AuthArgs::parse).transpose()?;
+    let pattern = capture::normalise_topic_pattern(None);
+    let config = CaptureConfig::new(bootstrap_servers, pattern, true, parsed_auth);
+    // Run the blocking metadata fetch on a worker thread so the IPC
+    // event loop isn't blocked. spawn_blocking is enough — fetch_metadata
+    // is a synchronous librdkafka call that returns within `timeout`.
+    let report = tokio::task::spawn_blocking(move || {
+        capture::test_connection(&config, Duration::from_secs(5))
+    })
+    .await
+    .map_err(|e| KaptureError::Config(format!("worker join failed: {e}")))??;
+
+    // Schema Registry is optional and tested separately so a missing /
+    // misconfigured registry doesn't fail the broker probe.
+    if let Some(url) = schema_registry_url
+        .as_ref()
+        .filter(|u| !u.trim().is_empty())
+    {
+        // Tight HTTP GET with a short timeout. SR's /subjects is cheap and
+        // exists on Confluent + Redpanda + Apicurio.
+        let endpoint = format!("{}/subjects", url.trim_end_matches('/'));
+        let sr_ok = match reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+        {
+            Ok(client) => match client.get(&endpoint).send().await {
+                // 4xx still proves the server exists and answered; only
+                // network-level failures (connect refused, DNS, TLS) count
+                // as "registry unreachable".
+                Ok(resp) => resp.status().is_success() || resp.status().is_client_error(),
+                Err(_) => false,
+            },
+            Err(_) => false,
+        };
+        if !sr_ok {
+            return Ok(TestConnectionResponse {
+                ok: false,
+                brokers: report.brokers,
+                topics: report.topics,
+                message: format!(
+                    "Brokers reachable ({} brokers, {} topics) but Schema Registry at {url} did not respond",
+                    report.brokers, report.topics
+                ),
+            });
+        }
+    }
+
+    Ok(TestConnectionResponse {
+        ok: true,
+        brokers: report.brokers,
+        topics: report.topics,
+        message: format!(
+            "{} brokers, {} topics visible",
+            report.brokers, report.topics
+        ),
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    pub bootstrap_servers: Option<String>,
+    pub schema_registry_url: Option<String>,
+    pub flavour: Option<String>,
+}
+
+/// Probe well-known localhost ports for a running Kafka + Schema Registry
+/// pair. Returns the first reachable broker and the matching SR if the
+/// flavour is recognised. Pure TCP probe — no Kafka protocol exchange — so
+/// this never authenticates and is safe to run with no user input.
+#[tauri::command]
+pub async fn probe_localhost_brokers() -> ProbeResult {
+    use tokio::net::TcpStream;
+    use tokio::time::timeout;
+
+    // (port, flavour-label, paired-SR-port). SR is also probed
+    // independently in case it's the only piece running.
+    const CANDIDATES: &[(u16, &str, u16)] = &[
+        (19092, "Redpanda", 18081),
+        (29092, "Apache Kafka", 28081),
+        (9092, "Apache Kafka", 8081),
+    ];
+    const PROBE_TIMEOUT: Duration = Duration::from_millis(200);
+
+    let mut bootstrap = None;
+    let mut sr = None;
+    let mut flavour = None;
+    for (port, label, sr_port) in CANDIDATES {
+        let broker_ok = timeout(
+            PROBE_TIMEOUT,
+            TcpStream::connect(format!("127.0.0.1:{port}")),
+        )
+        .await
+        .ok()
+        .and_then(std::result::Result::ok)
+        .is_some();
+        if broker_ok && bootstrap.is_none() {
+            bootstrap = Some(format!("localhost:{port}"));
+            flavour = Some((*label).to_owned());
+        }
+        let sr_ok = timeout(
+            PROBE_TIMEOUT,
+            TcpStream::connect(format!("127.0.0.1:{sr_port}")),
+        )
+        .await
+        .ok()
+        .and_then(std::result::Result::ok)
+        .is_some();
+        if sr_ok && sr.is_none() {
+            sr = Some(format!("http://localhost:{sr_port}"));
+        }
+    }
+    ProbeResult {
+        bootstrap_servers: bootstrap,
+        schema_registry_url: sr,
+        flavour,
+    }
 }
 
 #[tauri::command]
@@ -279,7 +418,9 @@ pub fn set_filter(state: State<'_, AppState>, expression: String) -> Result<()> 
 pub struct SaveProfileArgs {
     pub name: String,
     pub bootstrap_servers: String,
-    pub topics: Vec<String>,
+    /// Optional topic regex; `None` records the default pattern intent.
+    #[serde(default)]
+    pub topic_pattern: Option<String>,
     pub schema_registry_url: Option<String>,
     pub auth: Option<SaveProfileAuth>,
     pub from_beginning: bool,
@@ -387,7 +528,7 @@ pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result
     let meta = ProfileMetadata {
         name: args.name,
         bootstrap_servers: args.bootstrap_servers,
-        topics: args.topics,
+        topic_pattern: args.topic_pattern,
         schema_registry_url: args.schema_registry_url,
         auth,
         from_beginning: args.from_beginning,
