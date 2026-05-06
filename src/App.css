@@ -1300,3 +1300,117 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* ---------- SnippetsPanel ---------- */
+.side__collapse {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+}
+.side__collapse:hover .side__title--inline {
+  color: var(--accent);
+}
+.side__collapse-caret {
+  display: inline-block;
+  width: 12px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.side__title--inline {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  transition: color 120ms ease;
+}
+.snippets {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.snippets__group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.snippets__group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.snippet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.snippet__label {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.snippet__block {
+  position: relative;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  padding-right: 56px;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease;
+}
+.snippet__block:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
+}
+.snippet__block:hover .snippet__copy {
+  opacity: 1;
+}
+.snippet__code {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.4;
+}
+.snippet__copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  font-family: var(--sans);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease;
+}
+.snippet__copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.snippet__copy:focus-visible {
+  opacity: 1;
+  outline: none;
+  color: var(--accent);
+  border-color: var(--accent);
+}

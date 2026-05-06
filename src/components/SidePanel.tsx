@@ -1,6 +1,7 @@
 import { useEffect, useState, type JSX } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppInfo, CaptureStats, ConnectionState, ProxyStatusSummary } from "../types";
+import { SnippetsPanel } from "./SnippetsPanel";
 
 interface Props {
   appInfo: AppInfo | null;
@@ -159,6 +160,11 @@ export function SidePanel({ appInfo, connection, stats }: Props): JSX.Element {
           <span>Allow MCP-initiated proxy start (kapture_set_proxy_target)</span>
         </label>
       </section>
+      {connection.status === "connected" &&
+      proxy?.listening === true &&
+      proxy.listenAddr !== null ? (
+        <SnippetsPanel listenAddr={proxy.listenAddr} />
+      ) : null}
       <section className="side__section side__section--meta">
         <h2 className="side__title">App</h2>
         <dl className="side__kv">
