@@ -18,8 +18,8 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
   const rows = chunkHex(frame.payloadHex, 16);
   return (
     <section className="layers" aria-label="Frame detail">
-      <div className="layer">
-        <div className="layer__title">frame</div>
+      <details className="layer" open>
+        <summary className="layer__title">frame</summary>
         <div className="layer__body">
           <Field name="direction" value={frame.direction} />
           <Field name="api" value={`${frame.apiName} (${frame.apiKey})`} />
@@ -40,10 +40,10 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
           ) : null}
           <Field name="timestamp" value={frame.timestamp} />
         </div>
-      </div>
+      </details>
       {rows.length > 0 ? (
-        <div className="layer">
-          <div className="layer__title">payload — hex view (phase 2a)</div>
+        <details className="layer" open>
+          <summary className="layer__title">payload — hex view (phase 2a)</summary>
           <div className="layer__body">
             <pre className="proto-hex">
               {rows.map((row, i) => (
@@ -59,7 +59,7 @@ export function ProtoDetail({ frame }: Props): JSX.Element {
               <code>kafka-protocol</code> crate.
             </p>
           </div>
-        </div>
+        </details>
       ) : null}
     </section>
   );

@@ -1,6 +1,7 @@
-import { useMemo, type JSX } from "react";
+import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent } from "react";
 import { List, type RowComponentProps } from "react-window";
 import type { ProtoFrame } from "../types";
+import { ensureRowVisible } from "../lib/listNav";
 
 interface Props {
   frames: ProtoFrame[];
@@ -25,9 +26,36 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
     () => ({ frames, selectedId, onSelect }),
     [frames, selectedId, onSelect],
   );
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+      if (frames.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const dir = event.key === "ArrowDown" ? 1 : -1;
+      const cur = selectedId === null ? -1 : frames.findIndex((f) => f.id === selectedId);
+      const next =
+        cur < 0
+          ? dir > 0
+            ? 0
+            : frames.length - 1
+          : Math.max(0, Math.min(frames.length - 1, cur + dir));
+      const nextFrame = frames[next];
+      if (!nextFrame) {
+        return;
+      }
+      onSelect(nextFrame.id);
+      ensureRowVisible(bodyRef.current, next, ROW_HEIGHT);
+    },
+    [frames, selectedId, onSelect],
+  );
 
   return (
-    <section className="msglist" aria-label="Protocol frames">
+    <section className="msglist" aria-label="Protocol frames" tabIndex={0} onKeyDown={onKeyDown}>
       <div className="msglist__head">
         <span className="proto__col proto__col--ts">ts</span>
         <span className="proto__col proto__col--dir">dir</span>
@@ -38,7 +66,7 @@ export function ProtoList({ frames, selectedId, onSelect }: Props): JSX.Element 
         <span className="proto__col proto__col--size">size</span>
         <span className="proto__col proto__col--rtt">rtt (ms)</span>
       </div>
-      <div className="msglist__body">
+      <div className="msglist__body" ref={bodyRef}>
         {frames.length === 0 ? (
           <div className="msglist__empty">
             <p>No protocol frames yet.</p>

@@ -1,6 +1,15 @@
-import { useMemo, type JSX, type MouseEvent, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  type JSX,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { List, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
+import { ensureRowVisible } from "../lib/listNav";
 import type { FilterTarget } from "./FilterMenu";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
@@ -31,9 +40,41 @@ export function MessageList({
     () => ({ messages, selectedId, onSelect, onOpenFilterMenu }),
     [messages, selectedId, onSelect, onOpenFilterMenu],
   );
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  // Up/Down navigation: move the selection one step and ensure the row
+  // is visible. Virtualisation means we can't rely on the focused
+  // <button> being mounted, so we drive scrollTop directly off the
+  // index × ROW_HEIGHT geometry.
+  const onKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+        return;
+      }
+      if (messages.length === 0) {
+        return;
+      }
+      event.preventDefault();
+      const dir = event.key === "ArrowDown" ? 1 : -1;
+      const cur = selectedId === null ? -1 : messages.findIndex((m) => m.id === selectedId);
+      const next =
+        cur < 0
+          ? dir > 0
+            ? 0
+            : messages.length - 1
+          : Math.max(0, Math.min(messages.length - 1, cur + dir));
+      const nextMessage = messages[next];
+      if (!nextMessage) {
+        return;
+      }
+      onSelect(nextMessage.id);
+      ensureRowVisible(bodyRef.current, next, ROW_HEIGHT);
+    },
+    [messages, selectedId, onSelect],
+  );
 
   return (
-    <section className="msglist" aria-label="Captured messages">
+    <section className="msglist" aria-label="Captured messages" tabIndex={0} onKeyDown={onKeyDown}>
       <div className="msglist__head">
         <span className="msglist__col msglist__col--ts">ts</span>
         <span className="msglist__col msglist__col--topic">topic</span>
@@ -43,7 +84,7 @@ export function MessageList({
         <span className="msglist__col msglist__col--schema">schema</span>
         <span className="msglist__col msglist__col--size">size</span>
       </div>
-      <div className="msglist__body">
+      <div className="msglist__body" ref={bodyRef}>
         {messages.length === 0 ? (
           <div className="msglist__empty">
             <p>No messages yet.</p>
