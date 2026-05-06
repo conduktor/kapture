@@ -335,6 +335,38 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
 .proto__col--v {
   text-align: right;
 }
+
+/* Hex view inside the protocol detail panel */
+.proto-hex {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+.proto-hex__row {
+  display: grid;
+  grid-template-columns: 60px 1fr 180px;
+  gap: 12px;
+  align-items: baseline;
+}
+.proto-hex__off {
+  color: var(--text-faint);
+}
+.proto-hex__hex {
+  color: var(--text);
+}
+.proto-hex__ascii {
+  color: var(--text-muted);
+  white-space: pre;
+}
 .msglist__head {
   padding: 6px 12px;
 }

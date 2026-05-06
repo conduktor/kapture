@@ -30,7 +30,11 @@ use crate::correlator::ProtoCorrelator;
 const PROTO_DIR_SEND: c_int = 0;
 const PROTO_DIR_RECV: c_int = 1;
 
-/// Mirror of the C-side function-pointer type.
+/// Mirror of the C-side function-pointer type. The patched librdkafka
+/// also flattens the wire payload (request bytes on SEND, response
+/// bytes on RECV) into a temp buffer and passes a (ptr, len) tuple
+/// alongside the metadata. The pointer is only valid for the duration
+/// of the callback — copy out before returning.
 type CHookFn = unsafe extern "C" fn(
     rk: *mut c_void,
     dir: c_int,
@@ -40,8 +44,15 @@ type CHookFn = unsafe extern "C" fn(
     broker_id: i32,
     payload_size: usize,
     rtt_ms: c_double,
+    payload_buf: *const c_void,
+    payload_buf_len: usize,
     opaque: *mut c_void,
 );
+
+/// Capture cap mirrors `RD_KAFKA_PROTO_HOOK_PAYLOAD_MAX` in our patched
+/// rdkafka.h. We refuse to read more than this from the C buffer just
+/// in case (defence in depth — the C side already caps).
+const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
 
 #[link(name = "rdkafka")]
 extern "C" {
@@ -65,6 +76,10 @@ pub struct ProtoEvent {
     pub broker_id: i32,
     pub payload_size: usize,
     pub rtt_ms: f64,
+    /// Captured wire-payload prefix (≤ `PROTO_PAYLOAD_CAP`). Empty if
+    /// the C side couldn't allocate the temp buffer or the payload was
+    /// zero-length.
+    pub payload: Vec<u8>,
 }
 
 impl ProtoEvent {
@@ -127,6 +142,8 @@ unsafe extern "C" fn proto_hook_trampoline(
     broker_id: i32,
     payload_size: usize,
     rtt_ms: c_double,
+    payload_buf: *const c_void,
+    payload_buf_len: usize,
     opaque: *mut c_void,
 ) {
     if opaque.is_null() {
@@ -143,6 +160,16 @@ unsafe extern "C" fn proto_hook_trampoline(
     } else {
         ProtoDirection::Send
     };
+    // Copy the wire bytes out before returning — the C side frees the
+    // temp buffer immediately. Cap defensively at PROTO_PAYLOAD_CAP.
+    let payload = if payload_buf.is_null() || payload_buf_len == 0 {
+        Vec::new()
+    } else {
+        let take = payload_buf_len.min(PROTO_PAYLOAD_CAP);
+        // Safety: librdkafka guarantees `payload_buf` is valid for
+        // `payload_buf_len` bytes for the duration of the callback.
+        unsafe { std::slice::from_raw_parts(payload_buf.cast::<u8>(), take).to_vec() }
+    };
     let event = ProtoEvent {
         direction,
         api_key,
@@ -151,6 +178,7 @@ unsafe extern "C" fn proto_hook_trampoline(
         broker_id,
         payload_size,
         rtt_ms,
+        payload,
     };
     // Run the correlator update inside `catch_unwind` because a panic
     // unwinding into the C broker thread would be undefined behaviour.

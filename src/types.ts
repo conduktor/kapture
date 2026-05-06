@@ -31,9 +31,14 @@ export interface ProtoFrame {
   apiVersion: number;
   brokerId: number;
   corrId: number;
+  /** True wire size. */
   size: number;
+  /** Bytes captured for inspection. `≤ size` (capped at 64 KiB). */
+  captured: number;
   /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
   rttMs: number;
+  /** Lowercase hex of the captured prefix. Empty when capture was 0 bytes. */
+  payloadHex: string;
 }
 
 export interface KafkaMessage {

@@ -11,6 +11,7 @@ import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
 import { ProtoList } from "./components/ProtoList";
+import { ProtoDetail } from "./components/ProtoDetail";
 import type {
   AppInfo,
   AuthArgs,
@@ -407,11 +408,14 @@ function App(): JSX.Element {
               <HexDump message={selected} />
             </>
           ) : (
-            <ProtoList
-              frames={protoFrames}
-              selectedId={selectedFrameId}
-              onSelect={setSelectedFrameId}
-            />
+            <>
+              <ProtoList
+                frames={protoFrames}
+                selectedId={selectedFrameId}
+                onSelect={setSelectedFrameId}
+              />
+              <ProtoDetail frame={protoFrames.find((f) => f.id === selectedFrameId) ?? null} />
+            </>
           )}
         </div>
         <SidePanel appInfo={appInfo} connection={connection} stats={stats} />

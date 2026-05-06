@@ -63,10 +63,17 @@ pub struct ProtoFrame {
     pub api_version: i32,
     pub broker_id: i32,
     pub corr_id: i32,
-    /// Bytes on the wire (request size on Send, response size on Recv).
+    /// True wire size (request size on Send, response size on Recv).
     pub size: usize,
+    /// Bytes captured for inspection — this is `≤ size` because the
+    /// proto-hook caps the per-frame capture at 64 KiB to bound memory
+    /// pressure on the broker thread.
+    pub captured: usize,
     /// Round-trip time in milliseconds. Only meaningful on `Recv`.
     pub rtt_ms: f64,
+    /// Lowercase hex of the captured prefix. Empty when `captured == 0`.
+    /// At ~64 KiB cap → ~128 KiB of hex per frame in the worst case.
+    pub payload_hex: String,
 }
 
 #[derive(Debug, Default)]
@@ -100,6 +107,7 @@ impl ProtoCorrelator {
     pub fn record_event(&self, event: &ProtoEvent) {
         // (1) Frames ring buffer: every event, both directions.
         {
+            let captured = event.payload.len();
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
                 timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
@@ -110,7 +118,9 @@ impl ProtoCorrelator {
                 broker_id: event.broker_id,
                 corr_id: event.corr_id,
                 size: event.payload_size,
+                captured,
                 rtt_ms: event.rtt_ms,
+                payload_hex: hex::encode(&event.payload),
             };
             let mut frames = self.frames.lock();
             frames.push_back(frame);
@@ -193,6 +203,7 @@ mod tests {
             broker_id,
             payload_size: 1024,
             rtt_ms,
+            payload: Vec::new(),
         }
     }
 
