@@ -34,7 +34,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hex = "0.4"
 bytes = "1"
-kafka-protocol = "0.16"
+# Vendored fork at vendor/kafka-protocol-rs (sderosiaux/kafka-protocol-rs
+# branch `kapture`). Forked because upstream is sparsely maintained
+# and we need newer ApiVersions / Fetch / Metadata schemas + a couple
+# of small bug fixes. See `vendor/kafka-protocol-rs/README.md` and the
+# kapture-conventions memory note.
+kafka-protocol = { path = "../vendor/kafka-protocol-rs" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 pest = "2"

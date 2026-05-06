@@ -8,6 +8,10 @@ pnpm exec lint-staged
 # Frontend: full TypeScript type check (cheap, catches cross-file issues)
 pnpm exec tsc --noEmit
 
-# Backend: rustfmt + clippy on entire crate (no staged-only mode for Cargo)
-cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
+# Backend: rustfmt + clippy on the kapture crate ONLY. We use -p
+# kapture (not --all) because the vendored kafka-protocol-rs fork at
+# vendor/kafka-protocol-rs has its own rustfmt style we don't want to
+# fight on every commit. Same for clippy: vendored crate is built
+# with its own lints upstream.
+cargo fmt --manifest-path src-tauri/Cargo.toml -p kapture -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml -p kapture --all-targets --all-features -- -D warnings
