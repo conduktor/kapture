@@ -7,8 +7,11 @@
 //!
 //! Phase 1: single broker, plain TCP, no SASL, no TLS.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::time::Instant;
 
+use parking_lot::Mutex;
 use tokio::net::TcpStream;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
@@ -61,6 +64,89 @@ pub fn framed_kafka(socket: TcpStream) -> Framed<TcpStream, LengthDelimitedCodec
     Framed::new(socket, codec)
 }
 
+/// Minimum bytes needed to peek the (`api_key`, `api_version`, `corr_id`)
+/// triple at the start of every Kafka request, regardless of header
+/// version. The remainder of the header (`client_id`, tagged fields)
+/// varies by version and we don't need it for routing / correlation.
+const REQUEST_HEADER_PREFIX_LEN: usize = 8;
+
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[derive(Debug, Clone, Copy)]
+pub struct RequestHeaderPeek {
+    pub api_key: i16,
+    pub api_version: i16,
+    pub corr_id: i32,
+}
+
+/// Read the fixed-shape request header prefix without consuming the
+/// buffer. Returns `None` if the buffer is too short.
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[must_use]
+pub fn peek_request_header(frame: &[u8]) -> Option<RequestHeaderPeek> {
+    if frame.len() < REQUEST_HEADER_PREFIX_LEN {
+        return None;
+    }
+    let api_key = i16::from_be_bytes([frame[0], frame[1]]);
+    let api_version = i16::from_be_bytes([frame[2], frame[3]]);
+    let corr_id = i32::from_be_bytes([frame[4], frame[5], frame[6], frame[7]]);
+    Some(RequestHeaderPeek {
+        api_key,
+        api_version,
+        corr_id,
+    })
+}
+
+/// One in-flight request awaiting its matching response on the same
+/// TCP connection. The `sent_at` timestamp powers RTT measurement —
+/// strictly per-connection, not per-broker, since `corr_id` uniqueness
+/// is only guaranteed within one TCP connection (Kafka spec).
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[derive(Debug, Clone, Copy)]
+pub struct PendingRequest {
+    pub header: RequestHeaderPeek,
+    pub sent_at: Instant,
+}
+
+#[allow(dead_code)] // see note on `ProxyConfig`
+impl PendingRequest {
+    #[must_use]
+    pub fn rtt_at(&self, now: Instant) -> f64 {
+        let elapsed = now.saturating_duration_since(self.sent_at);
+        // ms with fractional precision, like the proto-hook path.
+        elapsed.as_secs_f64() * 1000.0
+    }
+}
+
+/// Per-connection map `corr_id → in-flight request`.
+///
+/// Bounded implicitly by the number of in-flight Kafka requests on
+/// one TCP connection — Kafka clients pipeline but cap at a few
+/// hundred. We rely on the response take to drain entries; if a
+/// connection drops mid-flight any leftovers are released when the
+/// owning task exits and drops the map.
+#[allow(dead_code)] // see note on `ProxyConfig`
+#[derive(Debug, Default)]
+pub struct CorrelationMap {
+    inner: Mutex<HashMap<i32, PendingRequest>>,
+}
+
+#[allow(dead_code)] // see note on `ProxyConfig`
+impl CorrelationMap {
+    pub fn record_request(&self, corr_id: i32, header: RequestHeaderPeek) {
+        self.inner.lock().insert(
+            corr_id,
+            PendingRequest {
+                header,
+                sent_at: Instant::now(),
+            },
+        );
+    }
+
+    pub fn take_response(&self, corr_id: i32) -> Option<PendingRequest> {
+        self.inner.lock().remove(&corr_id)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -99,5 +185,53 @@ mod tests {
         client.shutdown().await.unwrap();
 
         server.await.unwrap();
+    }
+
+    #[test]
+    fn peek_request_header_reads_api_key_version_corr_id() {
+        // Wire shape (size prefix already stripped by the codec):
+        //   api_key (i16 BE) | api_version (i16 BE) | corr_id (i32 BE) | rest...
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3i16.to_be_bytes()); // Metadata
+        buf.extend_from_slice(&12i16.to_be_bytes()); // v12
+        buf.extend_from_slice(&777i32.to_be_bytes()); // corr id
+        buf.extend_from_slice(b"...remaining header + body...");
+
+        let header = peek_request_header(&buf).unwrap();
+        assert_eq!(header.api_key, 3);
+        assert_eq!(header.api_version, 12);
+        assert_eq!(header.corr_id, 777);
+    }
+
+    #[test]
+    fn peek_request_header_rejects_short_buffer() {
+        assert!(peek_request_header(&[0u8; 7]).is_none());
+    }
+
+    #[test]
+    fn correlation_map_pairs_request_and_response() {
+        let map = CorrelationMap::default();
+        map.record_request(
+            42,
+            RequestHeaderPeek {
+                api_key: 1,
+                api_version: 13,
+                corr_id: 42,
+            },
+        );
+        let pending = map.take_response(42).unwrap();
+        assert_eq!(pending.header.api_key, 1);
+        assert_eq!(pending.header.api_version, 13);
+        // RTT is positive (some elapsed time, even if tiny).
+        let rtt = pending.rtt_at(std::time::Instant::now());
+        assert!(rtt >= 0.0);
+        // Subsequent take returns None — entries are consumed.
+        assert!(map.take_response(42).is_none());
+    }
+
+    #[test]
+    fn correlation_map_returns_none_for_unknown_corr_id() {
+        let map = CorrelationMap::default();
+        assert!(map.take_response(999).is_none());
     }
 }
