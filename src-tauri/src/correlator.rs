@@ -257,6 +257,17 @@ impl ProtoCorrelator {
         self.frames.lock().len()
     }
 
+    /// Drain the entire frame ring buffer + reset the per-connection
+    /// fetch-metadata map. Used by the GUI's "Clear" button so the
+    /// user can start a fresh capture session for a new test scenario
+    /// without restarting the proxy.
+    pub fn clear(&self) {
+        self.frames.lock().clear();
+        let mut state = self.state.write();
+        state.by_connection.clear();
+        state.latest = None;
+    }
+
     /// Approximation: returns the most-recent `Fetch` response across
     /// all brokers. The (topic, partition) inputs are accepted for
     /// future per-leader correlation but are unused today.

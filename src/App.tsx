@@ -419,12 +419,18 @@ function App(): JSX.Element {
   };
 
   const handleClear = (): void => {
-    void invoke("clear_buffer").catch((err: unknown) => {
+    // Wipes BOTH the message ring buffer AND the protocol frame ring
+    // on the backend, so a "Clear" reset gives the user a fully empty
+    // workspace before testing a new scenario. Local state caches
+    // (messages, protoFrames, selection) reset alongside.
+    void invoke("clear_capture").catch((err: unknown) => {
       console.error("clear failed", err);
     });
     messagesRef.current = [];
     setMessages([]);
+    setProtoFrames([]);
     setSelectedId(null);
+    setSelectedFrameId(null);
   };
 
   const applyFilter = useCallback((expression: string): void => {

@@ -348,6 +348,22 @@ function tsToMs(ts: string): number {
   return Number.isNaN(micro) ? d : d + micro / 1000;
 }
 
+/** Format an RFC3339 µs timestamp as local-wallclock `HH:MM:SS.µs`.
+ *  Backend emits UTC; the user reads in their own timezone, so we
+ *  convert here. JS `Date` has only ms precision — we splice the µs
+ *  trailer from the original string back in. */
+function formatLocalTs(ts: string): string {
+  const d = new Date(ts);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const dotIdx = ts.indexOf(".");
+  const zIdx = ts.indexOf("Z");
+  const frac = dotIdx >= 0 && zIdx > dotIdx ? ts.slice(dotIdx + 1, zIdx) : "";
+  const tail = frac ? `.${frac.slice(0, 6)}` : "";
+  return `${hh}:${mm}:${ss}${tail}`;
+}
+
 function formatDelta(deltaMs: number): string {
   if (deltaMs < 1) {
     return "+<1ms";
@@ -378,9 +394,10 @@ function ProtoRow({
   }
   const isSelected = selectedId === frame.id;
   const isPaired = pairedId === frame.id;
-  // Trim to time-of-day for the list; full timestamp is in the detail view.
-  // Backend emits RFC3339 with microseconds → keep HH:MM:SS.ffffff.
-  const ts = frame.timestamp.slice(11, 26);
+  // Backend emits UTC RFC3339 with µs precision; the list shows the
+  // user's LOCAL wallclock so 22:35Z reads as 18:35 in CEST etc. The
+  // detail panel below keeps the full UTC RFC3339 for traceability.
+  const ts = formatLocalTs(frame.timestamp);
   const prev = index > 0 ? frames[index - 1] : undefined;
   const delta =
     prev !== undefined ? formatDelta(tsToMs(frame.timestamp) - tsToMs(prev.timestamp)) : null;

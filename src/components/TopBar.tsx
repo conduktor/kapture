@@ -27,11 +27,13 @@ export function TopBar({
   onEdit,
   onOpenSnippets,
 }: Props): JSX.Element {
-  // Proxy pill: show `proxy {listenAddr} → {upstream}` when the listener
-  // is up; "no proxy" when nothing's running; "proxy starting…" when the
-  // listener is booting so the pill never blanks.
+  // Cluster pill: show `{listenAddr} → {upstream}` when the listener
+  // is up; "not connected" when nothing's running. "proxy" wording is
+  // deliberately hidden in the user-facing label — Kapture presents
+  // itself as an inspector, the proxy plumbing is an implementation
+  // detail, not a feature the user has to think about.
   const pillLabel =
-    proxyStatus !== null ? `proxy ${proxyStatus.listenAddr} → ${proxyStatus.upstream}` : "no proxy";
+    proxyStatus !== null ? `${proxyStatus.listenAddr} → ${proxyStatus.upstream}` : "not connected";
   return (
     <header className="topbar">
       <button

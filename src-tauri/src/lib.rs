@@ -103,6 +103,7 @@ pub fn run() {
             commands::proto_frame_detail,
             commands::stats,
             commands::clear_buffer,
+            commands::clear_capture,
             commands::set_filter,
             commands::list_profiles,
             commands::save_profile,

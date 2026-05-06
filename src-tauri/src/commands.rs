@@ -482,6 +482,19 @@ pub fn clear_buffer(state: State<'_, AppState>) {
     state.buffer.clear();
 }
 
+/// Wipe BOTH the captured-message ring buffer AND the protocol frame
+/// ring buffer. Used by the GUI's "Clear" button so the user can
+/// reset to an empty list before testing a new scenario without
+/// restarting the proxy. The proxy keeps running; only the
+/// observation history is dropped.
+#[tauri::command]
+pub fn clear_capture(state: State<'_, AppState>) {
+    state.buffer.clear();
+    if let Some(correlator) = state.correlator() {
+        correlator.clear();
+    }
+}
+
 #[tauri::command]
 pub fn set_filter(state: State<'_, AppState>, expression: String) -> Result<()> {
     let trimmed = expression.trim();
