@@ -86,8 +86,6 @@ impl AppState {
         taken
     }
 
-    // Wired into Tauri commands in Task 8 of the proxy-mode plan.
-    #[allow(dead_code)]
     pub fn install_proxy(
         &self,
         handle: crate::proxy::ProxyHandle,
@@ -102,7 +100,6 @@ impl AppState {
         self.capture_pending.store(false, Ordering::Release);
     }
 
-    #[allow(dead_code)] // see note on `install_proxy`
     pub fn take_proxy(&self) -> Option<crate::proxy::ProxyHandle> {
         let taken = {
             let mut guard = self.inner.lock();
@@ -114,7 +111,7 @@ impl AppState {
         taken
     }
 
-    #[allow(dead_code)] // see note on `install_proxy`
+    #[allow(dead_code)] // exposed for future GUI/MCP consumers
     pub fn is_proxying(&self) -> bool {
         self.inner.lock().proxy.is_some()
     }

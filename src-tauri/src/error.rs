@@ -17,6 +17,15 @@ pub enum KaptureError {
     #[error("not capturing")]
     NotCapturing,
 
+    #[error("a proxy listener is already running")]
+    AlreadyProxying,
+
+    #[error("no proxy listener is running")]
+    NotProxying,
+
+    #[error("proxy: {0}")]
+    Proxy(String),
+
     #[error("filter: {0}")]
     Filter(#[from] FilterError),
 

@@ -387,6 +387,73 @@ pub async fn disconnect(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStatus {
+    pub listen_addr: String,
+    pub upstream: String,
+}
+
+/// Start the proxy listener. Bound to `127.0.0.1:listen_port`. The
+/// previous capture (if any) is stopped first so client mode and
+/// proxy mode are mutually exclusive — exactly one Protocol tab at
+/// a time.
+#[tauri::command]
+pub async fn start_proxy(
+    state: State<'_, AppState>,
+    app: AppHandle,
+    upstream: String,
+    listen_port: u16,
+) -> Result<ProxyStatus> {
+    if let Some(handle) = state.take_capture() {
+        handle.stop().await;
+    }
+    if let Some(handle) = state.take_proxy() {
+        handle.stop().await;
+    }
+    if !state.try_claim_capture_slot() {
+        return Err(KaptureError::AlreadyProxying);
+    }
+    state.buffer.clear();
+
+    let trimmed_upstream = upstream.trim().to_owned();
+    if trimmed_upstream.is_empty() {
+        state.release_capture_slot();
+        return Err(KaptureError::Config(
+            "upstream must be non-empty".to_owned(),
+        ));
+    }
+
+    let correlator = Arc::new(ProtoCorrelator::new());
+    let cfg = crate::proxy::ProxyConfig::new(trimmed_upstream.clone(), listen_port);
+    let handle = match crate::proxy::ProxyHandle::start(cfg, Arc::clone(&correlator)).await {
+        Ok(h) => h,
+        Err(err) => {
+            state.release_capture_slot();
+            return Err(KaptureError::Proxy(err.to_string()));
+        }
+    };
+    let listen_addr = handle.local_addr().to_string();
+    state.install_proxy(handle, correlator);
+    spawn_stats_emitter(&app);
+    info!(listen = %listen_addr, upstream = %trimmed_upstream, "proxy started");
+
+    Ok(ProxyStatus {
+        listen_addr,
+        upstream: trimmed_upstream,
+    })
+}
+
+#[tauri::command]
+pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
+    let Some(handle) = state.take_proxy() else {
+        return Err(KaptureError::NotProxying);
+    };
+    handle.stop().await;
+    info!("proxy stopped");
+    Ok(())
+}
+
 /// Snapshot of recent observed Kafka protocol frames as **summaries**
 /// (no payload bytes, no decoded body — those are megabyte-scale on
 /// busy clusters and don't belong in the 1 Hz polling path). Returns

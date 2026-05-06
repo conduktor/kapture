@@ -74,6 +74,8 @@ pub fn run() {
             commands::test_connection,
             commands::probe_localhost_brokers,
             commands::disconnect,
+            commands::start_proxy,
+            commands::stop_proxy,
             commands::snapshot,
             commands::proto_frames,
             commands::proto_frame_detail,

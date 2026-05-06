@@ -318,7 +318,6 @@ impl std::fmt::Debug for ProxyHandle {
     }
 }
 
-#[allow(dead_code)] // start/stop/etc. wired from commands.rs in Task 8.
 impl ProxyHandle {
     /// Bind the listener and spawn the accept loop.
     ///
@@ -402,6 +401,9 @@ impl ProxyHandle {
         self.local_addr
     }
 
+    /// Diagnostic accessor — exposed for future `SidePanel` summary
+    /// ("proxy :9092 → upstream:9092"). Phase 1 doesn't render this.
+    #[allow(dead_code)]
     #[must_use]
     pub fn upstream(&self) -> &str {
         &self.upstream
