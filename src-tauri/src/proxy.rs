@@ -11,14 +11,19 @@ use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tracing::{info, warn};
 
+use crate::correlator::ProtoCorrelator;
 use crate::proto_hook::{ProtoDirection, ProtoEvent};
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Mirrors the C-side
@@ -295,14 +300,137 @@ pub fn build_proto_event(
     }
 }
 
+/// A running proxy listener. Drop / `stop()` to tear down.
+#[allow(dead_code)] // wired into AppState in Task 7.
+pub struct ProxyHandle {
+    stop_tx: watch::Sender<bool>,
+    accept_task: Option<JoinHandle<()>>,
+    local_addr: SocketAddr,
+    upstream: String,
+}
+
+impl std::fmt::Debug for ProxyHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyHandle")
+            .field("local_addr", &self.local_addr)
+            .field("upstream", &self.upstream)
+            .field("running", &self.accept_task.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+#[allow(dead_code)] // wired into AppState in Task 7.
+impl ProxyHandle {
+    /// Bind the listener and spawn the accept loop.
+    ///
+    /// # Errors
+    /// Returns the underlying `io::Error` if the bind fails (port in
+    /// use, permission denied, …).
+    pub async fn start(config: ProxyConfig, correlator: Arc<ProtoCorrelator>) -> io::Result<Self> {
+        let listener = TcpListener::bind(config.listen_addr()).await?;
+        let local_addr = listener.local_addr()?;
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let upstream = config.upstream.clone();
+        let upstream_for_task = upstream.clone();
+
+        let accept_task = tokio::spawn(async move {
+            info!(listen = %local_addr, upstream = %upstream_for_task, "proxy listening");
+            loop {
+                tokio::select! {
+                    changed = stop_rx.changed() => {
+                        if changed.is_ok() && *stop_rx.borrow() {
+                            info!("proxy accept loop stopping");
+                            break;
+                        }
+                    }
+                    accepted = listener.accept() => {
+                        match accepted {
+                            Ok((client_sock, peer)) => {
+                                let conn_id = next_connection_id();
+                                let upstream_target = upstream_for_task.clone();
+                                let correlator = Arc::clone(&correlator);
+                                let corr_map = Arc::new(CorrelationMap::default());
+                                tokio::spawn(async move {
+                                    let upstream_sock = match TcpStream::connect(&upstream_target).await {
+                                        Ok(s) => s,
+                                        Err(err) => {
+                                            warn!(conn = conn_id.0, error = %err, "upstream connect failed");
+                                            return;
+                                        }
+                                    };
+                                    info!(conn = conn_id.0, peer = %peer, "proxy connection opened");
+                                    let corr_map_for_tap = Arc::clone(&corr_map);
+                                    let result = run_pump(
+                                        conn_id,
+                                        client_sock,
+                                        upstream_sock,
+                                        move |dir, conn, payload| {
+                                            let event = build_proto_event(
+                                                dir,
+                                                conn,
+                                                payload,
+                                                &corr_map_for_tap,
+                                            );
+                                            correlator.record_event(&event);
+                                        },
+                                    )
+                                    .await;
+                                    if let Err(err) = result {
+                                        warn!(conn = conn_id.0, error = %err, "proxy pump error");
+                                    }
+                                    info!(conn = conn_id.0, "proxy connection closed");
+                                });
+                            }
+                            Err(err) => {
+                                warn!(error = %err, "proxy accept failed");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            stop_tx,
+            accept_task: Some(accept_task),
+            local_addr,
+            upstream,
+        })
+    }
+
+    #[must_use]
+    pub const fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    #[must_use]
+    pub fn upstream(&self) -> &str {
+        &self.upstream
+    }
+
+    pub async fn stop(mut self) {
+        let _ = self.stop_tx.send(true);
+        if let Some(task) = self.accept_task.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for ProxyHandle {
+    fn drop(&mut self) {
+        let _ = self.stop_tx.send(true);
+        if let Some(task) = self.accept_task.take() {
+            task.abort();
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use parking_lot::Mutex as PMutex;
-    use std::sync::Arc;
     use tokio::io::AsyncWriteExt;
-    use tokio::net::TcpListener;
 
     #[test]
     fn proxy_config_normalises_listen_addr() {
@@ -542,5 +670,45 @@ mod tests {
         assert_eq!(captured[0].1, b"helloKKK");
         assert_eq!(captured[1].0, ProxyDirection::UpstreamToClient);
         assert_eq!(captured[1].1, b"KKKolleh");
+    }
+
+    #[tokio::test]
+    async fn proxy_handle_accepts_one_client_and_forwards_to_upstream() {
+        // Fake upstream — accepts ONE connection, echoes one frame.
+        let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_addr = upstream.local_addr().unwrap();
+        let upstream_task = tokio::spawn(async move {
+            let (sock, _) = upstream.accept().await.unwrap();
+            let mut framed = framed_kafka(sock);
+            let frame = framed.next().await.unwrap().unwrap();
+            framed.send(frame.freeze()).await.unwrap();
+        });
+
+        let correlator = Arc::new(crate::correlator::ProtoCorrelator::new());
+        let cfg = ProxyConfig {
+            upstream: upstream_addr.to_string(),
+            listen_port: 0, // OS assigns
+        };
+        let handle = ProxyHandle::start(cfg, Arc::clone(&correlator))
+            .await
+            .unwrap();
+        let listen_addr = handle.local_addr();
+
+        // Drive a fake client.
+        let mut client = TcpStream::connect(listen_addr).await.unwrap();
+        client.write_all(&5u32.to_be_bytes()).await.unwrap();
+        // Use a 4-byte header prefix worth of data so peek doesn't reject.
+        client.write_all(b"\x00\x12\x00\x03X").await.unwrap();
+        let mut framed = framed_kafka(client);
+        let echoed = framed.next().await.unwrap().unwrap();
+        assert_eq!(echoed.as_ref(), b"\x00\x12\x00\x03X");
+
+        upstream_task.await.unwrap();
+
+        // Correlator should have observed at least 2 frames (send + recv).
+        let summaries = correlator.summaries(100);
+        assert!(summaries.len() >= 2);
+
+        handle.stop().await;
     }
 }
