@@ -1,13 +1,16 @@
-import type { JSX, ReactNode } from "react";
+import type { JSX, MouseEvent, ReactNode } from "react";
 import type { DecodedValue, KafkaMessage } from "../types";
-import { equalityExpr, isValidPathSegment, type PrimitiveLiteral } from "../lib/filterExpr";
+import { isValidPath, isValidPathSegment, type PrimitiveLiteral } from "../lib/filterExpr";
+import type { FilterTarget } from "./FilterMenu";
+
+type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
 
 interface Props {
   message: KafkaMessage | null;
-  onApplyFilter: (expression: string) => void;
+  onOpenFilterMenu: OpenFilterMenu;
 }
 
-export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
+export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
   if (!message) {
     return (
       <section className="layers layers--empty" aria-label="Decoded layers">
@@ -21,29 +24,29 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
         <Field
           name="topic"
           value={message.topic}
-          expression={equalityExpr("topic", { kind: "string", value: message.topic })}
-          onApplyFilter={onApplyFilter}
+          target={{ path: "topic", literal: { kind: "string", value: message.topic } }}
+          onOpenFilterMenu={onOpenFilterMenu}
         />
         <Field
           name="partition"
           value={String(message.partition)}
-          expression={equalityExpr("envelope.partition", {
-            kind: "number",
-            value: String(message.partition),
-          })}
-          onApplyFilter={onApplyFilter}
+          target={{
+            path: "envelope.partition",
+            literal: { kind: "number", value: String(message.partition) },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
         />
         <Field name="offset" value={String(message.offset)} />
         <Field name="timestamp" value={message.timestamp} />
         <Field
           name="key"
           value={message.key ?? "—"}
-          expression={
+          target={
             message.key === null
               ? null
-              : equalityExpr("envelope.key", { kind: "string", value: message.key })
+              : { path: "envelope.key", literal: { kind: "string", value: message.key } }
           }
-          onApplyFilter={onApplyFilter}
+          onOpenFilterMenu={onOpenFilterMenu}
         />
         <Field name="size" value={`${message.sizeBytes} bytes`} />
       </Layer>
@@ -52,47 +55,47 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
           <Field
             name="api"
             value={`${message.fetch.apiName} v${message.fetch.apiVersion}`}
-            expression={equalityExpr("fetch.api_name", {
-              kind: "string",
-              value: message.fetch.apiName,
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "fetch.api_name",
+              literal: { kind: "string", value: message.fetch.apiName },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
           <Field
             name="broker_id"
             value={String(message.fetch.brokerId)}
-            expression={equalityExpr("fetch.broker_id", {
-              kind: "number",
-              value: String(message.fetch.brokerId),
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "fetch.broker_id",
+              literal: { kind: "number", value: String(message.fetch.brokerId) },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
           <Field
             name="corr_id"
             value={`0x${message.fetch.corrId.toString(16).padStart(8, "0")}`}
-            expression={equalityExpr("fetch.corr_id", {
-              kind: "number",
-              value: String(message.fetch.corrId),
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "fetch.corr_id",
+              literal: { kind: "number", value: String(message.fetch.corrId) },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
           <Field
             name="response_size"
             value={`${message.fetch.responseSize.toLocaleString()} bytes`}
-            expression={equalityExpr("fetch.response_size", {
-              kind: "number",
-              value: String(message.fetch.responseSize),
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "fetch.response_size",
+              literal: { kind: "number", value: String(message.fetch.responseSize) },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
           <Field
             name="rtt_ms"
             value={`${message.fetch.rttMs.toFixed(2)} ms`}
-            expression={equalityExpr("fetch.rtt_ms", {
-              kind: "number",
-              value: message.fetch.rttMs.toString(),
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "fetch.rtt_ms",
+              literal: { kind: "number", value: message.fetch.rttMs.toString() },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
         </Layer>
       ) : null}
@@ -107,16 +110,16 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
               value={header.value}
               // Header names containing dots, spaces, or characters outside
               // the DSL identifier grammar can't be addressed directly —
-              // hide the filter button rather than emit a broken expression.
-              expression={
+              // hide the filter affordance rather than build a broken path.
+              target={
                 isValidPathSegment(header.key)
-                  ? equalityExpr(`headers.${header.key}`, {
-                      kind: "string",
-                      value: header.value,
-                    })
+                  ? {
+                      path: `headers.${header.key}`,
+                      literal: { kind: "string", value: header.value },
+                    }
                   : null
               }
-              onApplyFilter={onApplyFilter}
+              onOpenFilterMenu={onOpenFilterMenu}
             />
           ))
         )}
@@ -132,18 +135,22 @@ export function LayerTree({ message, onApplyFilter }: Props): JSX.Element {
           <Field
             name="name"
             value={message.schemaName}
-            expression={equalityExpr("schema.name", {
-              kind: "string",
-              value: message.schemaName,
-            })}
-            onApplyFilter={onApplyFilter}
+            target={{
+              path: "schema.name",
+              literal: { kind: "string", value: message.schemaName },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
           />
         ) : (
           <span className="muted">no schema resolved</span>
         )}
       </Layer>
       <Layer title="payload">
-        <DecodedNode value={message.payload} basePath="payload" onApplyFilter={onApplyFilter} />
+        <DecodedNode
+          value={message.payload}
+          basePath="payload"
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
       </Layer>
     </section>
   );
@@ -161,22 +168,36 @@ function Layer({ title, children }: { title: string; children: ReactNode }): JSX
 function Field({
   name,
   value,
-  expression,
-  onApplyFilter,
+  target,
+  onOpenFilterMenu,
 }: {
   name: string;
   value: string;
-  expression?: string | null;
-  onApplyFilter?: (expression: string) => void;
+  target?: FilterTarget | null;
+  onOpenFilterMenu?: OpenFilterMenu;
 }): JSX.Element {
+  // The whole field row is right-clickable when filterable. Saves the user
+  // from having to aim at the small ⛶ button — Wireshark-style.
+  const ctxHandler =
+    target && onOpenFilterMenu
+      ? (event: MouseEvent<HTMLDivElement>): void => {
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
+        }
+      : undefined;
+
   return (
-    <div className="field">
+    <div
+      className={`field${ctxHandler ? " field--filterable" : ""}`}
+      {...(ctxHandler ? { onContextMenu: ctxHandler } : {})}
+    >
       <span className="field__name">{name}</span>
       <span className="field__value">{value}</span>
-      {expression && onApplyFilter ? (
+      {target && onOpenFilterMenu ? (
         <FilterButton
-          onClick={() => {
-            onApplyFilter(expression);
+          onClick={(event) => {
+            onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
           }}
         />
       ) : null}
@@ -184,14 +205,18 @@ function Field({
   );
 }
 
-function FilterButton({ onClick }: { onClick: () => void }): JSX.Element {
+function FilterButton({
+  onClick,
+}: {
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+}): JSX.Element {
   return (
     <button
       type="button"
       className="field__filter"
       onClick={onClick}
-      title="Filter on this value"
-      aria-label="Filter on this value"
+      title="Filter actions (== / != / AND)"
+      aria-label="Filter actions"
     >
       ⛶
     </button>
@@ -201,23 +226,33 @@ function FilterButton({ onClick }: { onClick: () => void }): JSX.Element {
 function DecodedNode({
   value,
   basePath,
-  onApplyFilter,
+  onOpenFilterMenu,
 }: {
   value: DecodedValue;
   basePath: string;
-  onApplyFilter: (expression: string) => void;
+  onOpenFilterMenu: OpenFilterMenu;
 }): JSX.Element {
   switch (value.kind) {
     case "primitive": {
       const literal: PrimitiveLiteral = { kind: value.type, value: value.value };
-      const expression = value.type === "null" ? null : equalityExpr(basePath, literal);
+      // null is not a first-class DSL literal; render the value but skip
+      // the filter affordance.
+      const target: FilterTarget | null =
+        value.type === "null" || !isValidPath(basePath) ? null : { path: basePath, literal };
+      const ctxHandler = target
+        ? (event: MouseEvent<HTMLSpanElement>): void => {
+            event.preventDefault();
+            event.stopPropagation();
+            onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
+          }
+        : undefined;
       return (
-        <span className="token-row">
+        <span className="token-row" {...(ctxHandler ? { onContextMenu: ctxHandler } : {})}>
           <span className={`token token--${value.type}`}>{value.value}</span>
-          {expression ? (
+          {target ? (
             <FilterButton
-              onClick={() => {
-                onApplyFilter(expression);
+              onClick={(event) => {
+                onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
               }}
             />
           ) : null}
@@ -244,7 +279,7 @@ function DecodedNode({
                   <DecodedNode
                     value={field.value}
                     basePath={childPath}
-                    onApplyFilter={onApplyFilter}
+                    onOpenFilterMenu={onOpenFilterMenu}
                   />
                 )}
               </div>
@@ -261,7 +296,7 @@ function DecodedNode({
               <DecodedNode
                 value={item}
                 basePath={`${basePath}.${index}`}
-                onApplyFilter={onApplyFilter}
+                onOpenFilterMenu={onOpenFilterMenu}
               />
             </div>
           ))}

@@ -9,8 +9,14 @@ import { HexDump } from "./components/HexDump";
 import { SidePanel } from "./components/SidePanel";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
 import { followKeyExpr } from "./lib/filterExpr";
 import type { AppInfo, AuthArgs, CaptureStats, ConnectionState, KafkaMessage } from "./types";
+
+interface MenuState {
+  target: FilterTarget;
+  position: { x: number; y: number };
+}
 
 const DEFAULT_BOOTSTRAP = "localhost:19092";
 const DEFAULT_REGISTRY = "http://localhost:18081";
@@ -33,7 +39,7 @@ const INITIAL_CONNECTION: ConnectionState = {
   topicPattern: null,
   error: null,
   schemaRegistryUrl: null,
-  fromBeginning: true,
+  fromBeginning: false,
   authPrefill: null,
 };
 
@@ -46,6 +52,7 @@ function App(): JSX.Element {
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
   const [editing, setEditing] = useState(false);
+  const [menu, setMenu] = useState<MenuState | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
   // generation is allowed to commit set_filter / snapshot results, so a
@@ -253,6 +260,13 @@ function App(): JSX.Element {
     setFilter(expression);
   }, []);
 
+  const openFilterMenu = useCallback(
+    (target: FilterTarget, position: { x: number; y: number }): void => {
+      setMenu({ target, position });
+    },
+    [],
+  );
+
   const followKey = useCallback((message: KafkaMessage): void => {
     // Empty-string keys are valid in Kafka and meaningfully filterable
     // (envelope.key == "").
@@ -309,8 +323,9 @@ function App(): JSX.Element {
             selectedId={selectedId}
             onSelect={setSelectedId}
             onFollow={followKey}
+            onOpenFilterMenu={openFilterMenu}
           />
-          <LayerTree message={selected} onApplyFilter={applyFilter} />
+          <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />
           <HexDump message={selected} />
         </div>
         <SidePanel appInfo={appInfo} connection={connection} stats={stats} />
@@ -331,6 +346,17 @@ function App(): JSX.Element {
           }
           pending={connection.status === "connecting"}
           error={connection.error}
+        />
+      ) : null}
+      {menu ? (
+        <FilterMenu
+          target={menu.target}
+          position={menu.position}
+          currentFilter={filter}
+          onApply={applyFilter}
+          onClose={() => {
+            setMenu(null);
+          }}
         />
       ) : null}
     </div>

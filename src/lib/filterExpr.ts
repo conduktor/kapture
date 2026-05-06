@@ -87,6 +87,34 @@ export function equalityExpr(path: string, literal: PrimitiveLiteral): string | 
   return `${path} == ${literalToken(literal)}`;
 }
 
+/** Build `path != literal`, mirror of `equalityExpr`. */
+export function inequalityExpr(path: string, literal: PrimitiveLiteral): string | null {
+  if (!isValidPath(path)) {
+    return null;
+  }
+  return `${path} != ${literalToken(literal)}`;
+}
+
+/**
+ * Append `clause` to `existing` with `&&`. Empty / whitespace existing
+ * filter is treated as no constraint and replaced wholesale by `clause`,
+ * so the "AND" affordance remains useful when the filter bar is empty.
+ * Existing filters that already contain `||` are wrapped in parens to
+ * keep precedence (`a || b && c` → `(a || b) && c`).
+ */
+export function composeAnd(existing: string, clause: string): string {
+  const trimmed = existing.trim();
+  if (trimmed === "") {
+    return clause;
+  }
+  // Cheap precedence guard: any top-level `||` in the existing expression
+  // would bind weaker than `&&` and silently change semantics when we
+  // append. Wrapping in parens is safe and keeps the user's original
+  // grouping intact.
+  const needsParens = trimmed.includes("||");
+  return `${needsParens ? `(${trimmed})` : trimmed} && ${clause}`;
+}
+
 /** Build `envelope.key == "<value>"` to follow a stream. */
 export function followKeyExpr(key: string): string {
   return `envelope.key == "${escapeString(key)}"`;

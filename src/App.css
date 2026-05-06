@@ -607,21 +607,6 @@ body,
   font-size: 11px;
   margin-left: 6px;
 }
-.dialog__hint--note {
-  background: var(--accent-soft);
-  border-left: 3px solid var(--accent);
-  padding: 8px 10px;
-  margin: 4px 0 8px 0;
-  border-radius: 4px;
-  line-height: 1.5;
-}
-.dialog__hint--note code {
-  font-family: var(--mono);
-  background: rgba(255, 255, 255, 0.6);
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 11.5px;
-}
 .dialog__disclosure {
   background: none;
   border: none;
@@ -655,6 +640,72 @@ body,
 .dialog__test--pending {
   background: var(--bg-subtle);
   color: var(--text-muted);
+}
+
+/* ---------- Filter context menu ---------- */
+.filter-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 180px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.08),
+    0 1px 2px rgba(0, 0, 0, 0.04);
+  padding: 4px 0;
+  font-size: 12px;
+}
+.filter-menu__head {
+  padding: 4px 12px 6px 12px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.filter-menu__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.filter-menu__item:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+.filter-menu__item code {
+  font-family: var(--mono);
+  background: var(--bg-subtle);
+  padding: 0 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  font-size: 11px;
+}
+.filter-menu__item:hover code {
+  background: var(--accent-soft);
+}
+.filter-menu__sep {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+/* Cells with a filter affordance get a subtle hover hint. */
+.msglist__col--filterable {
+  cursor: context-menu;
+}
+.msglist__col--filterable:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.field--filterable {
+  cursor: context-menu;
 }
 .dialog__field {
   display: flex;

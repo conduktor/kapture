@@ -1,12 +1,16 @@
-import { useMemo, type JSX } from "react";
+import { useMemo, type JSX, type MouseEvent } from "react";
 import { List, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
+import type { FilterTarget } from "./FilterMenu";
+
+type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
 
 interface Props {
   messages: KafkaMessage[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onFollow: (message: KafkaMessage) => void;
+  onOpenFilterMenu: OpenFilterMenu;
 }
 
 interface RowProps {
@@ -14,14 +18,21 @@ interface RowProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onFollow: (message: KafkaMessage) => void;
+  onOpenFilterMenu: OpenFilterMenu;
 }
 
 const ROW_HEIGHT = 26;
 
-export function MessageList({ messages, selectedId, onSelect, onFollow }: Props): JSX.Element {
+export function MessageList({
+  messages,
+  selectedId,
+  onSelect,
+  onFollow,
+  onOpenFilterMenu,
+}: Props): JSX.Element {
   const rowProps = useMemo<RowProps>(
-    () => ({ messages, selectedId, onSelect, onFollow }),
-    [messages, selectedId, onSelect, onFollow],
+    () => ({ messages, selectedId, onSelect, onFollow, onOpenFilterMenu }),
+    [messages, selectedId, onSelect, onFollow, onOpenFilterMenu],
   );
 
   return (
@@ -64,12 +75,25 @@ function MessageRow({
   selectedId,
   onSelect,
   onFollow,
+  onOpenFilterMenu,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const message = messages[index];
   if (!message) {
     return null;
   }
   const isSelected = selectedId === message.id;
+
+  // Right-click on a filterable cell opens the filter menu at the cursor.
+  // Cells without a sensible filter (offset, ts, size) intentionally have
+  // no handler — the row's default behaviour (select on click) still works.
+  const ctxHandler =
+    (target: FilterTarget) =>
+    (event: MouseEvent<HTMLSpanElement>): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
+    };
+
   return (
     <button
       type="button"
@@ -81,19 +105,59 @@ function MessageRow({
       onDoubleClick={() => {
         onFollow(message);
       }}
-      title="Click to inspect — double-click to follow this key"
+      title="Click to inspect — double-click to follow this key — right-click a cell to filter"
       aria-posinset={ariaAttributes["aria-posinset"]}
       aria-setsize={ariaAttributes["aria-setsize"]}
       role={ariaAttributes.role}
     >
       <span className="msglist__col msglist__col--ts">{message.timestamp}</span>
-      <span className="msglist__col msglist__col--topic">{message.topic}</span>
-      <span className="msglist__col msglist__col--p">{message.partition}</span>
-      <span className="msglist__col msglist__col--offset">{message.offset}</span>
-      <span className="msglist__col msglist__col--key">{message.key ?? "—"}</span>
-      <span className="msglist__col msglist__col--schema">
-        {message.schemaName ?? <em className="muted">raw</em>}
+      <span
+        className="msglist__col msglist__col--topic msglist__col--filterable"
+        onContextMenu={ctxHandler({
+          path: "topic",
+          literal: { kind: "string", value: message.topic },
+        })}
+      >
+        {message.topic}
       </span>
+      <span
+        className="msglist__col msglist__col--p msglist__col--filterable"
+        onContextMenu={ctxHandler({
+          path: "envelope.partition",
+          literal: { kind: "number", value: String(message.partition) },
+        })}
+      >
+        {message.partition}
+      </span>
+      <span className="msglist__col msglist__col--offset">{message.offset}</span>
+      {message.key === null ? (
+        <span className="msglist__col msglist__col--key">—</span>
+      ) : (
+        <span
+          className="msglist__col msglist__col--key msglist__col--filterable"
+          onContextMenu={ctxHandler({
+            path: "envelope.key",
+            literal: { kind: "string", value: message.key },
+          })}
+        >
+          {message.key}
+        </span>
+      )}
+      {message.schemaName === null ? (
+        <span className="msglist__col msglist__col--schema">
+          <em className="muted">raw</em>
+        </span>
+      ) : (
+        <span
+          className="msglist__col msglist__col--schema msglist__col--filterable"
+          onContextMenu={ctxHandler({
+            path: "schema.name",
+            literal: { kind: "string", value: message.schemaName },
+          })}
+        >
+          {message.schemaName}
+        </span>
+      )}
       <span className="msglist__col msglist__col--size">{message.sizeBytes}b</span>
     </button>
   );

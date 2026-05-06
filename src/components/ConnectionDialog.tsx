@@ -63,7 +63,9 @@ export function ConnectionDialog({
   const [topicPattern, setTopicPattern] = useState(initial?.topicPattern ?? "");
   const [showAdvanced, setShowAdvanced] = useState((initial?.topicPattern ?? "").trim() !== "");
   const [registry, setRegistry] = useState(initial?.registry ?? defaultRegistry);
-  const [fromBeginning, setFromBeginning] = useState(initial?.fromBeginning ?? true);
+  // Default off: Wireshark captures from "now" — reading from the start of
+  // every topic on a busy cluster is the volume cliff users least expect.
+  const [fromBeginning, setFromBeginning] = useState(initial?.fromBeginning ?? false);
   const [authMethod, setAuthMethod] = useState<AuthMethod>(initial?.authMethod ?? "none");
   const [username, setUsername] = useState(initial?.username ?? "");
   const [password, setPassword] = useState("");
@@ -341,11 +343,6 @@ export function ConnectionDialog({
             required
           />
         </label>
-        <p className="dialog__hint dialog__hint--note">
-          Subscribes to every non-internal topic by default (<code>^[^_].*</code>). Filter further
-          at view time with the Wireshark-style filter bar (e.g.{" "}
-          <code>topic =~ &quot;orders\..*&quot;</code>).
-        </p>
         <label className="dialog__field">
           <span className="dialog__label">Schema Registry URL (optional)</span>
           <input
