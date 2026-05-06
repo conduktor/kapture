@@ -306,7 +306,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__row,
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
-      15px 260px minmax(180px, 1fr) minmax(0, 70px)
+      20px 260px minmax(180px, 1fr) minmax(0, 70px)
       minmax(0, 60px) minmax(0, 90px);
   }
 }
@@ -317,7 +317,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__row,
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
-      15px 260px minmax(180px, 1fr)
+      20px 260px minmax(180px, 1fr)
       minmax(0, 60px) minmax(0, 90px);
   }
 }
@@ -328,7 +328,7 @@ section.msglist[aria-label="Protocol frames"] {
   section.msglist[aria-label="Protocol frames"] .msglist__row,
   section.msglist[aria-label="Protocol frames"] .msglist__head {
     grid-template-columns:
-      15px minmax(140px, 1fr)
+      20px minmax(140px, 1fr)
       minmax(0, 60px) minmax(0, 90px);
   }
 }
@@ -415,7 +415,7 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
    * size sits right after api so byte-magnitude tracks the verb that
    * carried it. */
   grid-template-columns:
-    15px 260px minmax(180px, 1fr) minmax(0, 70px)
+    20px 260px minmax(180px, 1fr) minmax(0, 70px)
     minmax(0, 60px) minmax(0, 90px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
