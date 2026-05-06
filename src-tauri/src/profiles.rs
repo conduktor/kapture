@@ -83,6 +83,44 @@ pub struct ProfileMetadata {
     /// `None` for PLAINTEXT.
     pub auth: Option<AuthMetadata>,
     pub from_beginning: bool,
+    /// Proxy-mode upstream TLS settings. `None` when the saved profile
+    /// targeted a plaintext upstream. Distinct from `auth.tls`, which
+    /// tracks legacy client-mode mTLS material.
+    #[serde(default)]
+    pub upstream_tls: Option<UpstreamTlsMetadata>,
+    /// Proxy-mode upstream SASL settings (no password — that lives in
+    /// the keychain under `<name>::proxy-sasl`).
+    #[serde(default)]
+    pub upstream_sasl: Option<UpstreamSaslMetadata>,
+}
+
+/// Proxy-mode upstream TLS settings, mirrored to JSON. Paths are stored
+/// in cleartext; there is no key file in proxy mode (the proxy presents
+/// no client cert), so no keychain entry is needed.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamTlsMetadata {
+    /// SNI / cert hostname. Empty string means "derive from the
+    /// bootstrap host" — preserved as-is so a load round-trips.
+    #[serde(default)]
+    pub server_name: String,
+    pub ca_path: Option<String>,
+    #[serde(default)]
+    pub skip_hostname_verification: bool,
+}
+
+/// Proxy-mode upstream SASL settings, mirrored to JSON. The password
+/// (when present) lives in the OS keychain at `<name>::proxy-sasl`;
+/// `has_password` lets the UI show a "saved" indicator without
+/// resolving the secret.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamSaslMetadata {
+    /// `"PLAIN"`, `"SCRAM-SHA-256"`, `"SCRAM-SHA-512"`.
+    pub mechanism: String,
+    pub username: String,
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -121,10 +159,13 @@ pub struct TlsMetadata {
 pub struct LoadedProfile {
     #[serde(flatten)]
     pub meta: ProfileMetadata,
-    /// SASL password — `None` when none was stored.
+    /// SASL password (legacy client-mode auth) — `None` when none stored.
     pub password: Option<String>,
-    /// TLS key password — `None` when none was stored.
+    /// TLS key password (legacy client-mode mTLS) — `None` when none stored.
     pub key_password: Option<String>,
+    /// Proxy-mode upstream SASL password — `None` when none stored.
+    /// Sourced from keychain `<name>::proxy-sasl` on load.
+    pub upstream_sasl_password: Option<String>,
 }
 
 impl std::fmt::Debug for LoadedProfile {
@@ -136,6 +177,10 @@ impl std::fmt::Debug for LoadedProfile {
             .field(
                 "key_password",
                 &self.key_password.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "upstream_sasl_password",
+                &self.upstream_sasl_password.as_ref().map(|_| "<redacted>"),
             )
             .finish()
     }
@@ -202,10 +247,17 @@ impl ProfileStore {
         } else {
             None
         };
+        let upstream_sasl_password = if meta.upstream_sasl.as_ref().is_some_and(|s| s.has_password)
+        {
+            keyring_get(name, KEY_PROXY_SASL)?
+        } else {
+            None
+        };
         Ok(LoadedProfile {
             meta,
             password,
             key_password,
+            upstream_sasl_password,
         })
     }
 
@@ -214,6 +266,7 @@ impl ProfileStore {
         mut meta: ProfileMetadata,
         password: Option<String>,
         key_password: Option<String>,
+        upstream_sasl_password: Option<String>,
     ) -> Result<ProfileMetadata, ProfileError> {
         let trimmed = meta.name.trim().to_owned();
         if trimmed.is_empty() {
@@ -243,6 +296,10 @@ impl ProfileStore {
                 tls.has_key_password = matches!(&key_password, Some(secret) if !secret.is_empty());
             }
         }
+        if let Some(sasl) = &mut meta.upstream_sasl {
+            sasl.has_password =
+                matches!(&upstream_sasl_password, Some(secret) if !secret.is_empty());
+        }
         let snapshot = {
             let mut guard = self.inner.lock();
             guard.profiles.insert(trimmed.clone(), meta.clone());
@@ -269,6 +326,16 @@ impl ProfileStore {
             let _ = keyring_delete(&trimmed, KEY_SASL);
             let _ = keyring_delete(&trimmed, KEY_TLS);
         }
+        if let Some(sasl) = &meta.upstream_sasl {
+            sync_secret(
+                &trimmed,
+                KEY_PROXY_SASL,
+                upstream_sasl_password,
+                sasl.has_password,
+            )?;
+        } else {
+            let _ = keyring_delete(&trimmed, KEY_PROXY_SASL);
+        }
         Ok(meta)
     }
 
@@ -286,6 +353,7 @@ impl ProfileStore {
         // Best-effort secret cleanup; an empty keychain is fine.
         let _ = keyring_delete(name, KEY_SASL);
         let _ = keyring_delete(name, KEY_TLS);
+        let _ = keyring_delete(name, KEY_PROXY_SASL);
         Ok(())
     }
 }
@@ -294,6 +362,10 @@ impl ProfileStore {
 /// keychain entry "name" stays close to the profile name.
 const KEY_SASL: &str = "sasl";
 const KEY_TLS: &str = "tls-key";
+/// Proxy-mode upstream SASL password. Distinct from `KEY_SASL` so a
+/// profile that ever held legacy client-mode auth doesn't collide
+/// with proxy-mode auth on the same name.
+const KEY_PROXY_SASL: &str = "proxy-sasl";
 
 /// Atomically replace `path` with `file`'s JSON serialisation.
 ///
@@ -393,6 +465,8 @@ mod tests {
             schema_registry_url: None,
             auth: None,
             from_beginning: true,
+            upstream_tls: None,
+            upstream_sasl: None,
         }
     }
 
@@ -403,8 +477,8 @@ mod tests {
     fn metadata_roundtrip() {
         let dir = TempDir::new().unwrap();
         let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
-        store.save(meta("local"), None, None).unwrap();
-        store.save(meta("staging"), None, None).unwrap();
+        store.save(meta("local"), None, None, None).unwrap();
+        store.save(meta("staging"), None, None, None).unwrap();
         let names: Vec<_> = store.list().into_iter().map(|p| p.name).collect();
         assert_eq!(names, vec!["local", "staging"]);
         store.delete("local").unwrap();
@@ -419,7 +493,7 @@ mod tests {
         let mut m = meta("");
         m.name = "   ".into();
         assert!(matches!(
-            store.save(m, None, None),
+            store.save(m, None, None, None),
             Err(ProfileError::EmptyName)
         ));
     }
@@ -431,7 +505,10 @@ mod tests {
         for bad in ["a/b", "a\\b", "a:b", "a\0b", ".", ".."] {
             let m = meta(bad);
             assert!(
-                matches!(store.save(m, None, None), Err(ProfileError::InvalidName(_))),
+                matches!(
+                    store.save(m, None, None, None),
+                    Err(ProfileError::InvalidName(_))
+                ),
                 "name `{bad}` should be rejected"
             );
         }
@@ -446,5 +523,115 @@ mod tests {
             store.delete("nope"),
             Err(ProfileError::Unknown(_))
         ));
+    }
+
+    /// JSON round-trip for the proxy-mode TLS+SASL fields. The
+    /// `has_password` flag tracks whether the keychain *should*
+    /// hold a value; we only verify metadata serialisation here
+    /// (keychain side-effects are covered by `sync_secret`).
+    #[test]
+    fn proxy_metadata_roundtrip_via_json() {
+        let m = ProfileMetadata {
+            name: "cc".to_owned(),
+            bootstrap_servers: "broker.eu.confluent.cloud:9092".to_owned(),
+            topic_pattern: None,
+            schema_registry_url: None,
+            auth: None,
+            from_beginning: false,
+            upstream_tls: Some(UpstreamTlsMetadata {
+                server_name: "broker.eu.confluent.cloud".to_owned(),
+                ca_path: Some("/etc/ssl/cc-ca.pem".to_owned()),
+                skip_hostname_verification: false,
+            }),
+            upstream_sasl: Some(UpstreamSaslMetadata {
+                mechanism: "SCRAM-SHA-256".to_owned(),
+                username: "alice".to_owned(),
+                has_password: true,
+            }),
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: ProfileMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.upstream_tls.as_ref().unwrap().server_name,
+            m.upstream_tls.as_ref().unwrap().server_name
+        );
+        assert_eq!(
+            back.upstream_tls.as_ref().unwrap().ca_path,
+            m.upstream_tls.as_ref().unwrap().ca_path
+        );
+        assert!(
+            !back
+                .upstream_tls
+                .as_ref()
+                .unwrap()
+                .skip_hostname_verification
+        );
+        let s = back.upstream_sasl.as_ref().unwrap();
+        assert_eq!(s.mechanism, "SCRAM-SHA-256");
+        assert_eq!(s.username, "alice");
+        assert!(s.has_password);
+    }
+
+    /// Old profiles on disk pre-date the proxy fields. They MUST
+    /// deserialise with `upstream_tls = None` / `upstream_sasl = None`
+    /// — `#[serde(default)]` is the contract.
+    #[test]
+    fn legacy_profile_json_decodes_with_none_proxy_fields() {
+        let legacy = r#"{
+            "name": "legacy",
+            "bootstrapServers": "localhost:9092",
+            "topicPattern": null,
+            "schemaRegistryUrl": null,
+            "auth": null,
+            "fromBeginning": false
+        }"#;
+        let m: ProfileMetadata = serde_json::from_str(legacy).unwrap();
+        assert_eq!(m.name, "legacy");
+        assert!(m.upstream_tls.is_none());
+        assert!(m.upstream_sasl.is_none());
+    }
+
+    /// Saving a profile with proxy SASL+TLS metadata persists the
+    /// fields (sans secrets) through the on-disk JSON file. We don't
+    /// touch the OS keychain in CI, so `has_password` only flips
+    /// when a non-empty secret is supplied.
+    #[test]
+    fn save_persists_proxy_tls_and_sasl_metadata() {
+        let dir = TempDir::new().unwrap();
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let mut m = meta("cc");
+        m.upstream_tls = Some(UpstreamTlsMetadata {
+            server_name: String::new(),
+            ca_path: Some("/tmp/ca.pem".to_owned()),
+            skip_hostname_verification: true,
+        });
+        m.upstream_sasl = Some(UpstreamSaslMetadata {
+            mechanism: "PLAIN".to_owned(),
+            username: "bob".to_owned(),
+            has_password: false,
+        });
+        // Pass `None` for the proxy SASL password to skip keychain
+        // writes — CI doesn't have a usable keyring backend.
+        let saved = store.save(m, None, None, None).unwrap();
+        assert!(saved.upstream_tls.is_some());
+        let tls = saved.upstream_tls.as_ref().unwrap();
+        assert_eq!(tls.ca_path.as_deref(), Some("/tmp/ca.pem"));
+        assert!(tls.skip_hostname_verification);
+        let sasl = saved.upstream_sasl.as_ref().unwrap();
+        assert_eq!(sasl.mechanism, "PLAIN");
+        assert_eq!(sasl.username, "bob");
+        assert!(!sasl.has_password);
+
+        // Reopen the store from disk and confirm the JSON file
+        // carries the same fields.
+        drop(store);
+        let store = ProfileStore::open(dir.path().to_path_buf()).unwrap();
+        let listed = store.list();
+        let p = listed.iter().find(|p| p.name == "cc").unwrap();
+        assert_eq!(
+            p.upstream_tls.as_ref().unwrap().ca_path.as_deref(),
+            Some("/tmp/ca.pem")
+        );
+        assert_eq!(p.upstream_sasl.as_ref().unwrap().username, "bob");
     }
 }

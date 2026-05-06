@@ -11,7 +11,10 @@ use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
-use crate::profiles::{AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata};
+use crate::profiles::{
+    AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata, UpstreamSaslMetadata,
+    UpstreamTlsMetadata,
+};
 use crate::proxy_upstream::{UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig};
 use crate::ring_buffer::CaptureStats;
 use crate::state::AppState;
@@ -390,6 +393,44 @@ pub struct SaveProfileArgs {
     pub schema_registry_url: Option<String>,
     pub auth: Option<SaveProfileAuth>,
     pub from_beginning: bool,
+    /// Proxy-mode upstream TLS (saved from the connection dialog).
+    /// `None` to clear / not record TLS for this profile.
+    #[serde(default)]
+    pub upstream_tls: Option<SaveProfileUpstreamTls>,
+    /// Proxy-mode upstream SASL.
+    #[serde(default)]
+    pub upstream_sasl: Option<SaveProfileUpstreamSasl>,
+}
+
+#[derive(Default, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileUpstreamTls {
+    /// SNI / cert hostname; empty string means "derive from upstream".
+    #[serde(default)]
+    pub server_name: String,
+    pub ca_path: Option<String>,
+    #[serde(default)]
+    pub skip_hostname_verification: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileUpstreamSasl {
+    pub mechanism: String,
+    pub username: String,
+    /// `Some(secret)` to set/replace the keychain entry, `Some("")`
+    /// to clear it, `None` to leave any existing entry untouched.
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for SaveProfileUpstreamSasl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveProfileUpstreamSasl")
+            .field("mechanism", &self.mechanism)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]
@@ -491,6 +532,17 @@ pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result
             tls,
         }
     });
+    let upstream_tls = args.upstream_tls.as_ref().map(|t| UpstreamTlsMetadata {
+        server_name: t.server_name.clone(),
+        ca_path: empty_to_none(t.ca_path.clone()),
+        skip_hostname_verification: t.skip_hostname_verification,
+    });
+    let upstream_sasl = args.upstream_sasl.as_ref().map(|s| UpstreamSaslMetadata {
+        mechanism: s.mechanism.clone(),
+        username: s.username.clone(),
+        // overwritten by ProfileStore::save
+        has_password: false,
+    });
     let meta = ProfileMetadata {
         name: args.name,
         bootstrap_servers: args.bootstrap_servers,
@@ -498,6 +550,8 @@ pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result
         schema_registry_url: args.schema_registry_url,
         auth,
         from_beginning: args.from_beginning,
+        upstream_tls,
+        upstream_sasl,
     };
     let mut sasl_password: Option<String> = None;
     let mut key_password: Option<String> = None;
@@ -507,7 +561,10 @@ pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result
             key_password = t.key_password;
         }
     }
-    Ok(state.profiles.save(meta, sasl_password, key_password)?)
+    let upstream_sasl_password = args.upstream_sasl.and_then(|s| s.password);
+    Ok(state
+        .profiles
+        .save(meta, sasl_password, key_password, upstream_sasl_password)?)
 }
 
 fn spawn_stats_emitter(app: &AppHandle) {

@@ -70,6 +70,13 @@ export function ConnectionDialog({
   const [saslUsername, setSaslUsername] = useState("");
   const [saslPassword, setSaslPassword] = useState("");
   const [validationError, setValidationError] = useState<string | null>(null);
+  // True when the loaded profile has a SASL password in the keychain
+  // but we deliberately don't paste it back into the form — surfaces a
+  // "re-enter password" hint so the user knows why it's blank.
+  const [savedSaslPasswordHint, setSavedSaslPasswordHint] = useState(false);
+  // SNI for upstream TLS. Empty = derive from upstream host. Persisted
+  // as-is in profiles so a load round-trips.
+  const [tlsServerName, setTlsServerName] = useState("");
 
   const [profiles, setProfiles] = useState<ProfileMetadata[]>([]);
   const [selectedProfile, setSelectedProfile] = useState<string>("");
@@ -132,6 +139,38 @@ export function ConnectionDialog({
     try {
       const profile = await invoke<LoadedProfile>("load_profile", { name });
       setUpstream(profile.bootstrapServers);
+      // Restore proxy-mode TLS state. Toggle reflects "has saved
+      // upstreamTls"; field values are zeroed when the profile didn't
+      // record TLS so a stale prior selection doesn't bleed in.
+      if (profile.upstreamTls !== null) {
+        setUseTls(true);
+        setTlsServerName(profile.upstreamTls.serverName);
+        setTlsCaPath(profile.upstreamTls.caPath ?? "");
+        setTlsSkipHostname(profile.upstreamTls.skipHostnameVerification);
+      } else {
+        setUseTls(false);
+        setTlsServerName("");
+        setTlsCaPath("");
+        setTlsSkipHostname(false);
+      }
+      // Restore proxy-mode SASL state. Password is intentionally NOT
+      // pasted back into the form — keychain-resident only and the
+      // user re-enters per session. `savedSaslPasswordHint` surfaces
+      // a non-blocking hint so the empty field doesn't look like data
+      // loss.
+      if (profile.upstreamSasl !== null) {
+        setUseSasl(true);
+        setSaslMechanism(profile.upstreamSasl.mechanism);
+        setSaslUsername(profile.upstreamSasl.username);
+        setSaslPassword("");
+        setSavedSaslPasswordHint(profile.upstreamSasl.hasPassword);
+      } else {
+        setUseSasl(false);
+        setSaslMechanism("PLAIN");
+        setSaslUsername("");
+        setSaslPassword("");
+        setSavedSaslPasswordHint(false);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setProfileError(message);
@@ -156,9 +195,25 @@ export function ConnectionDialog({
     if (name === "") {
       return;
     }
-    // Profiles store bootstrap-only metadata in proxy mode. SASL/TLS
-    // forms in the dialog are intentionally session-local; the user
-    // re-enters them per session.
+    // Snapshot the proxy-mode TLS / SASL form state into the profile.
+    // The password is keychain-resident: pass it along when the user
+    // typed one, otherwise `null` (= leave any existing entry alone).
+    // Empty string would *clear* the entry — we don't want that on a
+    // round-trip save where the form simply hasn't been filled in.
+    const upstreamTls = useTls
+      ? {
+          serverName: tlsServerName,
+          caPath: tlsCaPath.trim() === "" ? null : tlsCaPath.trim(),
+          skipHostnameVerification: tlsSkipHostname,
+        }
+      : null;
+    const upstreamSasl = useSasl
+      ? {
+          mechanism: saslMechanism,
+          username: saslUsername,
+          password: saslPassword === "" ? null : saslPassword,
+        }
+      : null;
     const args: SaveProfileArgs = {
       name,
       bootstrapServers: upstream.trim(),
@@ -166,6 +221,8 @@ export function ConnectionDialog({
       schemaRegistryUrl: null,
       auth: null,
       fromBeginning: false,
+      upstreamTls,
+      upstreamSasl,
     };
     setSavingProfile(true);
     setProfileError(null);
@@ -211,7 +268,7 @@ export function ConnectionDialog({
     const upstreamTls: ProxyTlsArgs | null = useTls
       ? {
           // Empty string lets the backend derive SNI from the bootstrap host.
-          serverName: "",
+          serverName: tlsServerName,
           caPath: tlsCaPath.trim() === "" ? null : tlsCaPath.trim(),
           skipHostnameVerification: tlsSkipHostname,
         }
@@ -381,13 +438,21 @@ export function ConnectionDialog({
                 />
               </label>
               <label className="dialog__field">
-                <span className="dialog__label">Password</span>
+                <span className="dialog__label">
+                  Password
+                  {savedSaslPasswordHint && saslPassword === "" ? (
+                    <span className="dialog__hint-inline">not stored in profile — re-enter</span>
+                  ) : null}
+                </span>
                 <input
                   type="password"
                   className="dialog__input"
                   value={saslPassword}
                   onChange={(e) => {
                     setSaslPassword(e.target.value);
+                    if (savedSaslPasswordHint) {
+                      setSavedSaslPasswordHint(false);
+                    }
                   }}
                   autoComplete="off"
                   required

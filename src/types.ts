@@ -182,6 +182,30 @@ export interface ProfileAuthMetadata {
   tls: ProfileTlsMetadata | null;
 }
 
+/**
+ * Proxy-mode upstream TLS settings persisted in a profile. Mirrors the
+ * Rust `UpstreamTlsMetadata` (camelCase serde). Distinct from
+ * `ProfileTlsMetadata`, which tracks legacy client-mode mTLS material.
+ */
+export interface UpstreamTlsMetadata {
+  /** SNI / cert hostname. Empty string = derive from the bootstrap host. */
+  serverName: string;
+  caPath: string | null;
+  skipHostnameVerification: boolean;
+}
+
+/**
+ * Proxy-mode upstream SASL settings persisted in a profile. The
+ * password lives in the OS keychain (slot `<name>::proxy-sasl`); on
+ * load the dialog re-prompts the user.
+ */
+export interface UpstreamSaslMetadata {
+  mechanism: SaslMechanism;
+  username: string;
+  /** True when a password is stored in the OS keychain for this profile. */
+  hasPassword: boolean;
+}
+
 export interface ProfileMetadata {
   name: string;
   bootstrapServers: string;
@@ -190,11 +214,15 @@ export interface ProfileMetadata {
   schemaRegistryUrl: string | null;
   auth: ProfileAuthMetadata | null;
   fromBeginning: boolean;
+  upstreamTls: UpstreamTlsMetadata | null;
+  upstreamSasl: UpstreamSaslMetadata | null;
 }
 
 export interface LoadedProfile extends ProfileMetadata {
   password: string | null;
   keyPassword: string | null;
+  /** Proxy-mode upstream SASL password resolved from the keychain. */
+  upstreamSaslPassword: string | null;
 }
 
 export interface SaveProfileTls {
@@ -214,6 +242,30 @@ export interface SaveProfileAuth {
   tls: SaveProfileTls | null;
 }
 
+/**
+ * Proxy-mode upstream TLS args sent on save. Paths are stored in
+ * cleartext on disk; there is no key file in proxy mode (the proxy
+ * does not present a client cert), so no keychain entry is involved.
+ */
+export interface SaveProfileUpstreamTls {
+  /** SNI / cert hostname. Empty string = derive from the bootstrap host. */
+  serverName: string;
+  caPath: string | null;
+  skipHostnameVerification: boolean;
+}
+
+/**
+ * Proxy-mode upstream SASL args sent on save. `password` follows the
+ * same `Some(secret) | Some("") | null` semantics as `SaveProfileAuth`:
+ * `null` leaves the keychain entry untouched.
+ */
+export interface SaveProfileUpstreamSasl {
+  mechanism: SaslMechanism;
+  username: string;
+  /** `null` to leave any existing keychain proxy-SASL password untouched. */
+  password: string | null;
+}
+
 export interface SaveProfileArgs {
   name: string;
   bootstrapServers: string;
@@ -222,4 +274,6 @@ export interface SaveProfileArgs {
   schemaRegistryUrl: string | null;
   auth: SaveProfileAuth | null;
   fromBeginning: boolean;
+  upstreamTls: SaveProfileUpstreamTls | null;
+  upstreamSasl: SaveProfileUpstreamSasl | null;
 }
