@@ -303,30 +303,18 @@ function FilterableCell({
   value,
   onAdd,
 }: FilterableCellProps): JSX.Element {
-  const onCellClick = (event: MouseEvent<HTMLSpanElement>): void => {
-    // Cells don't trigger selection — only the row's onClick does.
-    // We just need to make sure the icon button doesn't bubble.
-    event.stopPropagation();
-  };
-  const handle =
-    (mode: ProtoFilterMode) =>
-    (event: MouseEvent<HTMLButtonElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      // Cast is safe — caller picks `kind` to match the value type.
-      onAdd(kind as never, value as never, mode);
-    };
+  // Clicks on the cell body itself bubble up to the row so row
+  // selection still works. Only the ⊕ icon stops propagation —
+  // adding a filter MUST NOT also flip the selected frame.
   const onIconClick = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (event.altKey) {
-      handle("exclude")(event);
-    } else {
-      handle("include")(event);
-    }
+    event.preventDefault();
+    event.stopPropagation();
+    const mode: ProtoFilterMode = event.altKey ? "exclude" : "include";
+    onAdd(kind as never, value as never, mode);
   };
   return (
     <span
       className={`${className} proto-cell--filterable`}
-      onClick={onCellClick}
       title={title ?? "Click ⊕ to filter • Alt-click to exclude"}
     >
       <span className="proto-cell__content">{children}</span>
