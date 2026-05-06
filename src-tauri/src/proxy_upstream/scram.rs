@@ -17,7 +17,7 @@
 //!  * The `username` per SCRAM gets `,` and `=` escaped (`,` →
 //!    `=2C`, `=` → `=3D`). Real Kafka usernames rarely contain
 //!    these but we follow the spec.
-//!  * PBKDF2 iterations are bounded to `[1, 1_000_000]` so a
+//!  * PBKDF2 iterations are bounded to `[4096, 1_000_000]` so a
 //!    hostile broker cannot pin us in PBKDF2 indefinitely.
 
 use std::marker::PhantomData;
@@ -28,6 +28,9 @@ use rand::distributions::Alphanumeric;
 use rand::Rng;
 use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
+
+const MIN_PBKDF2_ITERATIONS: u64 = 4096;
+const MAX_PBKDF2_ITERATIONS: u64 = 1_000_000;
 
 /// Hash backend for SCRAM. Each variant binds the hash function used
 /// for `H()`, `HMAC()`, and `PBKDF2()` together — they must match.
@@ -121,7 +124,7 @@ pub enum ScramError {
     MalformedMessage(String),
     #[error("server nonce does not extend our client nonce")]
     InvalidNonce,
-    #[error("server reported invalid PBKDF2 iteration count {iterations} (must be 1..=1_000_000)")]
+    #[error("server reported invalid PBKDF2 iteration count {iterations} (must be 4096..=1_000_000)")]
     InvalidIterations { iterations: u64 },
     #[error("server signature mismatch — possible MITM or wrong password")]
     BadServerSignature,
@@ -229,13 +232,13 @@ impl<H: ScramHash> ScramClient<H> {
         let iterations_u64: u64 = iter_str
             .parse()
             .map_err(|_| ScramError::MalformedMessage(format!("bad i= value `{iter_str}`")))?;
-        if iterations_u64 == 0 || iterations_u64 > 1_000_000 {
+        if !(MIN_PBKDF2_ITERATIONS..=MAX_PBKDF2_ITERATIONS).contains(&iterations_u64) {
             return Err(ScramError::InvalidIterations {
                 iterations: iterations_u64,
             });
         }
-        // Safe: bounded above by 1_000_000.
-        let iterations = u32::try_from(iterations_u64).unwrap_or(0);
+        // Safe: bounded above by MAX_PBKDF2_ITERATIONS.
+        let iterations = iterations_u64 as u32;
 
         let salt = base64::engine::general_purpose::STANDARD
             .decode(salt_b64.as_bytes())
@@ -427,10 +430,10 @@ mod tests {
             "pencil".to_owned(),
             RFC7677_CNONCE.to_owned(),
         );
-        let m = "r=rOprNGfwEbeRWgbNEkqOX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=0";
+        let m = "r=rOprNGfwEbeRWgbNEkqOX,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=1";
         match c.server_first(m) {
-            Err(ScramError::InvalidIterations { iterations: 0 }) => {}
-            other => panic!("expected InvalidIterations(0), got {other:?}"),
+            Err(ScramError::InvalidIterations { iterations: 1 }) => {}
+            other => panic!("expected InvalidIterations(1), got {other:?}"),
         }
     }
 
