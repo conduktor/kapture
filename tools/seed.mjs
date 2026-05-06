@@ -46,6 +46,29 @@ const TENANTS = ["acme", "globex", "initech", "umbrella"];
 const CURRENCIES = ["EUR", "USD", "GBP", "JPY"];
 const TIERS = ["bronze", "silver", "gold", "platinum"];
 const EVENTS = ["session.started", "page.viewed", "search.performed", "cart.updated"];
+const ENVS = ["prod", "staging", "dev"];
+const REGIONS = ["eu-west-1", "us-east-1", "ap-southeast-2"];
+const SOURCES = ["api-gateway", "enricher-v2", "mobile-app", "batch-importer"];
+
+let seq = 0;
+const nextSeq = () => String(++seq).padStart(8, "0");
+
+/**
+ * Common headers we attach to every produced record so the Inspector has
+ * realistic header data to demo: tracing, tenancy, environment, source,
+ * a strict numeric sequence, and a content-type.
+ */
+function commonHeaders(extra = {}) {
+  return {
+    "trace-id": traceId(),
+    "x-tenant": pick(TENANTS),
+    "x-env": pick(ENVS),
+    "x-region": pick(REGIONS),
+    "x-source": pick(SOURCES),
+    "x-seq": nextSeq(),
+    ...extra,
+  };
+}
 
 const ORDER_AVRO_SCHEMA = {
   type: "record",
@@ -113,11 +136,7 @@ function buildOrderRaw() {
       items: Math.floor(Math.random() * 5) + 1,
       createdAt: new Date().toISOString(),
     }),
-    headers: {
-      tenant: pick(TENANTS),
-      traceid: traceId(),
-      "content-type": "application/json",
-    },
+    headers: commonHeaders({ "content-type": "application/json" }),
   };
 }
 
@@ -135,11 +154,10 @@ function buildOrderEnriched() {
       riskScore: Number((Math.random() * 0.5).toFixed(3)),
       enrichedAt: new Date().toISOString(),
     }),
-    headers: {
-      tenant: pick(TENANTS),
-      traceid: traceId(),
-      source: "enricher-v2",
-    },
+    headers: commonHeaders({
+      "content-type": "application/json",
+      "x-source": "enricher-v2",
+    }),
   };
 }
 
@@ -154,7 +172,7 @@ function buildUserEvent() {
       ip: `10.0.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`,
       ts: Date.now(),
     }),
-    headers: {},
+    headers: commonHeaders({ "content-type": "application/json" }),
   };
 }
 
@@ -242,7 +260,7 @@ async function produceBatch(n, schemaIds) {
       append(TOPIC_AVRO, {
         key: id,
         value: encoded,
-        headers: { tenant: pick(TENANTS), traceid: traceId() },
+        headers: commonHeaders({ "content-type": "application/avro" }),
       });
     } else {
       // 15% JSON Schema
@@ -251,7 +269,7 @@ async function produceBatch(n, schemaIds) {
       append(TOPIC_JSONSCHEMA, {
         key: id,
         value: encoded,
-        headers: { tenant: pick(TENANTS), traceid: traceId() },
+        headers: commonHeaders({ "content-type": "application/json" }),
       });
     }
   }

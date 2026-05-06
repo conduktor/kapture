@@ -36,8 +36,24 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           }}
           onOpenFilterMenu={onOpenFilterMenu}
         />
-        <Field name="offset" value={String(message.offset)} />
-        <Field name="timestamp" value={message.timestamp} />
+        <Field
+          name="offset"
+          value={String(message.offset)}
+          target={{
+            path: "envelope.offset",
+            literal: { kind: "number", value: String(message.offset) },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
+        <Field
+          name="timestamp"
+          value={message.timestamp}
+          target={{
+            path: "envelope.timestamp",
+            literal: { kind: "string", value: message.timestamp },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
         <Field
           name="key"
           value={message.key ?? "—"}
@@ -48,7 +64,15 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           }
           onOpenFilterMenu={onOpenFilterMenu}
         />
-        <Field name="size" value={`${message.sizeBytes} bytes`} />
+        <Field
+          name="size"
+          value={`${message.sizeBytes} bytes`}
+          target={{
+            path: "envelope.size",
+            literal: { kind: "number", value: String(message.sizeBytes) },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
       </Layer>
       {message.fetch ? (
         <Layer title={`fetch — ${message.fetch.apiName} v${message.fetch.apiVersion}`}>
