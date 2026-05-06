@@ -103,6 +103,12 @@ class Parser {
     if (c === "[") {
       return this.parseSeq();
     }
+    if (c === "{") {
+      // Anonymous map / set (`BTreeMap`, `HashMap`, `HashSet`,
+      // `unknown_tagged_fields` in kafka-protocol — all print as
+      // `{key: value, ...}` or `{}` when empty).
+      return this.parseAnonMap();
+    }
     if (c === "-" || (c >= "0" && c <= "9")) {
       return this.parsePrimitiveLiteral();
     }
@@ -120,6 +126,34 @@ class Parser {
       return { kind: "primitive", text: ident };
     }
     throw new Error(`unexpected '${c}' at ${String(this.pos)}`);
+  }
+
+  /**
+   * Anonymous map literal: `{key: value, ...}`. Map keys are usually
+   * either string-quoted or bare identifiers/numbers. We parse a key as
+   * a single value and stringify it for the field label so structural
+   * fidelity stays intact.
+   */
+  parseAnonMap(): DebugNode {
+    this.expect("{");
+    const fields: DebugField[] = [];
+    while (this.pos < this.src.length) {
+      this.skipWs();
+      if (this.peek() === "}") {
+        this.consume();
+        return { kind: "struct", name: "", fields };
+      }
+      const key = this.parseValue();
+      this.skipWs();
+      this.expect(":");
+      const value = this.parseValue();
+      fields.push({ name: keyLabel(key), value });
+      this.skipWs();
+      if (this.peek() === ",") {
+        this.consume();
+      }
+    }
+    throw new Error("unterminated map");
   }
 
   parseString(): DebugNode {
@@ -262,6 +296,23 @@ class Parser {
       }
     }
     return { kind: "primitive", text: this.src.slice(start, this.pos) };
+  }
+}
+
+/**
+ * Stringify a parsed key node for use as a struct-field label. Keeps
+ * primitive idents/numbers as-is; quotes string keys; falls back to a
+ * generic "<key>" placeholder for compound keys we don't expect to see
+ * (tuples, sequences) but the parser still happens to consume.
+ */
+function keyLabel(node: DebugNode): string {
+  switch (node.kind) {
+    case "string":
+      return `"${node.value}"`;
+    case "primitive":
+      return node.text;
+    default:
+      return "<key>";
   }
 }
 
