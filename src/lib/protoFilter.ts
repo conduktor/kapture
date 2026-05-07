@@ -62,9 +62,13 @@ export function isFilterEmpty(f: ProtoFilter): boolean {
  * Apply the filter to a frame.
  *
  * `decodedFor(id)` returns the cached decoded body for a frame, or
- * `undefined` when the detail hasn't been fetched yet. When undefined,
- * decodedContains predicates are *bypassed* on that frame (we'd rather
- * over-include than hide rows the user can't yet inspect).
+ * `undefined` when the detail hasn't been fetched yet. When the filter
+ * has any `decodedContains` predicate active and the decoded body is
+ * not cached, the frame is REJECTED — a filter is a hard constraint,
+ * not a hint. The caller is expected to pre-warm the decoded cache
+ * (see App.tsx's batched prefetch when a decodedContains predicate is
+ * present) so the user doesn't see a near-empty list while details
+ * trickle in.
  */
 export function applyFilter(
   f: ProtoFilter,
@@ -86,15 +90,17 @@ export function applyFilter(
   const dc = f.decodedContains;
   if (dc.include.length > 0 || dc.exclude.length > 0) {
     const decoded = decodedFor?.(frame.id);
-    if (decoded !== undefined) {
-      if (dc.exclude.some((s) => decoded.includes(s))) {
-        return false;
-      }
-      if (dc.include.length > 0 && !dc.include.some((s) => decoded.includes(s))) {
-        return false;
-      }
+    if (decoded === undefined) {
+      // Hard filter semantics: no cached decoded body means we can't
+      // confirm a match — reject rather than over-include.
+      return false;
     }
-    // decoded === undefined: bypass — the frame's detail is not in cache.
+    if (dc.exclude.some((s) => decoded.includes(s))) {
+      return false;
+    }
+    if (dc.include.length > 0 && !dc.include.some((s) => decoded.includes(s))) {
+      return false;
+    }
   }
   return true;
 }

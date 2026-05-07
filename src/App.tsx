@@ -596,6 +596,58 @@ function App(): JSX.Element {
   const protoFilter = protoParsed.filter;
   const protoFilterError = protoParsed.error;
 
+  // Hard-filter pre-fetch: when a `decodedContains` predicate is active,
+  // walk the visible frames and fetch any whose decoded body isn't
+  // cached yet. Without this the list would near-empty as the predicate
+  // rejects every uncached row. Bump the LRU cap so the warm set covers
+  // the whole window we just walked.
+  const decodedFiltersActive =
+    protoFilter.decodedContains.include.length > 0 ||
+    protoFilter.decodedContains.exclude.length > 0;
+  useEffect(() => {
+    if (!decodedFiltersActive || protoFrames.length === 0) {
+      return;
+    }
+    // Holder so TS doesn't narrow `cancelled` to `false` at the
+    // closure capture site (cleanup mutates it via the holder, which
+    // the type checker treats as opaque).
+    const state = { cancelled: false };
+    const cache = decodedCacheRef.current;
+    // Cap concurrent inflight fetches so we don't flood IPC. Frames
+    // are processed newest-first to prioritise what the user is most
+    // likely looking at.
+    const queue = protoFrames
+      .slice()
+      .reverse()
+      .filter((f) => !cache.has(f.id))
+      .slice(0, 500);
+    const concurrency = 8;
+    void (async () => {
+      const workers = Array.from({ length: concurrency }, async () => {
+        while (!state.cancelled) {
+          const next = queue.shift();
+          if (!next) return;
+          try {
+            const detail = await invoke<ProtoFrameDetail | null>("proto_frame_detail", {
+              id: next.id,
+            });
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- mutated by cleanup return
+            if (state.cancelled) return;
+            if (detail?.decoded != null) {
+              cache.set(detail.id, detail.decoded);
+            }
+          } catch {
+            /* best effort — skip on transient errors */
+          }
+        }
+      });
+      await Promise.all(workers);
+    })();
+    return () => {
+      state.cancelled = true;
+    };
+  }, [decodedFiltersActive, protoFrames]);
+
   // Filter bar wiring — Messages tab uses the Wireshark-style DSL
   // (validated server-side); Protocol tab uses the local DSL parsed
   // from the same input box.
