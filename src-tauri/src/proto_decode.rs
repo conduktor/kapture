@@ -116,30 +116,20 @@ fn try_decode_at(
     }
 }
 
-/// Wrap the kafka-protocol Debug output with a short comment header
-/// explaining why we fell back. The body parses cleanly through the
-/// frontend's debugTree parser because the comment lives INSIDE the
-/// outer struct's `{ ... }` and looks like a tagged-fields entry; the
-/// parser tolerates extra `// ...` style noise inside braces.
+/// Pass-through. Earlier versions of this fn injected `// comment`
+/// lines inside the struct body to explain the fallback; turns out
+/// the frontend's debugTree parser doesn't speak `//` so the tree
+/// view fell back to a raw `<pre>` block. The fallback is still
+/// observable from the data itself: `error_code: 35` in the body
+/// (KIP-511) or a `max_version` lower than what was requested
+/// (crate-version cap). No need to add ceremony.
 fn annotate_apiversions_fallback(
     body: &str,
-    requested_version: i16,
-    direction: ProtoDirection,
-    reason: &str,
+    _requested_version: i16,
+    _direction: ProtoDirection,
+    _reason: &str,
 ) -> String {
-    let kind = match direction {
-        ProtoDirection::Send => "ApiVersionsRequest",
-        ProtoDirection::Recv => "ApiVersionsResponse",
-    };
-    let inner = body
-        .trim_start_matches(kind)
-        .trim_start()
-        .trim_start_matches('{')
-        .trim_end_matches('}')
-        .trim();
-    format!(
-        "{kind} {{\n    // Fallback decode ({reason}). Requested wire version: v{requested_version}.\n    // Body shown below was decoded at the highest version this build understands.\n    {inner}\n}}",
-    )
+    body.to_owned()
 }
 
 fn decode_one<T: Decodable + std::fmt::Debug>(buf: &mut Bytes, version: i16) -> Option<String> {
