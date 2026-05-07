@@ -259,6 +259,15 @@ impl ProtoCorrelator {
         self.frames.lock().len()
     }
 
+    /// Clone every `ProtoFrame` currently in the ring buffer, including
+    /// payload bytes and decoded body. Used by the pause-pinning path
+    /// in `AppState` so the frontend can still resolve a selected row
+    /// after the live ring evicts it.
+    #[must_use]
+    pub fn frames_snapshot(&self) -> Vec<ProtoFrame> {
+        self.frames.lock().iter().cloned().collect()
+    }
+
     /// Drain the entire frame ring buffer + reset the per-connection
     /// fetch-metadata map. Used by the GUI's "Clear" button so the
     /// user can start a fresh capture session for a new test scenario

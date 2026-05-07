@@ -107,6 +107,13 @@ function App(): JSX.Element {
    *  detail panel doesn't blank out. */
   const toggleUiPaused = useCallback(
     (next: boolean): void => {
+      // Backend pinning: snapshot the rings on pause, clear on resume.
+      // Best-effort — a transient IPC failure shouldn't block the UI
+      // toggle; the worst case is detail panels go empty for evicted
+      // rows, same as before pinning existed.
+      void invoke("set_capture_paused", { paused: next }).catch((err: unknown) => {
+        console.warn("set_capture_paused failed", err);
+      });
       setPaused(next);
       if (!next && connection.status === "connected") {
         void (async () => {

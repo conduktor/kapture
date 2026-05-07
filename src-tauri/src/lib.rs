@@ -112,6 +112,8 @@ pub fn run() {
             commands::load_profile,
             commands::set_mcp_connect_allowed,
             commands::mcp_connect_allowed,
+            commands::set_capture_paused,
+            commands::capture_paused,
             commands::mcp_info,
         ])
         .run(tauri::generate_context!());

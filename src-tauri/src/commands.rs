@@ -569,8 +569,17 @@ pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<Proto
 /// Full frame (summary + captured bytes + decoded body) for one id.
 /// Used by the UI when the user selects a row in the Protocol list —
 /// avoids paying for the heavy fields on every poll.
+///
+/// When the UI is paused, the pinned-frames map (snapshotted at pause
+/// time) is consulted first so a row the user can still see in the
+/// frozen list resolves even after the live ring evicts it.
 #[tauri::command]
 pub fn proto_frame_detail(state: State<'_, AppState>, id: String) -> Option<ProtoFrame> {
+    if state.is_paused() {
+        if let Some(frame) = state.pinned_proto_frame(&id) {
+            return Some(frame);
+        }
+    }
     state.correlator().and_then(|c| c.frame_detail(&id))
 }
 
@@ -589,8 +598,17 @@ pub fn snapshot(state: State<'_, AppState>) -> Vec<MessageSummary> {
 /// message has aged out of the ring buffer. Called by the UI when
 /// the user selects a row, so `LayerTree` / `HexDump` can render the
 /// heavy fields lazily.
+///
+/// When the UI is paused, the pinned-messages map (snapshotted at
+/// pause time) is consulted first so a row the user can still see in
+/// the frozen list resolves even after the live ring evicts it.
 #[tauri::command]
 pub fn inspect_message_by_id(state: State<'_, AppState>, id: String) -> Option<CapturedMessage> {
+    if state.is_paused() {
+        if let Some(message) = state.pinned_message(&id) {
+            return Some(message);
+        }
+    }
     state.buffer.find_by_id(&id)
 }
 
@@ -769,6 +787,46 @@ pub fn set_mcp_connect_allowed(state: State<'_, AppState>, allowed: bool) {
 #[tauri::command]
 pub fn mcp_connect_allowed(state: State<'_, AppState>) -> bool {
     state.mcp_connect_allowed()
+}
+
+/// Toggle the user-driven UI pause. On `true`, snapshot both ring
+/// buffers (messages + proto frames) into pinned maps so detail
+/// lookups for rows the user is staring at keep resolving even after
+/// the live ring evicts them. On `false`, drop the snapshots — back
+/// to live mode, the rings are again the source of truth.
+#[tauri::command]
+pub fn set_capture_paused(state: State<'_, AppState>, paused: bool) {
+    if paused {
+        let messages: std::collections::HashMap<String, CapturedMessage> = state
+            .buffer
+            .snapshot()
+            .into_iter()
+            .map(|m| (m.id.clone(), m))
+            .collect();
+        state.set_pinned_messages(Some(messages));
+
+        let frames: std::collections::HashMap<String, ProtoFrame> = state
+            .correlator()
+            .map(|c| {
+                c.frames_snapshot()
+                    .into_iter()
+                    .map(|f| (f.id.clone(), f))
+                    .collect()
+            })
+            .unwrap_or_default();
+        state.set_pinned_proto_frames(Some(frames));
+    } else {
+        state.set_pinned_messages(None);
+        state.set_pinned_proto_frames(None);
+    }
+    state.set_paused(paused);
+}
+
+/// Mirror of `mcp_connect_allowed` for the pause flag — lets the GUI
+/// reconcile its local toggle with backend truth on reload.
+#[tauri::command]
+pub fn capture_paused(state: State<'_, AppState>) -> bool {
+    state.is_paused()
 }
 
 #[tauri::command]
