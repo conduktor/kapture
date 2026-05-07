@@ -232,11 +232,14 @@ body,
   color: white;
   border-color: var(--warning);
 }
-.btn--paused:hover {
-  /* Re-assert the warning bg explicitly: `.btn:hover` (same
-   * specificity, declared earlier) sets `background: var(--bg-subtle)`
-   * which would otherwise override and turn the button white-on-white
-   * (the label disappears). Brightness is the visible hover hint. */
+/* Higher-specificity selector (`.btn.btn--paused:hover` = 0/3/0) so we
+ * dominate `.btn:hover` (0/2/0) which would otherwise repaint the bg
+ * to `var(--bg-subtle)` and hide the white label. The chained class
+ * is intentional — earlier `.btn--paused:hover` (0/2/0, same as
+ * `.btn:hover`) was tying on specificity and source-order resolution
+ * wasn't reliable through HMR. */
+.btn.btn--paused:hover,
+.btn.btn--paused:focus-visible {
   background: var(--warning);
   color: white;
   border-color: var(--warning);
