@@ -24,7 +24,16 @@ pub struct CapturedMessage {
     pub offset: i64,
     pub key: Option<String>,
     pub schema_name: Option<String>,
+    /// Legacy magic-byte schema reference (`0x00 | u32_be id | …`).
+    /// Present when the producer encoded with the payload-prefix
+    /// wire format. Mutually exclusive with `schema_guid` in
+    /// practice.
     pub schema_id: Option<u32>,
+    /// Header-based schema reference (Confluent CP 8.1.1+). 16-byte
+    /// GUID (UUID 8-4-4-4-12 hex) extracted from the
+    /// `__value_schema_id` Kafka record header. Resolved via the
+    /// registry's `GET /schemas/guids/{guid}` endpoint.
+    pub schema_guid: Option<String>,
     /// Confluent schema kind label ("AVRO" / "JSON" / "PROTOBUF").
     /// `None` until the resolver task has answered (or when no
     /// registry is configured).
@@ -79,6 +88,7 @@ pub struct MessageSummary {
     pub key: Option<String>,
     pub schema_name: Option<String>,
     pub schema_id: Option<u32>,
+    pub schema_guid: Option<String>,
     pub schema_kind: Option<String>,
     pub size_bytes: usize,
     pub key_size: usize,
@@ -118,6 +128,7 @@ impl MessageSummary {
             key,
             schema_name: m.schema_name.clone(),
             schema_id: m.schema_id,
+            schema_guid: m.schema_guid.clone(),
             schema_kind: m.schema_kind.clone(),
             size_bytes: m.size_bytes,
             key_size: m.key_size,

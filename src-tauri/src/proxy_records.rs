@@ -265,6 +265,34 @@ fn resolve_topic_name(
     format!("[topic-id {topic_id}]")
 }
 
+/// Confluent header-based schema reference (CP 8.1.1+).
+/// `__value_schema_id` carries `version_byte | 16-byte GUID`; we
+/// surface the GUID as a UUID 8-4-4-4-12 hex string. Returns `None`
+/// when the header is absent or malformed (wrong length / no value
+/// bytes). Key path (`__key_schema_id`) isn't surfaced today —
+/// schema decoding targets the value here.
+const HEADER_VALUE_SCHEMA_ID: &str = "__value_schema_id";
+const HEADER_VALUE_LEN: usize = 17; // 1 byte version + 16 bytes GUID
+
+fn extract_header_schema_guid(headers: &[(String, Option<Bytes>)]) -> Option<String> {
+    let entry = headers.iter().find(|(k, _)| k == HEADER_VALUE_SCHEMA_ID)?;
+    let bytes = entry.1.as_deref()?;
+    if bytes.len() < HEADER_VALUE_LEN {
+        return None;
+    }
+    // bytes[0] is the wire-format version byte; we ignore it for now
+    // (CP currently emits 0). bytes[1..17] is the 16-byte GUID.
+    let guid_bytes: &[u8; 16] = bytes[1..17].try_into().ok()?;
+    Some(format_guid(guid_bytes))
+}
+
+fn format_guid(b: &[u8; 16]) -> String {
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
 /// Render a UUID for the UI envelope. `None` for the nil UUID
 /// (placeholder used by v0-12 wire formats that don't carry one), so
 /// the `LayerTree` can hide the field instead of showing all-zeros.
@@ -375,15 +403,24 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
     let key_size = rec.key.as_deref().map_or(0, <[u8]>::len);
     let value_size = value_bytes.map_or(0, <[u8]>::len);
     let size_bytes = key_size + value_size;
-    // Confluent Schema Registry envelope: `0x00 | u32_be schema_id |
-    // payload`. We surface the schema id when present so the inspector
-    // shows "schema id 17" instead of "schema: none" on Avro / JSON-
-    // Schema / Protobuf records. Resolving the *name* still needs a
-    // SchemaRegistryClient wired into the proxy session (follow-up:
-    // pass the SR URL through `start_proxy`).
-    let schema_id = value_bytes
-        .and_then(ConfluentEnvelope::try_parse)
-        .map(|env| env.schema_id);
+    // Confluent Schema Registry, two wire formats:
+    //   - Header-based (CP 8.1.1+): `__value_schema_id` header
+    //     carries `version_byte | 16-byte GUID`. Detect first; the
+    //     header path leaves the value bytes untouched (no envelope
+    //     to strip on decode).
+    //   - Legacy magic-byte: `0x00 | u32_be schema_id | payload`.
+    //     Fall back when no header is present.
+    // We surface the reference (id or guid) so the inspector shows
+    // it even when the registry isn't connected. Name resolution is
+    // wired through `schema_resolver`.
+    let schema_guid = extract_header_schema_guid(&rec.headers);
+    let schema_id = if schema_guid.is_some() {
+        None
+    } else {
+        value_bytes
+            .and_then(ConfluentEnvelope::try_parse)
+            .map(|env| env.schema_id)
+    };
     let timestamp = if rec.timestamp_ms > 0 {
         Utc.timestamp_millis_opt(rec.timestamp_ms)
             .single()
@@ -448,6 +485,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         key,
         schema_name: None,
         schema_id,
+        schema_guid,
         schema_kind: None,
         size_bytes,
         key_size,

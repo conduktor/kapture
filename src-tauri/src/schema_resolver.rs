@@ -55,14 +55,46 @@ const FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const FLUSH_LEN: usize = 64;
 const UNRESOLVED_KIND: &str = "UNRESOLVED";
 
+/// Schema reference path — payload-prefix int32 id (legacy) vs.
+/// header-stored 16-byte UUID GUID (Confluent CP 8.1.1+). The
+/// resolver dispatches each variant to its matching registry
+/// endpoint (`/schemas/ids/{id}` vs `/schemas/guids/{guid}`).
+#[derive(Debug, Clone)]
+pub enum SchemaRef {
+    Id(u32),
+    Guid(String),
+}
+
+impl SchemaRef {
+    fn cache_key(&self) -> u64 {
+        // Lightweight identity used by the failure cache so a single
+        // `HashMap<u64, Instant>` can key on either variant. Hash is
+        // good enough — collisions just retry-storm on a stale id at
+        // worst, which is what the TTL exists for.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        match self {
+            Self::Id(n) => {
+                0u8.hash(&mut h);
+                n.hash(&mut h);
+            }
+            Self::Guid(g) => {
+                1u8.hash(&mut h);
+                g.hash(&mut h);
+            }
+        }
+        h.finish()
+    }
+}
+
 pub fn spawn(
     client: Arc<SchemaRegistryClient>,
     buffer: Arc<RingBuffer>,
     app: AppHandle,
-    mut rx: tokio::sync::mpsc::Receiver<(String, u32)>,
+    mut rx: tokio::sync::mpsc::Receiver<(String, SchemaRef)>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let mut failed: HashMap<u32, Instant> = HashMap::new();
+        let mut failed: HashMap<u64, Instant> = HashMap::new();
         let mut pending: Vec<SchemaResolvedPatch> = Vec::with_capacity(FLUSH_LEN);
         let mut flush = tokio::time::interval(FLUSH_INTERVAL);
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -70,13 +102,13 @@ pub fn spawn(
             tokio::select! {
                 biased;
                 msg = rx.recv() => {
-                    let Some((message_id, schema_id)) = msg else {
+                    let Some((message_id, schema_ref)) = msg else {
                         if !pending.is_empty() {
                             let _ = app.emit("kapture:message-schema-resolved", &pending);
                         }
                         break;
                     };
-                    handle_one(&client, &buffer, &mut failed, &mut pending, message_id, schema_id).await;
+                    handle_one(&client, &buffer, &mut failed, &mut pending, message_id, schema_ref).await;
                     if pending.len() >= FLUSH_LEN {
                         let _ = app.emit("kapture:message-schema-resolved", &pending);
                         pending.clear();
@@ -96,21 +128,24 @@ pub fn spawn(
 async fn handle_one(
     client: &Arc<SchemaRegistryClient>,
     buffer: &Arc<RingBuffer>,
-    failed: &mut HashMap<u32, Instant>,
+    failed: &mut HashMap<u64, Instant>,
     pending: &mut Vec<SchemaResolvedPatch>,
     message_id: String,
-    schema_id: u32,
+    schema_ref: SchemaRef,
 ) {
-    if let Some(t) = failed.get(&schema_id) {
+    let fail_key = schema_ref.cache_key();
+    if let Some(t) = failed.get(&fail_key) {
         if t.elapsed() < FAIL_TTL {
-            // Still patch with UNRESOLVED so the UI doesn't get
-            // stuck on "resolving…" indefinitely.
             push_unresolved(buffer, pending, message_id);
             return;
         }
-        failed.remove(&schema_id);
+        failed.remove(&fail_key);
     }
-    match client.fetch(schema_id).await {
+    let result = match &schema_ref {
+        SchemaRef::Id(id) => client.fetch(*id).await,
+        SchemaRef::Guid(g) => client.fetch_by_guid(g).await,
+    };
+    match result {
         Ok(resolved) => {
             let name = resolved.subject.clone();
             let kind = resolved.kind.label().to_owned();
@@ -132,8 +167,8 @@ async fn handle_one(
             }
         }
         Err(err) => {
-            tracing::debug!(schema_id, error = %err, "schema-registry fetch failed");
-            failed.insert(schema_id, Instant::now());
+            tracing::debug!(?schema_ref, error = %err, "schema-registry fetch failed");
+            failed.insert(fail_key, Instant::now());
             push_unresolved(buffer, pending, message_id);
         }
     }
@@ -156,9 +191,6 @@ pub async fn decode_on_inspect(
     message: Option<CapturedMessage>,
 ) -> Option<CapturedMessage> {
     let mut message = message?;
-    let Some(schema_id) = message.schema_id else {
-        return Some(message);
-    };
     if !matches!(message.payload, DecodedValue::Bytes { .. }) {
         // Already decoded by an earlier inspect — nothing to do.
         return Some(message);
@@ -166,8 +198,17 @@ pub async fn decode_on_inspect(
     let Some(client) = state.schema_registry() else {
         return Some(message);
     };
-    let resolved = client.fetch(schema_id).await.ok()?;
-    let decoded = decode_with_schema(&resolved, &message.raw_hex)?;
+    // Header path takes precedence: it's the newer Confluent
+    // format (CP 8.1.1+). Both paths cannot coexist in a single
+    // record per the producer contract.
+    let (resolved, has_envelope) = if let Some(guid) = message.schema_guid.as_deref() {
+        (client.fetch_by_guid(guid).await.ok()?, false)
+    } else if let Some(id) = message.schema_id {
+        (client.fetch(id).await.ok()?, true)
+    } else {
+        return Some(message);
+    };
+    let decoded = decode_with_schema(&resolved, &message.raw_hex, has_envelope)?;
     state.buffer.update_message_with(&message.id, |stored| {
         stored.payload = decoded.clone();
     });
@@ -175,17 +216,29 @@ pub async fn decode_on_inspect(
     Some(message)
 }
 
-/// Strip the 5-byte Confluent envelope and decode the remaining
-/// bytes against the resolved schema. Returns `None` on hex-parse
-/// failure (the stored `raw_hex` was unparseable), envelope-too-short,
-/// schema-parse failure, or an unsupported kind (Protobuf — we'd
-/// need the descriptor, not just the schema text).
-fn decode_with_schema(resolved: &ResolvedSchema, raw_hex: &str) -> Option<DecodedValue> {
+/// Decode the value bytes against the resolved schema. Strips the
+/// 5-byte Confluent envelope on the legacy id path
+/// (`has_envelope = true`); the header-GUID path leaves the value
+/// untouched (the schema reference lives on a Kafka header, not on
+/// the value prefix).
+///
+/// Returns `None` on hex-parse failure, schema-parse failure, or an
+/// unsupported kind (Protobuf — we'd need the descriptor compiled
+/// from the .proto, not just the registry's text).
+fn decode_with_schema(
+    resolved: &ResolvedSchema,
+    raw_hex: &str,
+    has_envelope: bool,
+) -> Option<DecodedValue> {
     let bytes = parse_render_hex(raw_hex)?;
-    if bytes.len() <= 5 {
-        return None;
-    }
-    let body = &bytes[5..];
+    let body: &[u8] = if has_envelope {
+        if bytes.len() <= 5 {
+            return None;
+        }
+        &bytes[5..]
+    } else {
+        &bytes
+    };
     match resolved.kind {
         SchemaKind::Avro => {
             let schema = avro::parse_schema(&resolved.raw).ok()?;

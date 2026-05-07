@@ -14,28 +14,37 @@ function sizeWithRaw(n: number): string {
   return n < 1024 ? formatBytes(n) : `${formatBytes(n)} (${n.toLocaleString()} B)`;
 }
 
-/** Title for the schema Layer. Five states:
- *   - no envelope            → "schema: none (raw payload)"
- *   - id, no registry wired  → "schema id N (no registry connected)"
- *   - id, registry rejected  → "schema id N (registry error)"
- *   - id, resolved           → "schema: NAME (id N) — KIND"
- *   - id, awaiting resolver  → "schema id N (resolving…)"
+/** Title for the schema Layer. Two reference paths (legacy id /
+ *  header GUID — Confluent CP 8.1.1+) × five resolution states.
+ *  `schemaRef` returns the human-readable token for whichever
+ *  path the record uses.
  */
 function schemaLayerTitle(m: KafkaMessageDetail): string {
-  if (m.schemaId === null) {
+  const ref = schemaRefLabel(m);
+  if (ref === null) {
     return "schema: none (raw payload)";
   }
   if (m.schemaKind === "NO_REGISTRY") {
-    return `schema id ${String(m.schemaId)} (no registry connected)`;
+    return `${ref} (no registry connected)`;
   }
   if (m.schemaKind === "UNRESOLVED") {
-    return `schema id ${String(m.schemaId)} (registry error)`;
+    return `${ref} (registry error)`;
   }
   if (m.schemaName !== null) {
     const kind = m.schemaKind !== null ? ` — ${m.schemaKind}` : "";
-    return `schema: ${m.schemaName} (id ${String(m.schemaId)})${kind}`;
+    return `schema: ${m.schemaName} (${ref})${kind}`;
   }
-  return `schema id ${String(m.schemaId)} (resolving…)`;
+  return `${ref} (resolving…)`;
+}
+
+function schemaRefLabel(m: KafkaMessageDetail): string | null {
+  if (m.schemaGuid !== null) {
+    return `schema guid ${m.schemaGuid}`;
+  }
+  if (m.schemaId !== null) {
+    return `schema id ${String(m.schemaId)}`;
+  }
+  return null;
 }
 
 interface Props {
@@ -168,20 +177,33 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           ))
         )}
       </Layer>
-      {message.schemaId !== null ? (
-        // Hide the schema layer entirely on raw-payload records — no
-        // envelope means no useful detail to show, and the "schema:
-        // none" placeholder was just noise.
+      {message.schemaId !== null || message.schemaGuid !== null ? (
+        // Hide the schema layer entirely on raw-payload records (no
+        // legacy id, no header guid) — the "schema: none"
+        // placeholder was just noise.
         <Layer title={schemaLayerTitle(message)}>
-          <Field
-            name="id"
-            value={String(message.schemaId)}
-            target={{
-              path: "schema.id",
-              literal: { kind: "number", value: String(message.schemaId) },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
+          {message.schemaGuid !== null ? (
+            <Field
+              name="guid"
+              value={message.schemaGuid}
+              target={{
+                path: "schema.guid",
+                literal: { kind: "string", value: message.schemaGuid },
+              }}
+              onOpenFilterMenu={onOpenFilterMenu}
+            />
+          ) : null}
+          {message.schemaId !== null ? (
+            <Field
+              name="id"
+              value={String(message.schemaId)}
+              target={{
+                path: "schema.id",
+                literal: { kind: "number", value: String(message.schemaId) },
+              }}
+              onOpenFilterMenu={onOpenFilterMenu}
+            />
+          ) : null}
           {message.schemaName !== null ? (
             <Field
               name="name"

@@ -199,6 +199,7 @@ mod tests {
             key: None,
             schema_name: None,
             schema_id: None,
+            schema_guid: None,
             schema_kind: None,
             size_bytes: 0,
             key_size: 0,

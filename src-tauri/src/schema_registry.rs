@@ -86,6 +86,7 @@ pub struct SchemaRegistryClient {
     base_url: String,
     http: Client,
     cache: Mutex<LruCache<u32, Arc<ResolvedSchema>>>,
+    cache_by_guid: Mutex<LruCache<String, Arc<ResolvedSchema>>>,
 }
 
 impl SchemaRegistryClient {
@@ -99,6 +100,9 @@ impl SchemaRegistryClient {
                 .build()
                 .unwrap_or_default(),
             cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
+            )),
+            cache_by_guid: Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_CAPACITY).unwrap_or(NonZeroUsize::MIN),
             )),
         }
@@ -133,6 +137,48 @@ impl SchemaRegistryClient {
             subject: parsed.subject,
         });
         self.cache.lock().put(id, Arc::clone(&resolved));
+        Ok(resolved)
+    }
+
+    /// Look up a schema by GUID — the new Confluent CP 8.1.1+ wire
+    /// path where producers stamp the GUID into the
+    /// `__value_schema_id` Kafka header instead of the value
+    /// payload prefix. Endpoint: `GET /schemas/guids/{guid}`.
+    /// Cached separately from the by-id LRU because the same schema
+    /// may resolve via either path; deduping is left to the registry
+    /// (the server returns the same body for both).
+    pub async fn fetch_by_guid(&self, guid: &str) -> Result<Arc<ResolvedSchema>, RegistryError> {
+        let cached = self.cache_by_guid.lock().get(guid).cloned();
+        if let Some(cached) = cached {
+            return Ok(cached);
+        }
+        let url = format!("{}/schemas/guids/{guid}", self.base_url);
+        debug!(%guid, %url, "fetching schema by guid");
+        let response = self.http.get(&url).send().await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            warn!(%guid, status = %status, "schema registry refused guid lookup");
+            // Reuse `BadStatus` with id=0 sentinel — the variant is
+            // already a fail-fast error type and the GUID is in the
+            // body for context.
+            return Err(RegistryError::BadStatus {
+                id: 0,
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let parsed: RawResponse = response.json().await?;
+        let raw = parsed.schema.ok_or(RegistryError::Malformed)?;
+        let resolved = Arc::new(ResolvedSchema {
+            id: 0,
+            kind: SchemaKind::from_label(parsed.schema_type.as_deref()),
+            raw,
+            subject: parsed.subject,
+        });
+        self.cache_by_guid
+            .lock()
+            .put(guid.to_owned(), Arc::clone(&resolved));
         Ok(resolved)
     }
 }

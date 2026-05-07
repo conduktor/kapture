@@ -297,7 +297,11 @@ pub async fn start_proxy(
 /// (`take_capture`, `take_proxy`) cannot be bypassed. The Tauri
 /// command path passes `false` because the user clicking Connect IS
 /// the explicit consent.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::items_after_statements
+)]
 pub async fn start_proxy_impl(
     app: &AppHandle,
     state: &AppState,
@@ -364,28 +368,39 @@ pub async fn start_proxy_impl(
     // record. `try_send` is fire-and-forget so the proxy pump
     // never blocks on a full resolver queue (1024 outstanding is
     // generous; the LRU cache absorbs repeats).
-    let resolver_tx: Option<tokio::sync::mpsc::Sender<(String, u32)>> =
-        if let Some(client) = state.schema_registry() {
-            let (tx, rx) = tokio::sync::mpsc::channel::<(String, u32)>(1024);
-            crate::schema_resolver::spawn(client, Arc::clone(&state.buffer), app.clone(), rx);
-            Some(tx)
-        } else {
-            None
-        };
+    type SchemaResolverSender =
+        tokio::sync::mpsc::Sender<(String, crate::schema_resolver::SchemaRef)>;
+    let resolver_tx: Option<SchemaResolverSender> = if let Some(client) = state.schema_registry() {
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<(String, crate::schema_resolver::SchemaRef)>(1024);
+        crate::schema_resolver::spawn(client, Arc::clone(&state.buffer), app.clone(), rx);
+        Some(tx)
+    } else {
+        None
+    };
     let sink: crate::proxy_handle::RecordSink = Arc::new(move |mut message| {
         // Stamp `schema_kind = NO_REGISTRY` synchronously when the
-        // record has a schema id but the session has no registry —
-        // otherwise the UI would render "resolving…" forever for a
-        // resolver that's never going to fire.
-        if message.schema_id.is_some() && resolver_tx.is_none() {
+        // record has a schema reference but the session has no
+        // registry — otherwise the UI would render "resolving…"
+        // forever for a resolver that's never going to fire.
+        let has_ref = message.schema_id.is_some() || message.schema_guid.is_some();
+        if has_ref && resolver_tx.is_none() {
             message.schema_kind = Some("NO_REGISTRY".to_owned());
         }
         buffer.push(message.clone());
-        // Enqueue resolution before forwarding to IPC — the resolver
-        // patches the ring-buffer entry in place; the IPC patch
-        // event arrives afterwards and updates the live UI summary.
-        if let (Some(tx), Some(schema_id)) = (resolver_tx.as_ref(), message.schema_id) {
-            let _ = tx.try_send((message.id.clone(), schema_id));
+        // Enqueue resolution. Header GUID path takes precedence over
+        // legacy id path (mirrors `decode_on_inspect`); both paths
+        // cannot coexist on a single record per the producer
+        // contract (CP 8.1.1+ DualSchemaIdDeserializer).
+        if let Some(tx) = resolver_tx.as_ref() {
+            let schema_ref = message
+                .schema_guid
+                .as_deref()
+                .map(|g| crate::schema_resolver::SchemaRef::Guid(g.to_owned()))
+                .or_else(|| message.schema_id.map(crate::schema_resolver::SchemaRef::Id));
+            if let Some(r) = schema_ref {
+                let _ = tx.try_send((message.id.clone(), r));
+            }
         }
         // unbounded send only fails when the receiver is gone (proxy
         // stopped) — at that point dropping the message is correct.

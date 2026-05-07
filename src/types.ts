@@ -112,7 +112,12 @@ export interface KafkaMessage {
   /** Stringified key, truncated to ~128 chars for the live preview. */
   key: string | null;
   schemaName: string | null;
+  /** Legacy magic-byte schema id (`0x00 | u32_be id | …` payload
+   *  prefix). Mutually exclusive with `schemaGuid` in practice. */
   schemaId: number | null;
+  /** Confluent CP 8.1.1+ header-stored 16-byte UUID GUID. Resolved
+   *  via the registry's `/schemas/guids/{guid}` endpoint. */
+  schemaGuid: string | null;
   /** Confluent schema kind label ("AVRO" / "JSON" / "PROTOBUF"), or
    *  "UNRESOLVED" when the registry rejected the id. `null` while a
    *  resolution is pending or when no registry is configured. */
@@ -153,6 +158,7 @@ export interface KafkaMessageDetail {
   key: string | null;
   schemaName: string | null;
   schemaId: number | null;
+  schemaGuid: string | null;
   schemaKind: string | null;
   sizeBytes: number;
   keySize: number;
