@@ -316,6 +316,11 @@ body,
   min-height: 0;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
+  /* The section is `tabIndex=0` so arrow nav works (focus is funneled
+   * here on row click — see ProtoList/MessageList). The default focus
+   * ring on the whole section is noisy: row selection is already
+   * conveyed by `.msglist__row.is-selected`'s bg. Drop the outline. */
+  outline: none;
   /* Enable container-query-driven progressive column hiding. The
    * Protocol tab can be made very narrow via the horizontal splitter;
    * we hide RTT → size → v → ts → conn/corr in priority order so the
