@@ -220,6 +220,11 @@ struct SetProxyTargetParams {
     /// against the upstream.
     #[serde(default)]
     upstream_sasl: Option<McpProxySaslArgs>,
+    /// Optional Confluent-style Schema Registry HTTP(S) endpoint
+    /// (e.g. `http://localhost:8081`). When set, captured records'
+    /// schema id is resolved to a name asynchronously.
+    #[serde(default)]
+    schema_registry_url: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -510,6 +515,7 @@ impl KaptureMcp {
             listen_port,
             upstream_tls,
             upstream_sasl,
+            schema_registry_url,
         }): Parameters<SetProxyTargetParams>,
     ) -> Result<Json<ProxyStatusResponse>, ErrorData> {
         {
@@ -568,6 +574,9 @@ impl KaptureMcp {
             .app_handle
             .try_state::<AppState>()
             .ok_or_else(|| ErrorData::internal_error("AppState not initialised", None))?;
+        let registry = schema_registry_url
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty());
         crate::commands::start_proxy_impl(
             &self.app_handle,
             &state_ref,
@@ -575,6 +584,7 @@ impl KaptureMcp {
             listen_port,
             tls_cfg,
             sasl_cfg,
+            registry,
             true, // MCP path: re-check gate before slot claim (race fix)
         )
         .await

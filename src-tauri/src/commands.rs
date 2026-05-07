@@ -267,10 +267,24 @@ pub async fn start_proxy(
     listen_port: u16,
     upstream_tls: Option<ProxyTlsArgs>,
     upstream_sasl: Option<ProxySaslArgs>,
+    schema_registry_url: Option<String>,
 ) -> Result<ProxyStatus> {
     let tls = upstream_tls.map(ProxyTlsArgs::into_config);
     let sasl = upstream_sasl.map(ProxySaslArgs::into_config).transpose()?;
-    start_proxy_impl(&app, &state, upstream, listen_port, tls, sasl, false).await
+    let registry = schema_registry_url
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    start_proxy_impl(
+        &app,
+        &state,
+        upstream,
+        listen_port,
+        tls,
+        sasl,
+        registry,
+        false,
+    )
+    .await
 }
 
 /// Implementation shared between the Tauri command and the MCP
@@ -283,6 +297,7 @@ pub async fn start_proxy(
 /// (`take_capture`, `take_proxy`) cannot be bypassed. The Tauri
 /// command path passes `false` because the user clicking Connect IS
 /// the explicit consent.
+#[allow(clippy::too_many_arguments)]
 pub async fn start_proxy_impl(
     app: &AppHandle,
     state: &AppState,
@@ -290,6 +305,7 @@ pub async fn start_proxy_impl(
     listen_port: u16,
     tls: Option<UpstreamTlsConfig>,
     sasl: Option<UpstreamSaslConfig>,
+    schema_registry_url: Option<String>,
     mcp_authorized: bool,
 ) -> Result<ProxyStatus> {
     if let Some(handle) = state.take_proxy() {
@@ -308,6 +324,15 @@ pub async fn start_proxy_impl(
         return Err(KaptureError::AlreadyProxying);
     }
     state.buffer.clear();
+
+    // Schema Registry client lives for the proxy session — installed
+    // here, cleared in `stop_proxy`. Per-session lifetime so a
+    // profile change re-instantiates with a fresh LRU cache (schema
+    // ids are scoped per registry).
+    state.set_schema_registry(
+        schema_registry_url
+            .map(|url| Arc::new(crate::schema_registry::SchemaRegistryClient::new(url))),
+    );
 
     let trimmed_upstream = upstream.trim().to_owned();
     if trimmed_upstream.is_empty() {
@@ -511,6 +536,7 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
         return Err(KaptureError::NotProxying);
     };
     handle.stop().await;
+    state.set_schema_registry(None);
     info!("proxy stopped");
     Ok(())
 }

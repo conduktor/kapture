@@ -80,6 +80,9 @@ export function ConnectionDialog({
   // SNI for upstream TLS. Empty = derive from upstream host. Persisted
   // as-is in profiles so a load round-trips.
   const [tlsServerName, setTlsServerName] = useState("");
+  // Optional Confluent Schema Registry URL. Empty = no resolver.
+  // Persisted on the profile so a load round-trips.
+  const [registryUrl, setRegistryUrl] = useState("");
 
   // "Test" button state. Result is shown inline below the actions row;
   // auto-clears 5 s after success or when any form field changes (so a
@@ -284,6 +287,7 @@ export function ConnectionDialog({
     try {
       const profile = await invoke<LoadedProfile>("load_profile", { name });
       setUpstream(profile.bootstrapServers);
+      setRegistryUrl(profile.schemaRegistryUrl ?? "");
       // Restore proxy-mode TLS state. Toggle reflects "has saved
       // upstreamTls"; field values are zeroed when the profile didn't
       // record TLS so a stale prior selection doesn't bleed in.
@@ -370,7 +374,7 @@ export function ConnectionDialog({
       name,
       bootstrapServers: upstream.trim(),
       topicPattern: null,
-      schemaRegistryUrl: null,
+      schemaRegistryUrl: registryUrl.trim() === "" ? null : registryUrl.trim(),
       auth: null,
       fromBeginning: false,
       upstreamTls,
@@ -440,6 +444,7 @@ export function ConnectionDialog({
           listenPort,
           upstreamTls,
           upstreamSasl,
+          schemaRegistryUrl: registryUrl.trim() === "" ? null : registryUrl.trim(),
         });
         // Auto-save edits back to the loaded profile. If the user
         // started from an existing profile, any tweak they made
@@ -466,7 +471,7 @@ export function ConnectionDialog({
             name: selectedProfile,
             bootstrapServers: trimmedUpstream,
             topicPattern: null,
-            schemaRegistryUrl: null,
+            schemaRegistryUrl: registryUrl.trim() === "" ? null : registryUrl.trim(),
             auth: null,
             fromBeginning: false,
             upstreamTls: saveTls,
@@ -551,9 +556,9 @@ export function ConnectionDialog({
         </div>
         {profileError !== null ? <p className="dialog__error">{profileError}</p> : null}
         <div className="dialog__section">
-          <div className="dialog__section-title">Upstream</div>
+          <div className="dialog__section-title">Bootstrap</div>
           <label className="dialog__field">
-            <span className="dialog__label">Upstream broker</span>
+            <span className="dialog__label">Bootstrap servers</span>
             <input
               className="dialog__input"
               value={upstream}
@@ -576,7 +581,7 @@ export function ConnectionDialog({
                 clearTestResult();
               }}
             />
-            <span>Upstream uses TLS</span>
+            <span>Bootstrap server uses TLS</span>
           </label>
           {useTls ? (
             <>
@@ -619,7 +624,7 @@ export function ConnectionDialog({
                 clearTestResult();
               }}
             />
-            <span>Upstream requires SASL</span>
+            <span>Bootstrap server requires SASL</span>
           </label>
           {useSasl ? (
             <>
@@ -677,6 +682,34 @@ export function ConnectionDialog({
             </>
           ) : null}
         </div>
+        <details
+          className="dialog__section dialog__section--collapsible"
+          // Auto-expand when the loaded profile already carries an
+          // SR URL — otherwise users would never see the value
+          // they configured.
+          open={registryUrl !== ""}
+        >
+          <summary className="dialog__section-title">Schema Registry (optional)</summary>
+          <label className="dialog__field">
+            <span className="dialog__label">URL</span>
+            <input
+              className="dialog__input"
+              type="text"
+              value={registryUrl}
+              onChange={(e) => {
+                setRegistryUrl(e.target.value);
+                clearTestResult();
+              }}
+              placeholder="http://localhost:18081"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <span className="dialog__hint">
+              Confluent-style HTTP(S) endpoint. Leave empty to skip schema name resolution; messages
+              will still surface their schema id.
+            </span>
+          </label>
+        </details>
         <div className="dialog__section">
           <div className="dialog__section-title">Local</div>
           <label className="dialog__field">

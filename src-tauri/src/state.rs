@@ -10,6 +10,7 @@ use crate::filter::CompiledFilter;
 use crate::message::CapturedMessage;
 use crate::profiles::ProfileStore;
 use crate::ring_buffer::RingBuffer;
+use crate::schema_registry::SchemaRegistryClient;
 
 /// Default ring buffer capacity.
 pub const DEFAULT_RING_CAPACITY: usize = 100_000;
@@ -40,6 +41,12 @@ pub struct AppState {
     /// Snapshot of the proto-frames ring buffer at the moment of pause,
     /// keyed by frame id. `None` when not paused.
     pinned_proto_frames: Mutex<Option<HashMap<String, ProtoFrame>>>,
+    /// Confluent Schema Registry client, instantiated when the proxy
+    /// session is started with a non-empty `schema_registry_url`.
+    /// `None` when no registry is configured. Cleared on
+    /// `stop_proxy` so a subsequent start with a different URL gets a
+    /// fresh client (LRU cache is per-instance).
+    schema_registry: Mutex<Option<Arc<SchemaRegistryClient>>>,
     inner: Mutex<Inner>,
 }
 
@@ -62,6 +69,7 @@ impl AppState {
             paused: AtomicBool::new(false),
             pinned_messages: Mutex::new(None),
             pinned_proto_frames: Mutex::new(None),
+            schema_registry: Mutex::new(None),
             inner: Mutex::new(Inner::default()),
         }
     }
@@ -157,6 +165,25 @@ impl AppState {
 
     pub fn set_paused(&self, paused: bool) {
         self.paused.store(paused, Ordering::Release);
+    }
+
+    /// Install (or replace) the Schema Registry client for the
+    /// current proxy session. Pass `None` to drop it (e.g. on
+    /// `stop_proxy`).
+    pub fn set_schema_registry(&self, client: Option<Arc<SchemaRegistryClient>>) {
+        *self.schema_registry.lock() = client;
+    }
+
+    /// Read the current Schema Registry client. Returns `None` when
+    /// the session was started without a registry URL.
+    ///
+    /// Wired by milestone 2 of `docs/specs/schema-registry.md` when
+    /// the resolver task is added; the milestone-1 plumbing surfaces
+    /// the field but doesn't yet read it.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn schema_registry(&self) -> Option<Arc<SchemaRegistryClient>> {
+        self.schema_registry.lock().clone()
     }
 
     /// Install pinned snapshots taken at pause time. Pass `None` to

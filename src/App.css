@@ -1440,6 +1440,35 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   height: 1px;
   background: var(--border);
 }
+/* `<details>`-based collapsible variant. Reuses the same title chrome
+ * (uppercased label + trailing rule) but adds a chevron and makes the
+ * header click-to-toggle. Children stack with the same gap as a normal
+ * section once expanded. */
+.dialog__section--collapsible {
+  display: block;
+}
+.dialog__section--collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.dialog__section--collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+.dialog__section--collapsible > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 0.12s;
+}
+.dialog__section--collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+.dialog__section--collapsible > .dialog__field {
+  margin-top: 10px;
+}
 .dialog__field {
   display: flex;
   flex-direction: column;
