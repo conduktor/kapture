@@ -142,55 +142,6 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           onOpenFilterMenu={onOpenFilterMenu}
         />
       </Layer>
-      {message.fetch ? (
-        <Layer title={`fetch — ${message.fetch.apiName} v${message.fetch.apiVersion}`}>
-          <Field
-            name="api"
-            value={`${message.fetch.apiName} v${message.fetch.apiVersion}`}
-            target={{
-              path: "fetch.api_name",
-              literal: { kind: "string", value: message.fetch.apiName },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-          <Field
-            name="connection_id"
-            value={String(message.fetch.connectionId)}
-            target={{
-              path: "fetch.connection_id",
-              literal: { kind: "number", value: String(message.fetch.connectionId) },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-          <Field
-            name="corr_id"
-            value={`0x${message.fetch.corrId.toString(16).padStart(8, "0")}`}
-            target={{
-              path: "fetch.corr_id",
-              literal: { kind: "number", value: String(message.fetch.corrId) },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-          <Field
-            name="response_size"
-            value={formatBytes(message.fetch.responseSize)}
-            target={{
-              path: "fetch.response_size",
-              literal: { kind: "number", value: String(message.fetch.responseSize) },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-          <Field
-            name="rtt_ms"
-            value={`${message.fetch.rttMs.toFixed(2)} ms`}
-            target={{
-              path: "fetch.rtt_ms",
-              literal: { kind: "number", value: message.fetch.rttMs.toString() },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-        </Layer>
-      ) : null}
       <Layer title={`headers (${message.headers.length})`}>
         {message.headers.length === 0 ? (
           <span className="muted">no headers</span>
@@ -217,51 +168,50 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           ))
         )}
       </Layer>
-      <Layer title={schemaLayerTitle(message)}>
-        {message.schemaId === null ? (
-          <span className="muted">no schema resolved</span>
-        ) : (
-          <>
+      {message.schemaId !== null ? (
+        // Hide the schema layer entirely on raw-payload records — no
+        // envelope means no useful detail to show, and the "schema:
+        // none" placeholder was just noise.
+        <Layer title={schemaLayerTitle(message)}>
+          <Field
+            name="id"
+            value={String(message.schemaId)}
+            target={{
+              path: "schema.id",
+              literal: { kind: "number", value: String(message.schemaId) },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
+          />
+          {message.schemaName !== null ? (
             <Field
-              name="id"
-              value={String(message.schemaId)}
+              name="name"
+              value={message.schemaName}
               target={{
-                path: "schema.id",
-                literal: { kind: "number", value: String(message.schemaId) },
+                path: "schema.name",
+                literal: { kind: "string", value: message.schemaName },
               }}
               onOpenFilterMenu={onOpenFilterMenu}
             />
-            {message.schemaName !== null ? (
-              <Field
-                name="name"
-                value={message.schemaName}
-                target={{
-                  path: "schema.name",
-                  literal: { kind: "string", value: message.schemaName },
-                }}
-                onOpenFilterMenu={onOpenFilterMenu}
-              />
-            ) : null}
-            {message.schemaKind !== null &&
-            message.schemaKind !== "NO_REGISTRY" &&
-            message.schemaKind !== "UNRESOLVED" ? (
-              // Hide the sentinel kinds — the layer title surfaces
-              // those states verbatim. Only render `kind` when it's
-              // a real Confluent label users would filter on
-              // (`AVRO` / `JSON` / `PROTOBUF`).
-              <Field
-                name="kind"
-                value={message.schemaKind}
-                target={{
-                  path: "schema.kind",
-                  literal: { kind: "string", value: message.schemaKind },
-                }}
-                onOpenFilterMenu={onOpenFilterMenu}
-              />
-            ) : null}
-          </>
-        )}
-      </Layer>
+          ) : null}
+          {message.schemaKind !== null &&
+          message.schemaKind !== "NO_REGISTRY" &&
+          message.schemaKind !== "UNRESOLVED" ? (
+            // Hide the sentinel kinds — the layer title surfaces
+            // those states verbatim. Only render `kind` when it's
+            // a real Confluent label users would filter on
+            // (`AVRO` / `JSON` / `PROTOBUF`).
+            <Field
+              name="kind"
+              value={message.schemaKind}
+              target={{
+                path: "schema.kind",
+                literal: { kind: "string", value: message.schemaKind },
+              }}
+              onOpenFilterMenu={onOpenFilterMenu}
+            />
+          ) : null}
+        </Layer>
+      ) : null}
       <Layer title="payload">
         <DecodedNode
           value={message.payload}
