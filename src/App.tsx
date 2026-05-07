@@ -727,30 +727,6 @@ function App(): JSX.Element {
 
   // Backlink from a captured Message → its originating Fetch frame.
   // Switches to the Protocol tab and selects the matching frame in the
-  // ring buffer summary cache. The match is `(connectionId, corrId,
-  // direction === "recv")` because the Fetch *response* is what
-  // actually carried the records — the request never has them.
-  // Logs a console warning if the frame has aged out (4000-frame ring
-  // buffer); the selection still happens (`null`) so the Protocol tab
-  // surfaces an empty detail pane rather than silently doing nothing.
-  const handleJumpToFetchFrame = useCallback(
-    (connectionId: number, corrId: number): void => {
-      setTab("protocol");
-      const match = protoFrames.find(
-        (f) => f.connectionId === connectionId && f.corrId === corrId && f.direction === "recv",
-      );
-      if (match) {
-        setSelectedFrameId(match.id);
-      } else {
-        console.warn(
-          `Fetch frame (conn=${String(connectionId)}, corr=${String(corrId)}) not found in ring buffer — likely aged out.`,
-        );
-        setSelectedFrameId(null);
-      }
-    },
-    [protoFrames],
-  );
-
   // Splitter callbacks: convert pixel deltas into ratio deltas. The
   // axis depends on the pane container's split direction — vertical
   // splits use height, horizontal use width.
@@ -850,7 +826,6 @@ function App(): JSX.Element {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpenFilterMenu={openFilterMenu}
-                onJumpToFetchFrame={handleJumpToFetchFrame}
               />
               <Splitter
                 orientation="horizontal"

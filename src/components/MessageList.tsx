@@ -11,16 +11,17 @@ import { List, type ListImperativeAPI, type RowComponentProps } from "react-wind
 import type { KafkaMessage } from "../types";
 import type { FilterTarget } from "./FilterMenu";
 import { formatBytes } from "../lib/formatBytes";
+import { formatLocalTime } from "../lib/formatTimestamp";
+import { useAutoFollow } from "../lib/useAutoFollow";
+import { useFreshRows } from "../lib/useFreshRows";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
-type JumpToFetchFrame = (connectionId: number, corrId: number) => void;
 
 interface Props {
   messages: KafkaMessage[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
-  onJumpToFetchFrame: JumpToFetchFrame;
 }
 
 interface RowProps {
@@ -28,21 +29,44 @@ interface RowProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
-  onJumpToFetchFrame: JumpToFetchFrame;
+  freshIds: ReadonlySet<string>;
 }
 
 const ROW_HEIGHT = 26;
+
+const messageId = (m: KafkaMessage): string => m.id;
 
 export function MessageList({
   messages,
   selectedId,
   onSelect,
   onOpenFilterMenu,
-  onJumpToFetchFrame,
 }: Props): JSX.Element {
+  // Click-to-select must keep keyboard focus on the section (see
+  // ProtoList for the rationale): under heavy traffic react-window
+  // can unmount a focused row, snapping focus to <body> and breaking
+  // arrow nav. Funneling focus to the section sidesteps it.
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const focusSection = useCallback((): void => {
+    sectionRef.current?.focus({ preventScroll: true });
+  }, []);
+  const onSelectRow = useCallback(
+    (id: string): void => {
+      onSelect(id);
+      focusSection();
+    },
+    [onSelect, focusSection],
+  );
+  const freshIds = useFreshRows(messages, messageId);
   const rowProps = useMemo<RowProps>(
-    () => ({ messages, selectedId, onSelect, onOpenFilterMenu, onJumpToFetchFrame }),
-    [messages, selectedId, onSelect, onOpenFilterMenu, onJumpToFetchFrame],
+    () => ({
+      messages,
+      selectedId,
+      onSelect: onSelectRow,
+      onOpenFilterMenu,
+      freshIds,
+    }),
+    [messages, selectedId, onSelectRow, onOpenFilterMenu, freshIds],
   );
   // react-window manages its own scrolling container. Driving body
   // scrollTop directly (an earlier attempt) didn't work because the
@@ -50,9 +74,11 @@ export function MessageList({
   // own overflow. The library's imperative `scrollToRow` is the right
   // hook — `align: "auto"` is a no-op when the row is already in view.
   const listRef = useRef<ListImperativeAPI | null>(null);
+  const { listProps: autoFollowListProps, armUserInput } = useAutoFollow(messages, listRef);
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
+      armUserInput();
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
         return;
       }
@@ -75,22 +101,33 @@ export function MessageList({
       onSelect(nextMessage.id);
       listRef.current?.scrollToRow({ index: next, align: "auto" });
     },
-    [messages, selectedId, onSelect],
+    [messages, selectedId, onSelect, armUserInput],
   );
 
   return (
-    <section className="msglist" aria-label="Captured messages" tabIndex={0} onKeyDown={onKeyDown}>
+    <section
+      ref={sectionRef}
+      className="msglist"
+      aria-label="Captured messages"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+    >
       <div className="msglist__head">
-        <span className="msglist__col msglist__col--ts">ts</span>
-        <span className="msglist__col msglist__col--topic">topic</span>
-        <span className="msglist__col msglist__col--p">p</span>
-        <span className="msglist__col msglist__col--offset">offset</span>
-        <span className="msglist__col msglist__col--key">key</span>
-        <span className="msglist__col msglist__col--schema">schema</span>
-        <span className="msglist__col msglist__col--size">size</span>
-        <span className="msglist__col msglist__col--fetch" title="Originating Fetch frame">
-          fetch
+        <span
+          className="msglist__col msglist__col--ts"
+          title="Wall-clock time the message was captured (HH:MM:SS.µs, local timezone)."
+        >
+          Timestamp
         </span>
+        <span className="msglist__col msglist__col--topic">topic</span>
+        <span
+          className="msglist__col msglist__col--paroff"
+          title="Partition · Offset — the (partition, offset) pair uniquely locates the record on the topic. Filter button targets partition; for offset-only, type `envelope.offset == N` in the DSL above."
+        >
+          par·off
+        </span>
+        <span className="msglist__col msglist__col--key">key</span>
+        <span className="msglist__col msglist__col--size">size</span>
       </div>
       <div className="msglist__body">
         {messages.length === 0 ? (
@@ -107,6 +144,7 @@ export function MessageList({
             rowHeight={ROW_HEIGHT}
             rowProps={rowProps}
             overscanCount={8}
+            {...autoFollowListProps}
           />
         )}
       </div>
@@ -122,13 +160,14 @@ function MessageRow({
   selectedId,
   onSelect,
   onOpenFilterMenu,
-  onJumpToFetchFrame,
+  freshIds,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const message = messages[index];
   if (!message) {
     return null;
   }
   const isSelected = selectedId === message.id;
+  const isFresh = freshIds.has(message.id);
 
   // Hover-revealed icon is the primary affordance. Right-click on the cell
   // is kept as a power-user shortcut (no UI cost). Both routes open the
@@ -186,7 +225,7 @@ function MessageRow({
     <button
       type="button"
       style={style}
-      className={`msglist__row${isSelected ? " is-selected" : ""}`}
+      className={`msglist__row${isSelected ? " is-selected" : ""}${isFresh ? " msglist__row--fresh" : ""}`}
       onClick={() => {
         onSelect(message.id);
       }}
@@ -195,21 +234,25 @@ function MessageRow({
       aria-setsize={ariaAttributes["aria-setsize"]}
       role={ariaAttributes.role}
     >
-      <span className="msglist__col msglist__col--ts">{message.timestamp}</span>
+      <span className="msglist__col msglist__col--ts" title={message.timestamp}>
+        {formatLocalTime(message.timestamp)}
+      </span>
       {filterableCell(
         "msglist__col--topic",
         { path: "topic", literal: { kind: "string", value: message.topic } },
         message.topic,
       )}
       {filterableCell(
-        "msglist__col--p",
+        "msglist__col--paroff",
         {
           path: "envelope.partition",
           literal: { kind: "number", value: String(message.partition) },
         },
-        message.partition,
+        <>
+          {message.partition}
+          <span className="msglist__offset-suffix">·{message.offset.toLocaleString()}</span>
+        </>,
       )}
-      <span className="msglist__col msglist__col--offset">{message.offset}</span>
       {message.key === null ? (
         <span className="msglist__col msglist__col--key">—</span>
       ) : (
@@ -223,47 +266,12 @@ function MessageRow({
           message.key,
         )
       )}
-      {message.schemaName === null ? (
-        <span className="msglist__col msglist__col--schema">
-          <em className="muted">raw</em>
-        </span>
-      ) : (
-        filterableCell(
-          "msglist__col--schema",
-          { path: "schema.name", literal: { kind: "string", value: message.schemaName } },
-          message.schemaName,
-        )
-      )}
       <span
         className="msglist__col msglist__col--size"
-        title={`${message.sizeBytes.toLocaleString()} bytes`}
+        title={`key ${message.keySize.toLocaleString()} B + value ${message.valueSize.toLocaleString()} B = ${message.sizeBytes.toLocaleString()} B (wire framing not counted)`}
       >
         {formatBytes(message.sizeBytes)}
       </span>
-      {message.fetch === null ? (
-        <span className="msglist__col msglist__col--fetch">
-          <em className="muted">—</em>
-        </span>
-      ) : (
-        <span className="msglist__col msglist__col--fetch">
-          <button
-            type="button"
-            className="msglist__fetch-link"
-            title={`Jump to Fetch frame (conn ${String(message.fetch.connectionId)}, corr ${String(
-              message.fetch.corrId,
-            )})`}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (message.fetch !== null) {
-                onJumpToFetchFrame(message.fetch.connectionId, message.fetch.corrId);
-              }
-            }}
-          >
-            ↗ Fetch
-          </button>
-        </span>
-      )}
     </button>
   );
 }

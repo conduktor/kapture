@@ -19,6 +19,9 @@ import {
   type ProtoFilterKind,
   type ProtoFilterMode,
 } from "../lib/protoFilter";
+import { useAutoFollow } from "../lib/useAutoFollow";
+import { useFreshRows } from "../lib/useFreshRows";
+import { formatLocalTime } from "../lib/formatTimestamp";
 
 interface Props {
   frames: ProtoFrame[];
@@ -44,6 +47,8 @@ interface RowProps {
   onSelect: (id: string) => void;
   onAddPredicate: AddPredicateFn;
   filter: ProtoFilter;
+  /** Ids whose rows should flash on render — newly arrived under live traffic. */
+  freshIds: ReadonlySet<string>;
 }
 
 type AddPredicateFn = <K extends ProtoFilterKind>(
@@ -57,6 +62,8 @@ type AddPredicateFn = <K extends ProtoFilterKind>(
 ) => void;
 
 const ROW_HEIGHT = 24;
+
+const frameId = (f: ProtoFrame): string => f.id;
 
 // Wireshark-style protocol view. Lists every Kafka API frame the proto-hook
 // observed (Send + Recv) in chronological order. Pairing of request to
@@ -147,13 +154,44 @@ export function ProtoList({
     [onAddPredicateRaw],
   );
 
+  // Click-to-select must keep keyboard focus on the section, not on
+  // the clicked row. Reason: under heavy traffic react-window
+  // virtualises aggressively — a row currently holding focus can get
+  // unmounted as the overscan window shifts, and focus then snaps to
+  // <body>, dropping subsequent ArrowUp/Down keypresses. Funneling
+  // focus through the section (a stable DOM node) makes arrow nav
+  // robust regardless of what the virtualiser does.
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const focusSection = useCallback((): void => {
+    sectionRef.current?.focus({ preventScroll: true });
+  }, []);
+  const onSelectRow = useCallback(
+    (id: string): void => {
+      onSelect(id);
+      focusSection();
+    },
+    [onSelect, focusSection],
+  );
+  const freshIds = useFreshRows(visibleFrames, frameId);
   const rowProps = useMemo<RowProps>(
-    () => ({ frames: visibleFrames, selectedId, pairedId, onSelect, onAddPredicate, filter }),
-    [visibleFrames, selectedId, pairedId, onSelect, onAddPredicate, filter],
+    () => ({
+      frames: visibleFrames,
+      selectedId,
+      pairedId,
+      onSelect: onSelectRow,
+      onAddPredicate,
+      filter,
+      freshIds,
+    }),
+    [visibleFrames, selectedId, pairedId, onSelectRow, onAddPredicate, filter, freshIds],
   );
   const listRef = useRef<ListImperativeAPI | null>(null);
+  const { listProps: autoFollowListProps, armUserInput } = useAutoFollow(visibleFrames, listRef);
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLElement>) => {
+      // Arrow keys are user-driven scrolls; arming here lets the
+      // follow-latch update from the resulting scroll event.
+      armUserInput();
       if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
         return;
       }
@@ -176,13 +214,19 @@ export function ProtoList({
       onSelect(nextFrame.id);
       listRef.current?.scrollToRow({ index: next, align: "auto" });
     },
-    [visibleFrames, selectedId, onSelect],
+    [visibleFrames, selectedId, onSelect, armUserInput],
   );
 
   const total = frames.length;
 
   return (
-    <section className="msglist" aria-label="Protocol frames" tabIndex={0} onKeyDown={onKeyDown}>
+    <section
+      ref={sectionRef}
+      className="msglist"
+      aria-label="Protocol frames"
+      tabIndex={0}
+      onKeyDown={onKeyDown}
+    >
       <div className="msglist__head">
         <span className="proto__col proto__col--dir" aria-hidden="true" />
         <span
@@ -243,6 +287,7 @@ export function ProtoList({
             rowHeight={ROW_HEIGHT}
             rowProps={rowProps}
             overscanCount={8}
+            {...autoFollowListProps}
           />
         )}
       </div>
@@ -349,22 +394,6 @@ function tsToMs(ts: string): number {
   return Number.isNaN(micro) ? d : d + micro / 1000;
 }
 
-/** Format an RFC3339 µs timestamp as local-wallclock `HH:MM:SS.µs`.
- *  Backend emits UTC; the user reads in their own timezone, so we
- *  convert here. JS `Date` has only ms precision — we splice the µs
- *  trailer from the original string back in. */
-function formatLocalTs(ts: string): string {
-  const d = new Date(ts);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  const dotIdx = ts.indexOf(".");
-  const zIdx = ts.indexOf("Z");
-  const frac = dotIdx >= 0 && zIdx > dotIdx ? ts.slice(dotIdx + 1, zIdx) : "";
-  const tail = frac ? `.${frac.slice(0, 6)}` : "";
-  return `${hh}:${mm}:${ss}${tail}`;
-}
-
 function formatDelta(deltaMs: number): string {
   if (deltaMs < 1) {
     return "+<1ms";
@@ -388,6 +417,7 @@ function ProtoRow({
   onSelect,
   onAddPredicate,
   filter,
+  freshIds,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const frame = frames[index];
   if (!frame) {
@@ -395,28 +425,22 @@ function ProtoRow({
   }
   const isSelected = selectedId === frame.id;
   const isPaired = pairedId === frame.id;
+  const isFresh = freshIds.has(frame.id);
   // Backend emits UTC RFC3339 with µs precision; the list shows the
   // user's LOCAL wallclock so 22:35Z reads as 18:35 in CEST etc. The
   // detail panel below keeps the full UTC RFC3339 for traceability.
-  const ts = formatLocalTs(frame.timestamp);
+  const ts = formatLocalTime(frame.timestamp);
   const prev = index > 0 ? frames[index - 1] : undefined;
   const delta =
     prev !== undefined ? formatDelta(tsToMs(frame.timestamp) - tsToMs(prev.timestamp)) : null;
   return (
     <div
       style={style}
-      className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}`}
+      className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}${isFresh ? " msglist__row--fresh" : ""}`}
       onClick={() => {
         onSelect(frame.id);
       }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect(frame.id);
-        }
-      }}
       role={ariaAttributes.role}
-      tabIndex={0}
       aria-posinset={ariaAttributes["aria-posinset"]}
       aria-setsize={ariaAttributes["aria-setsize"]}
       aria-selected={isSelected}

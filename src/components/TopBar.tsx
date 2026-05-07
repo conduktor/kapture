@@ -48,36 +48,6 @@ export function TopBar({
     proxyStatus !== null ? `${proxyStatus.listenAddr} → ${proxyStatus.upstream}` : "not connected";
   return (
     <header className="topbar">
-      <button
-        type="button"
-        className="topbar__cluster"
-        onClick={onEdit}
-        title="Edit proxy settings"
-      >
-        <span className="topbar__cluster-dot" data-status={capturing ? "live" : "idle"} />
-        <span className="topbar__cluster-name">{pillLabel}</span>
-        <span className="topbar__cluster-edit" aria-hidden="true">
-          ✎
-        </span>
-      </button>
-      <div className="topbar__filter-wrap">
-        <input
-          className={`topbar__filter${filterError !== null ? " topbar__filter--invalid" : ""}`}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={
-            filterPlaceholder ??
-            'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
-          }
-          value={filter}
-          onChange={(event) => {
-            onFilterChange(event.target.value);
-          }}
-          aria-invalid={filterError !== null ? "true" : "false"}
-          title={filterError ?? undefined}
-        />
-        {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
-      </div>
       <div className="topbar__controls">
         <button
           type="button"
@@ -126,6 +96,36 @@ export function TopBar({
           Clear
         </button>
       </div>
+      <div className="topbar__filter-wrap">
+        <input
+          className={`topbar__filter${filterError !== null ? " topbar__filter--invalid" : ""}`}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={
+            filterPlaceholder ??
+            'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
+          }
+          value={filter}
+          onChange={(event) => {
+            onFilterChange(event.target.value);
+          }}
+          aria-invalid={filterError !== null ? "true" : "false"}
+          title={filterError ?? undefined}
+        />
+        {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
+      </div>
+      <button
+        type="button"
+        className="topbar__cluster"
+        onClick={onEdit}
+        title="Edit proxy settings"
+      >
+        <span className="topbar__cluster-dot" data-status={capturing ? "live" : "idle"} />
+        <span className="topbar__cluster-name">{pillLabel}</span>
+        <span className="topbar__cluster-edit" aria-hidden="true">
+          ✎
+        </span>
+      </button>
     </header>
   );
 }

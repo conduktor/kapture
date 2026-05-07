@@ -359,7 +359,7 @@ section.msglist[aria-label="Protocol frames"] {
 .msglist__head,
 .msglist__row {
   display: grid;
-  grid-template-columns: 110px 1fr 40px 110px 100px 1fr 70px 90px;
+  grid-template-columns: 110px 1fr 140px 100px 80px;
   align-items: center;
   gap: 12px;
   padding: 0 12px;
@@ -730,6 +730,31 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 /* Pair highlight: when a frame is selected, its request/response
  * partner (same corrId+connectionId, opposite dir) gets a dashed accent
  * border on the left so the eye can pair them across rows. */
+/* Live-tail flash. ::after overlay so it composes on top of the row's
+ * own background (transparent / hover / selected / paired stripe) and
+ * doesn't fight with them. pointer-events: none so the overlay never
+ * eats clicks meant for the row. */
+.msglist__row {
+  position: relative;
+}
+.msglist__row--fresh::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.1;
+  pointer-events: none;
+  animation: msglist-row-flash 700ms ease-out forwards;
+}
+@keyframes msglist-row-flash {
+  from {
+    opacity: 0.16;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 .msglist__row.is-paired {
   background: rgba(79, 70, 229, 0.04);
   box-shadow: inset 3px 0 0 var(--accent);
@@ -896,8 +921,15 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.msglist__col--p,
-.msglist__col--offset,
+.msglist__col--paroff {
+  text-align: center;
+  color: var(--text-muted);
+}
+.msglist__offset-suffix {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: 2px;
+}
 .msglist__col--size {
   text-align: right;
   color: var(--text-muted);
@@ -905,24 +937,6 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 .msglist__col--topic {
   color: var(--accent);
   font-weight: 500;
-}
-.msglist__col--fetch {
-  text-align: right;
-  color: var(--text-muted);
-}
-.msglist__fetch-link {
-  background: transparent;
-  border: 0;
-  padding: 0 4px;
-  font-family: inherit;
-  font-size: 11px;
-  color: var(--accent);
-  cursor: pointer;
-  border-radius: 3px;
-  transition: background 80ms ease;
-}
-.msglist__fetch-link:hover {
-  background: var(--bg-hover);
 }
 .msglist__empty {
   padding: 32px;
@@ -1350,7 +1364,10 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   vertical-align: middle;
 }
 .msglist__filter-icon {
-  display: inline-flex;
+  /* display:none idle so the icon reserves no flow width and the
+   * cell content centers/right-aligns purely on its own value.
+   * inline-flex on hover (or keyboard focus) reveals it. */
+  display: none;
   align-items: center;
   justify-content: center;
   margin-left: 4px;
@@ -1363,13 +1380,11 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   font-size: 10px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s;
   vertical-align: middle;
 }
 .msglist__col--filterable:hover .msglist__filter-icon,
 .msglist__row:hover .msglist__filter-icon:focus-visible {
-  opacity: 1;
+  display: inline-flex;
 }
 .msglist__filter-icon:hover {
   background: var(--accent);
