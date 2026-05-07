@@ -37,6 +37,7 @@ import type {
   ProxyStatus,
   ProxyStatusSummary,
 } from "./types";
+import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
 
 interface MenuState {
   target: FilterTarget;
@@ -451,6 +452,14 @@ function App(): JSX.Element {
   // "still loading"; the LayerTree / HexDump panels render a muted
   // placeholder in that state.
   const [selectedDetail, setSelectedDetail] = useState<KafkaMessageDetail | null>(null);
+  // Mirror the latest detail in a ref so the schema-resolved listener
+  // (defined upstream in another effect's closure) can patch a
+  // currently-selected record without subscribing to selectedDetail
+  // and causing a relisten / re-fetch storm.
+  const selectedDetailRef = useRef<KafkaMessageDetail | null>(null);
+  useEffect(() => {
+    selectedDetailRef.current = selectedDetail;
+  }, [selectedDetail]);
   const messageDetailCancelRef = useRef(false);
   useEffect(() => {
     if (selectedId === null) {
@@ -479,6 +488,15 @@ function App(): JSX.Element {
       messageDetailCancelRef.current = true;
     };
   }, [selectedId]);
+
+  useSchemaResolvedListener({
+    enabled: connection.status === "connected",
+    pausedRef,
+    messagesRef,
+    setMessages,
+    selectedDetailRef,
+    setSelectedDetail,
+  });
 
   // Proxy lifecycle: ConnectionDialog drives `start_proxy` and pushes the
   // result back via these callbacks. The dialog is the only entry point

@@ -107,6 +107,24 @@ impl RingBuffer {
         state.items.iter().find(|m| m.id == id).cloned()
     }
 
+    /// Apply `f` to a message in place, looking it up by id. Returns
+    /// `true` if the record was found (and mutated), `false` if it
+    /// has aged out — callers that fire async patches (e.g. the
+    /// schema-registry resolver) treat eviction as a silent no-op.
+    /// Holds the write lock for the duration of `f`; keep `f` cheap.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn update_message_with<F>(&self, id: &str, f: F) -> bool
+    where
+        F: FnOnce(&mut CapturedMessage),
+    {
+        let mut state = self.inner.write();
+        let Some(slot) = state.items.iter_mut().find(|m| m.id == id) else {
+            return false;
+        };
+        f(slot);
+        true
+    }
+
     /// Iterate the most recent matching messages without cloning the
     /// whole buffer. `keep` is called per message in newest-first
     /// order; iteration stops once `limit` messages have matched.
@@ -181,6 +199,7 @@ mod tests {
             key: None,
             schema_name: None,
             schema_id: None,
+            schema_kind: None,
             size_bytes: 0,
             key_size: 0,
             value_size: 0,

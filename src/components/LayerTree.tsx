@@ -14,6 +14,26 @@ function sizeWithRaw(n: number): string {
   return n < 1024 ? formatBytes(n) : `${formatBytes(n)} (${n.toLocaleString()} B)`;
 }
 
+/** Three-state title for the schema Layer:
+ *   - registry-resolved → "schema: NAME (id N) — KIND"
+ *   - registry rejected → "schema id N (registry error)"
+ *   - awaiting resolver → "schema id N (resolving…)"
+ *   - no envelope       → "schema: none (raw payload)"
+ */
+function schemaLayerTitle(m: KafkaMessageDetail): string {
+  if (m.schemaId === null) {
+    return "schema: none (raw payload)";
+  }
+  if (m.schemaKind === "UNRESOLVED") {
+    return `schema id ${String(m.schemaId)} (registry error)`;
+  }
+  if (m.schemaName !== null) {
+    const kind = m.schemaKind !== null ? ` — ${m.schemaKind}` : "";
+    return `schema: ${m.schemaName} (id ${String(m.schemaId)})${kind}`;
+  }
+  return `schema id ${String(m.schemaId)} (resolving…)`;
+}
+
 interface Props {
   /** Full message body — lazy-fetched on selection. `null` while
    *  loading or when no row is selected. */
@@ -193,37 +213,43 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           ))
         )}
       </Layer>
-      <Layer
-        title={
-          message.schemaName !== null
-            ? `schema: ${message.schemaName} (id ${message.schemaId ?? "?"})`
-            : message.schemaId !== null
-              ? `schema id ${String(message.schemaId)} (no registry connected)`
-              : "schema: none (raw payload)"
-        }
-      >
-        {message.schemaName !== null ? (
-          <Field
-            name="name"
-            value={message.schemaName}
-            target={{
-              path: "schema.name",
-              literal: { kind: "string", value: message.schemaName },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-        ) : message.schemaId !== null ? (
-          <Field
-            name="id"
-            value={String(message.schemaId)}
-            target={{
-              path: "schema.id",
-              literal: { kind: "number", value: String(message.schemaId) },
-            }}
-            onOpenFilterMenu={onOpenFilterMenu}
-          />
-        ) : (
+      <Layer title={schemaLayerTitle(message)}>
+        {message.schemaId === null ? (
           <span className="muted">no schema resolved</span>
+        ) : (
+          <>
+            <Field
+              name="id"
+              value={String(message.schemaId)}
+              target={{
+                path: "schema.id",
+                literal: { kind: "number", value: String(message.schemaId) },
+              }}
+              onOpenFilterMenu={onOpenFilterMenu}
+            />
+            {message.schemaName !== null ? (
+              <Field
+                name="name"
+                value={message.schemaName}
+                target={{
+                  path: "schema.name",
+                  literal: { kind: "string", value: message.schemaName },
+                }}
+                onOpenFilterMenu={onOpenFilterMenu}
+              />
+            ) : null}
+            {message.schemaKind !== null ? (
+              <Field
+                name="kind"
+                value={message.schemaKind}
+                target={{
+                  path: "schema.kind",
+                  literal: { kind: "string", value: message.schemaKind },
+                }}
+                onOpenFilterMenu={onOpenFilterMenu}
+              />
+            ) : null}
+          </>
         )}
       </Layer>
       <Layer title="payload">

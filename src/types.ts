@@ -22,6 +22,23 @@ export interface FetchMetadata {
 export type ProtoDirection = "send" | "recv";
 
 /**
+ * `kapture:message-schema-resolved` payload row. The resolver task
+ * (Rust `schema_resolver.rs`) mints one per record after the registry
+ * has answered, so the live UI can patch the cached summary in place
+ * without re-fetching the full message via `inspect_message_by_id`.
+ *
+ * `schemaKind === "UNRESOLVED"` means the registry rejected the id
+ * (404 / timeout / non-2xx). The 5-min failure cache backstops
+ * retry-storms; the row stays patched as UNRESOLVED until the TTL
+ * expires and a fresh record carrying the same id arrives.
+ */
+export interface SchemaResolvedPatch {
+  id: string;
+  schemaName: string | null;
+  schemaKind: string | null;
+}
+
+/**
  * Lightweight projection of a protocol frame — everything the list
  * row needs and nothing more. The 1 Hz proto_frames poll returns
  * these to keep the IPC payload small even when the ring buffer is
@@ -91,6 +108,10 @@ export interface KafkaMessage {
   key: string | null;
   schemaName: string | null;
   schemaId: number | null;
+  /** Confluent schema kind label ("AVRO" / "JSON" / "PROTOBUF"), or
+   *  "UNRESOLVED" when the registry rejected the id. `null` while a
+   *  resolution is pending or when no registry is configured. */
+  schemaKind: string | null;
   /** Total of `keySize` + `valueSize` (the user-meaningful bytes).
    *  Wire framing (varints, attrs, header k/v lengths) is not counted. */
   sizeBytes: number;
@@ -127,6 +148,7 @@ export interface KafkaMessageDetail {
   key: string | null;
   schemaName: string | null;
   schemaId: number | null;
+  schemaKind: string | null;
   sizeBytes: number;
   keySize: number;
   valueSize: number;

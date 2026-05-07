@@ -522,6 +522,10 @@ fn resolve_schema<'a>(rest: &[String], message: &'a CapturedMessage) -> Value<'a
             Some(id) => Value::Number(f64::from(id)),
             None => Value::Null,
         },
+        "kind" => match &message.schema_kind {
+            Some(kind) => Value::String(kind.as_str()),
+            None => Value::Null,
+        },
         _ => Value::Missing,
     }
 }
@@ -583,6 +587,7 @@ mod tests {
             key: Some("u-42".into()),
             schema_name: Some("OrderCreated".into()),
             schema_id: Some(17),
+            schema_kind: Some("AVRO".to_owned()),
             size_bytes: 312,
             key_size: 4,
             value_size: 308,

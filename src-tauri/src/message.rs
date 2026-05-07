@@ -25,6 +25,10 @@ pub struct CapturedMessage {
     pub key: Option<String>,
     pub schema_name: Option<String>,
     pub schema_id: Option<u32>,
+    /// Confluent schema kind label ("AVRO" / "JSON" / "PROTOBUF").
+    /// `None` until the resolver task has answered (or when no
+    /// registry is configured).
+    pub schema_kind: Option<String>,
     /// Total of `key_size` + `value_size`. The label "size" historically
     /// meant just the value bytes; we keep the field name for backward
     /// compatibility with downstream consumers (filter DSL, MCP) but
@@ -75,6 +79,7 @@ pub struct MessageSummary {
     pub key: Option<String>,
     pub schema_name: Option<String>,
     pub schema_id: Option<u32>,
+    pub schema_kind: Option<String>,
     pub size_bytes: usize,
     pub key_size: usize,
     pub value_size: usize,
@@ -113,6 +118,7 @@ impl MessageSummary {
             key,
             schema_name: m.schema_name.clone(),
             schema_id: m.schema_id,
+            schema_kind: m.schema_kind.clone(),
             size_bytes: m.size_bytes,
             key_size: m.key_size,
             value_size: m.value_size,

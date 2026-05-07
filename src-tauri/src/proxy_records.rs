@@ -448,6 +448,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         key,
         schema_name: None,
         schema_id,
+        schema_kind: None,
         size_bytes,
         key_size,
         value_size,

@@ -358,8 +358,28 @@ pub async fn start_proxy_impl(
     // tail-call latency doesn't blow up under load).
     let (msg_tx, mut msg_rx) =
         tokio::sync::mpsc::unbounded_channel::<crate::message::CapturedMessage>();
+    // Schema-resolver wiring: when the session has an SR client,
+    // spawn a task that drains `(message_id, schema_id)` enqueued by
+    // the sink, fetches the schema, and patches the ring-buffer
+    // record. `try_send` is fire-and-forget so the proxy pump
+    // never blocks on a full resolver queue (1024 outstanding is
+    // generous; the LRU cache absorbs repeats).
+    let resolver_tx: Option<tokio::sync::mpsc::Sender<(String, u32)>> =
+        if let Some(client) = state.schema_registry() {
+            let (tx, rx) = tokio::sync::mpsc::channel::<(String, u32)>(1024);
+            crate::schema_resolver::spawn(client, Arc::clone(&state.buffer), app.clone(), rx);
+            Some(tx)
+        } else {
+            None
+        };
     let sink: crate::proxy_handle::RecordSink = Arc::new(move |message| {
         buffer.push(message.clone());
+        // Enqueue resolution before forwarding to IPC — the resolver
+        // patches the ring-buffer entry in place; the IPC patch
+        // event arrives afterwards and updates the live UI summary.
+        if let (Some(tx), Some(schema_id)) = (resolver_tx.as_ref(), message.schema_id) {
+            let _ = tx.try_send((message.id.clone(), schema_id));
+        }
         // unbounded send only fails when the receiver is gone (proxy
         // stopped) — at that point dropping the message is correct.
         let _ = msg_tx.send(message);

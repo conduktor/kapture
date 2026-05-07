@@ -20,6 +20,7 @@ mod proxy_topic_ids;
 mod proxy_upstream;
 mod ring_buffer;
 mod schema_registry;
+mod schema_resolver;
 mod state;
 
 /// Public re-exports for `cargo run --example proxy_smoke`.
