@@ -25,11 +25,13 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
 use crate::correlator::ProtoCorrelator;
+use crate::message::CapturedMessage;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proxy_handle::RecordSink;
 use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_records::{
-    extract_from_fetch_response, extract_from_produce_request, extracted_to_captured,
+    extract_from_fetch_response, extract_from_produce_request, extract_produce_offsets,
+    extracted_to_captured,
 };
 use crate::proxy_redact::{redact_sasl_authenticate_body, API_KEY_SASL_AUTHENTICATE};
 use crate::proxy_topic_ids::TopicIdMap;
@@ -299,7 +301,7 @@ where
 /// # Errors
 /// Bubbles up `io::Error` from the underlying TCP read/write.
 #[allow(dead_code)] // wired into ProxyHandle::start in Task 16
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn run_pump_with_rewrite<U>(
     conn_id: ConnectionId,
     local_port: u16,
@@ -316,6 +318,22 @@ where
 {
     let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
+
+    // Per-session map of in-flight Produce requests keyed by corr_id.
+    // The producer always wires `base_offset = 0` on outgoing records
+    // (the broker assigns the real offset and replies in the
+    // ProduceResponse). Defer emission of Produce-side records until
+    // the matching response lands so the Messages tab shows the offset
+    // the broker actually assigned, instead of a confusing 0.
+    //
+    // The bucket holds (record, partition, index_within_partition);
+    // final offset = base_offset_for_(topic, partition) + index.
+    //
+    // acks=0 producers never get a response → the bucket lingers for
+    // the connection's lifetime and is dropped when the function
+    // returns. That's fine in practice (kafkajs/librdkafka default to
+    // acks=1+); a memory cap is a follow-up if it ever shows up.
+    let mut pending_produce: HashMap<i32, Vec<(CapturedMessage, i32, usize)>> = HashMap::new();
 
     loop {
         tokio::select! {
@@ -339,8 +357,27 @@ where
                     // v13+ replaced the topic-name field with topic_id
                     // (KIP-516 phase 2), so the extractor needs the
                     // cluster-wide topic-id map to surface a name.
-                    for rec in extract_from_produce_request(req_api_version, &bytes, &topic_ids) {
-                        record_sink(extracted_to_captured(rec, conn_id.0));
+                    //
+                    // Hold the records in `pending_produce` instead of
+                    // emitting; the matching response side fills in the
+                    // broker-assigned offset and pushes them downstream.
+                    let records =
+                        extract_from_produce_request(req_api_version, &bytes, &topic_ids);
+                    if !records.is_empty() {
+                        let mut bucket: Vec<(CapturedMessage, i32, usize)> =
+                            Vec::with_capacity(records.len());
+                        // Track per-partition counter so we can compute
+                        // each record's index within its partition: final
+                        // offset = base_offset(partition) + index.
+                        let mut idx_per_partition: HashMap<i32, usize> = HashMap::new();
+                        for rec in records {
+                            let partition = rec.partition;
+                            let idx = idx_per_partition.entry(partition).or_insert(0);
+                            let captured = extracted_to_captured(rec, conn_id.0);
+                            bucket.push((captured, partition, *idx));
+                            *idx += 1;
+                        }
+                        pending_produce.insert(event.corr_id, bucket);
                     }
                 }
                 upstream_framed.send(bytes).await?;
@@ -360,6 +397,30 @@ where
                 let api_key = i16::try_from(event.api_key).unwrap_or(-1);
                 let api_version = i16::try_from(event.api_version).unwrap_or(-1);
                 correlator.record_event(&event);
+                if api_key == 0 {
+                    // Produce response — back-fill broker-assigned
+                    // offsets onto the records we held from the matching
+                    // request, then emit. If no pending bucket exists
+                    // (e.g. extraction failed earlier), this is a no-op.
+                    if let Some(bucket) = pending_produce.remove(&event.corr_id) {
+                        let offsets =
+                            extract_produce_offsets(api_version, &bytes, &topic_ids);
+                        for (mut msg, partition, idx) in bucket {
+                            if let Some(&base) = offsets.get(&(msg.topic.clone(), partition)) {
+                                // base + idx fits in i64 for any realistic
+                                // batch — Kafka offsets are i64 and the
+                                // index is bounded by the request batch
+                                // size (well below i64::MAX). try_from
+                                // pacifies the (theoretical) usize→i64
+                                // wrap on 64-bit targets without
+                                // changing observable behaviour.
+                                let idx_i64 = i64::try_from(idx).unwrap_or(i64::MAX);
+                                msg.offset = base.saturating_add(idx_i64);
+                            }
+                            record_sink(msg);
+                        }
+                    }
+                }
                 if api_key == 1 {
                     // Fetch response — extract records before forwarding.
                     // `bytes` is the codec output (no wire size prefix);

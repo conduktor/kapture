@@ -233,7 +233,14 @@ body,
   border-color: var(--warning);
 }
 .btn--paused:hover {
-  filter: brightness(1.05);
+  /* Re-assert the warning bg explicitly: `.btn:hover` (same
+   * specificity, declared earlier) sets `background: var(--bg-subtle)`
+   * which would otherwise override and turn the button white-on-white
+   * (the label disappears). Brightness is the visible hover hint. */
+  background: var(--warning);
+  color: white;
+  border-color: var(--warning);
+  filter: brightness(1.08);
 }
 
 /* ---------- Layout ---------- */

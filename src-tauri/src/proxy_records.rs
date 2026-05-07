@@ -13,10 +13,12 @@
 //! request/response header is still in the slice and gets decoded out
 //! before reaching the typed message body.
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
 use chrono::{TimeZone, Utc};
 use kafka_protocol::messages::{
-    ApiKey, FetchResponse, ProduceRequest, RequestHeader, ResponseHeader,
+    ApiKey, FetchResponse, ProduceRequest, ProduceResponse, RequestHeader, ResponseHeader,
 };
 use kafka_protocol::protocol::{Decodable, HeaderVersion};
 use kafka_protocol::records::RecordBatchDecoder;
@@ -184,6 +186,55 @@ fn extract_from_fetch_response_inner(
                 fetch_connection_id,
                 &mut out,
             );
+        }
+    }
+    Some(out)
+}
+
+/// Parse a Produce response and return a map keyed by `(topic_name,
+/// partition)` → `base_offset`. Used to back-fill the offsets on
+/// records we extracted from the matching Produce *request*: there
+/// the producer hasn't been told its assigned offset yet (it always
+/// sends `base_offset = 0` on the wire), so the captured records
+/// would otherwise show offset 0 in the UI. The broker's response
+/// carries the truth — we correlate by `(connection, corr_id)`
+/// upstream in `proxy.rs` and stamp the offset before pushing to the
+/// ring buffer.
+///
+/// Failed partitions (`error_code != 0` or sentinel `-1` base offset)
+/// are omitted; the caller leaves the record's offset at its
+/// pre-existing value (0). On v13+ the wire carries `topic_id` only,
+/// resolved via `topic_ids` the same way Fetch does.
+#[must_use]
+pub fn extract_produce_offsets(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> HashMap<(String, i32), i64> {
+    extract_produce_offsets_inner(version, frame, topic_ids).unwrap_or_default()
+}
+
+fn extract_produce_offsets_inner(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> Option<HashMap<(String, i32), i64>> {
+    let mut buf = Bytes::copy_from_slice(frame);
+    let header_version = ApiKey::Produce.response_header_version(version);
+    let _hdr = ResponseHeader::decode(&mut buf, header_version).ok()?;
+    let resp = ProduceResponse::decode(&mut buf, version).ok()?;
+    let mut out = HashMap::new();
+    for topic in &resp.responses {
+        let topic_name = resolve_topic_name(
+            version,
+            &topic.name.0.to_string(),
+            topic.topic_id,
+            topic_ids,
+        );
+        for partition in &topic.partition_responses {
+            if partition.error_code == 0 && partition.base_offset >= 0 {
+                out.insert((topic_name.clone(), partition.index), partition.base_offset);
+            }
         }
     }
     Some(out)
