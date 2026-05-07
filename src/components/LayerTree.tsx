@@ -14,15 +14,19 @@ function sizeWithRaw(n: number): string {
   return n < 1024 ? formatBytes(n) : `${formatBytes(n)} (${n.toLocaleString()} B)`;
 }
 
-/** Three-state title for the schema Layer:
- *   - registry-resolved → "schema: NAME (id N) — KIND"
- *   - registry rejected → "schema id N (registry error)"
- *   - awaiting resolver → "schema id N (resolving…)"
- *   - no envelope       → "schema: none (raw payload)"
+/** Title for the schema Layer. Five states:
+ *   - no envelope            → "schema: none (raw payload)"
+ *   - id, no registry wired  → "schema id N (no registry connected)"
+ *   - id, registry rejected  → "schema id N (registry error)"
+ *   - id, resolved           → "schema: NAME (id N) — KIND"
+ *   - id, awaiting resolver  → "schema id N (resolving…)"
  */
 function schemaLayerTitle(m: KafkaMessageDetail): string {
   if (m.schemaId === null) {
     return "schema: none (raw payload)";
+  }
+  if (m.schemaKind === "NO_REGISTRY") {
+    return `schema id ${String(m.schemaId)} (no registry connected)`;
   }
   if (m.schemaKind === "UNRESOLVED") {
     return `schema id ${String(m.schemaId)} (registry error)`;
@@ -238,7 +242,13 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
                 onOpenFilterMenu={onOpenFilterMenu}
               />
             ) : null}
-            {message.schemaKind !== null ? (
+            {message.schemaKind !== null &&
+            message.schemaKind !== "NO_REGISTRY" &&
+            message.schemaKind !== "UNRESOLVED" ? (
+              // Hide the sentinel kinds — the layer title surfaces
+              // those states verbatim. Only render `kind` when it's
+              // a real Confluent label users would filter on
+              // (`AVRO` / `JSON` / `PROTOBUF`).
               <Field
                 name="kind"
                 value={message.schemaKind}

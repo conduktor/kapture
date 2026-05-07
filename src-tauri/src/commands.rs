@@ -372,7 +372,14 @@ pub async fn start_proxy_impl(
         } else {
             None
         };
-    let sink: crate::proxy_handle::RecordSink = Arc::new(move |message| {
+    let sink: crate::proxy_handle::RecordSink = Arc::new(move |mut message| {
+        // Stamp `schema_kind = NO_REGISTRY` synchronously when the
+        // record has a schema id but the session has no registry —
+        // otherwise the UI would render "resolving…" forever for a
+        // resolver that's never going to fire.
+        if message.schema_id.is_some() && resolver_tx.is_none() {
+            message.schema_kind = Some("NO_REGISTRY".to_owned());
+        }
         buffer.push(message.clone());
         // Enqueue resolution before forwarding to IPC — the resolver
         // patches the ring-buffer entry in place; the IPC patch
