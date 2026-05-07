@@ -753,6 +753,14 @@ function App(): JSX.Element {
         onToggleCapture={() => {
           if (connection.status === "connected") {
             handleDisconnect();
+          } else {
+            // Re-open the dialog, which auto-applies the last-used
+            // profile from localStorage. One extra click vs. firing
+            // `start_proxy` directly, but the dialog is the single
+            // source of truth for profile resolution + edits-on-Start
+            // — duplicating that wiring would be a fork waiting to
+            // drift.
+            setEditing(true);
           }
         }}
         onClear={handleClear}

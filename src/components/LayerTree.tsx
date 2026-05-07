@@ -195,18 +195,30 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
       </Layer>
       <Layer
         title={
-          message.schemaName
+          message.schemaName !== null
             ? `schema: ${message.schemaName} (id ${message.schemaId ?? "?"})`
-            : "schema: none (raw payload)"
+            : message.schemaId !== null
+              ? `schema id ${String(message.schemaId)} (no registry connected)`
+              : "schema: none (raw payload)"
         }
       >
-        {message.schemaName ? (
+        {message.schemaName !== null ? (
           <Field
             name="name"
             value={message.schemaName}
             target={{
               path: "schema.name",
               literal: { kind: "string", value: message.schemaName },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
+          />
+        ) : message.schemaId !== null ? (
+          <Field
+            name="id"
+            value={String(message.schemaId)}
+            target={{
+              path: "schema.id",
+              literal: { kind: "number", value: String(message.schemaId) },
             }}
             onOpenFilterMenu={onOpenFilterMenu}
           />

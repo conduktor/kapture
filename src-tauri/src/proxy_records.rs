@@ -29,6 +29,7 @@ use crate::decode::{decode_payload, render_hex};
 use crate::message::{CapturedMessage, KafkaHeader};
 use crate::proto_event::ProtoEvent;
 use crate::proxy_topic_ids::TopicIdMap;
+use crate::schema_registry::ConfluentEnvelope;
 
 /// One Kafka record extracted from a Produce request or a Fetch
 /// response. Topic + partition come from the surrounding wire envelope;
@@ -374,6 +375,15 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
     let key_size = rec.key.as_deref().map_or(0, <[u8]>::len);
     let value_size = value_bytes.map_or(0, <[u8]>::len);
     let size_bytes = key_size + value_size;
+    // Confluent Schema Registry envelope: `0x00 | u32_be schema_id |
+    // payload`. We surface the schema id when present so the inspector
+    // shows "schema id 17" instead of "schema: none" on Avro / JSON-
+    // Schema / Protobuf records. Resolving the *name* still needs a
+    // SchemaRegistryClient wired into the proxy session (follow-up:
+    // pass the SR URL through `start_proxy`).
+    let schema_id = value_bytes
+        .and_then(ConfluentEnvelope::try_parse)
+        .map(|env| env.schema_id);
     let timestamp = if rec.timestamp_ms > 0 {
         Utc.timestamp_millis_opt(rec.timestamp_ms)
             .single()
@@ -437,7 +447,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         offset: rec.offset,
         key,
         schema_name: None,
-        schema_id: None,
+        schema_id,
         size_bytes,
         key_size,
         value_size,
