@@ -336,7 +336,10 @@ where
                 correlator.record_event(&event);
                 if req_api_key == 0 {
                     // Produce request — extract records before forwarding.
-                    for rec in extract_from_produce_request(req_api_version, &bytes) {
+                    // v13+ replaced the topic-name field with topic_id
+                    // (KIP-516 phase 2), so the extractor needs the
+                    // cluster-wide topic-id map to surface a name.
+                    for rec in extract_from_produce_request(req_api_version, &bytes, &topic_ids) {
                         record_sink(extracted_to_captured(rec, conn_id.0));
                     }
                 }

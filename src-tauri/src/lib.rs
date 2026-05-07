@@ -99,6 +99,7 @@ pub fn run() {
             commands::stop_proxy,
             commands::proxy_status,
             commands::snapshot,
+            commands::inspect_message_by_id,
             commands::proto_frames,
             commands::proto_frame_detail,
             commands::stats,
@@ -111,6 +112,7 @@ pub fn run() {
             commands::load_profile,
             commands::set_mcp_connect_allowed,
             commands::mcp_connect_allowed,
+            commands::mcp_info,
         ])
         .run(tauri::generate_context!());
 

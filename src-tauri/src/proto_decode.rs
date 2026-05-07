@@ -418,13 +418,12 @@ mod tests {
         ];
 
         // Direct v5 decode would have failed silently (returned None
-        // and the UI would show no decoded panel) — verify the
-        // fallback now produces a useful debug string.
+        // and the UI would show no decoded panel). The fallback retries
+        // as v0 so the user sees the broker's downgrade-error response.
+        // Annotation comments were dropped because the frontend tree
+        // parser couldn't handle injected `// ...` lines; the value of
+        // the fallback is purely that the body decodes at all.
         let out = decode_frame(18, 5, ProtoDirection::Recv, bytes).expect("v5 fallback decoded");
-        assert!(
-            out.contains("KIP-511 downgrade"),
-            "should annotate the fallback"
-        );
         assert!(
             out.contains("error_code"),
             "should include error_code field"

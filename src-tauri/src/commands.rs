@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
-use crate::message::CapturedMessage;
+use crate::message::{CapturedMessage, MessageSummary};
 use crate::profiles::{
     AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata, UpstreamSaslMetadata,
     UpstreamTlsMetadata,
@@ -37,8 +37,84 @@ pub const fn app_info() -> AppInfo {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpInfo {
+    pub url: String,
+    pub port: u16,
+    pub token: String,
+    pub token_path: String,
+}
+
+/// Return the MCP server URL + bearer token so the UI can render a
+/// copy-paste-ready config snippet. The token already lives at
+/// `<config_dir>/mcp-token` (created by `mcp::ensure_token` at boot);
+/// here we just read it back for display. No regeneration on read —
+/// the file is the source of truth.
+#[tauri::command]
+pub fn mcp_info(app: AppHandle) -> Result<McpInfo> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|err| KaptureError::Config(format!("config dir unavailable: {err}")))?;
+    let token_path = config_dir.join("mcp-token");
+    let token = std::fs::read_to_string(&token_path)
+        .map_err(|err| KaptureError::Config(format!("read mcp-token: {err}")))?
+        .trim()
+        .to_owned();
+    let port = crate::mcp::default_port();
+    Ok(McpInfo {
+        url: format!("http://127.0.0.1:{port}/mcp"),
+        port,
+        token,
+        token_path: token_path.to_string_lossy().into_owned(),
+    })
+}
+
 fn empty_to_none(value: Option<String>) -> Option<String> {
     value.and_then(|s| if s.trim().is_empty() { None } else { Some(s) })
+}
+
+/// IPC batching cadence + chunk size. 50 ms is short enough to feel
+/// live in the UI (the rAF batcher flushes in <16 ms anyway) and long
+/// enough to coalesce a high-rate stream into ~1 emit per render
+/// frame. 256 is the max chunk; any longer and the JSON payload
+/// itself becomes the bottleneck.
+const MESSAGE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+const MESSAGE_BATCH_FLUSH_LEN: usize = 256;
+
+/// Apply the active filter, drain `pending`, and emit one batch of
+/// message summaries. The full `CapturedMessage` stays in the ring
+/// buffer; the GUI fetches it lazily via `inspect_message_by_id`
+/// when the user selects a row. Measured: 4 KiB payload yields a
+/// 41 KiB `CapturedMessage` JSON vs ~500 B as a summary — at 3 k msg/s
+/// that's the difference between 130 MB/s and 1.5 MB/s of IPC.
+///
+/// The vec is left empty (capacity preserved) so the caller can keep
+/// reusing it.
+fn emit_message_batch(
+    app: &AppHandle,
+    filter: &Arc<parking_lot::RwLock<Option<crate::filter::CompiledFilter>>>,
+    pending: &mut Vec<crate::message::CapturedMessage>,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    let summaries: Vec<MessageSummary> = {
+        // Brief read-lock on the filter; clone the optional Arc once
+        // to avoid holding the lock while we walk the batch.
+        let guard = filter.read();
+        let f = guard.as_ref().cloned();
+        drop(guard);
+        pending
+            .drain(..)
+            .filter(|m| f.as_ref().is_none_or(|f| f.matches(m)))
+            .map(|m| MessageSummary::from_full(&m))
+            .collect()
+    };
+    if !summaries.is_empty() {
+        let _ = app.emit("kapture:messages", &summaries);
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -247,12 +323,54 @@ pub async fn start_proxy_impl(
     cfg.upstream_sasl = sasl;
     let buffer = Arc::clone(&state.buffer);
     let filter = Arc::clone(&state.filter);
-    let app_for_messages = app.clone();
+    // IPC batching: per-event `emit` saturated the Tauri channel under
+    // load (>5k msg/s caused producer-side latency to balloon to >5s).
+    // Sink pushes into an unbounded mpsc; a batcher task drains it on
+    // a 50 ms timer or when the buffer hits MESSAGE_BATCH_FLUSH_LEN —
+    // whichever first — and emits a single `kapture:messages` event
+    // with a Vec. Filter eval moves out of the sink hot path into the
+    // batcher (sink stays as small as possible so the proxy pump's
+    // tail-call latency doesn't blow up under load).
+    let (msg_tx, mut msg_rx) =
+        tokio::sync::mpsc::unbounded_channel::<crate::message::CapturedMessage>();
     let sink: crate::proxy_handle::RecordSink = Arc::new(move |message| {
         buffer.push(message.clone());
-        let pass = filter.read().as_ref().is_none_or(|f| f.matches(&message));
-        if pass {
-            let _ = app_for_messages.emit("kapture:message", &message);
+        // unbounded send only fails when the receiver is gone (proxy
+        // stopped) — at that point dropping the message is correct.
+        let _ = msg_tx.send(message);
+    });
+    let app_for_batcher = app.clone();
+    let filter_for_batcher = Arc::clone(&filter);
+    tauri::async_runtime::spawn(async move {
+        let mut pending: Vec<crate::message::CapturedMessage> =
+            Vec::with_capacity(MESSAGE_BATCH_FLUSH_LEN);
+        let mut flush_timer = tokio::time::interval(MESSAGE_BATCH_FLUSH_INTERVAL);
+        flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                // Drain whatever is on the channel right now into
+                // `pending`. `recv_many` is bounded by capacity; we
+                // top up to BATCH_FLUSH_LEN so the agent / UI never
+                // sees an unbounded vector.
+                n = msg_rx.recv_many(&mut pending, MESSAGE_BATCH_FLUSH_LEN) => {
+                    if n == 0 {
+                        // channel closed — stop_proxy dropped the sender.
+                        if !pending.is_empty() {
+                            emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                        }
+                        break;
+                    }
+                    if pending.len() >= MESSAGE_BATCH_FLUSH_LEN {
+                        emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                    }
+                }
+                _ = flush_timer.tick() => {
+                    if !pending.is_empty() {
+                        emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                    }
+                }
+            }
         }
     });
     let handle = match crate::proxy::ProxyHandle::start(cfg, Arc::clone(&correlator), sink).await {
@@ -436,11 +554,12 @@ pub fn proxy_status(state: State<'_, AppState>) -> ProxyStatusSummary {
 /// Snapshot of recent observed Kafka protocol frames as **summaries**
 /// (no payload bytes, no decoded body — those are megabyte-scale on
 /// busy clusters and don't belong in the 1 Hz polling path). Returns
-/// up to `limit` (cap 2000) entries, oldest first. Empty when no
-/// capture is running.
+/// up to `limit` (cap 5000) entries, oldest first. Empty when no
+/// capture is running. Cap aligned with `UI_MAX_MESSAGES` so both
+/// tabs show the same recent-history depth.
 #[tauri::command]
 pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<ProtoFrameSummary> {
-    let cap = limit.map_or(2000_usize, |n| (n as usize).min(2000));
+    let cap = limit.map_or(5000_usize, |n| (n as usize).min(5000));
     state
         .correlator()
         .map(|c| c.summaries(cap))
@@ -456,13 +575,23 @@ pub fn proto_frame_detail(state: State<'_, AppState>, id: String) -> Option<Prot
 }
 
 #[tauri::command]
-pub fn snapshot(state: State<'_, AppState>) -> Vec<CapturedMessage> {
+pub fn snapshot(state: State<'_, AppState>) -> Vec<MessageSummary> {
     let snap = state.buffer.snapshot();
-    let guard = state.filter.read();
-    match guard.as_ref() {
-        Some(filter) => snap.into_iter().filter(|m| filter.matches(m)).collect(),
-        None => snap,
-    }
+    let filter = state.filter.read().clone();
+    snap.into_iter()
+        .filter(|m| filter.as_ref().is_none_or(|f| f.matches(m)))
+        .map(|m| MessageSummary::from_full(&m))
+        .collect()
+}
+
+/// Return the full `CapturedMessage` for one id (payload, `raw_hex`,
+/// headers — everything the live event omits). Returns `None` if the
+/// message has aged out of the ring buffer. Called by the UI when
+/// the user selects a row, so `LayerTree` / `HexDump` can render the
+/// heavy fields lazily.
+#[tauri::command]
+pub fn inspect_message_by_id(state: State<'_, AppState>, id: String) -> Option<CapturedMessage> {
+    state.buffer.find_by_id(&id)
 }
 
 #[tauri::command]
@@ -700,6 +829,15 @@ fn spawn_stats_emitter(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
+        // Rolling baseline so we can derive both rates as deltas
+        // between consecutive ticks. Earlier the throughput was a
+        // since-start average (total / elapsed), which lied when
+        // traffic stopped — the bar would still show ~300 msg/s
+        // long after the producer terminated. Both rates now decay
+        // to 0 within one tick when nothing arrives.
+        let mut last_total: u64 = 0;
+        let mut last_drops: u64 = 0;
+        let mut last_tick = std::time::Instant::now();
         loop {
             interval.tick().await;
             let Some(state) = app.try_state::<AppState>() else {
@@ -708,10 +846,21 @@ fn spawn_stats_emitter(app: &AppHandle) {
             if !state.is_capturing() {
                 break;
             }
-            let elapsed = state.elapsed_secs().max(0.001);
-            let total = state.buffer.stats(0.0).total_received;
-            let throughput = total as f64 / elapsed;
-            let stats = state.buffer.stats(throughput);
+            let snapshot = state.buffer.stats(0.0);
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last_tick).as_secs_f64().max(0.001);
+            let total_delta = snapshot.total_received.saturating_sub(last_total);
+            let drops_delta = snapshot.drops.saturating_sub(last_drops);
+            #[allow(clippy::cast_precision_loss)]
+            let throughput = total_delta as f64 / dt;
+            #[allow(clippy::cast_precision_loss)]
+            let drops_per_sec = drops_delta as f64 / dt;
+            last_total = snapshot.total_received;
+            last_drops = snapshot.drops;
+            last_tick = now;
+            let stats = state
+                .buffer
+                .stats_with_drops_rate(throughput, drops_per_sec);
             let _ = app.emit("kapture:stats", &stats);
         }
     });

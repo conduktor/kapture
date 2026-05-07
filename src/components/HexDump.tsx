@@ -1,8 +1,10 @@
 import type { JSX } from "react";
-import type { KafkaMessage } from "../types";
+import type { KafkaMessageDetail } from "../types";
 
 interface Props {
-  message: KafkaMessage | null;
+  /** Full message body (lazy-fetched via inspect_message_by_id).
+   *  `null` when no row is selected or while the fetch is in flight. */
+  message: KafkaMessageDetail | null;
 }
 
 export function HexDump({ message }: Props): JSX.Element {

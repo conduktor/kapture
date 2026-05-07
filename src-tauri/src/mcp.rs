@@ -295,6 +295,23 @@ const PROTO_DECODED_HARD_LIMIT: usize = 32 * 1024;
 const SASL_HANDSHAKE_API_KEY: i32 = 17;
 const SASL_AUTHENTICATE_API_KEY: i32 = 36;
 
+/// Per-message hex preview cap in `kafka_snapshot`. Stress-test made it
+/// obvious that 4 KB messages × N rows blow the agent's token budget
+/// before the agent can even read the response. We trim every hex /
+/// long-string field to a bounded preview here; the full payload stays
+/// reachable via `kafka_inspect_message`. The original byte length is
+/// preserved on every truncated `Bytes { length }` so the agent can
+/// tell what was elided. 256 hex chars = 128 raw bytes — enough to
+/// recognise schemas / magic bytes / key shape, cheap on tokens.
+const SNAPSHOT_HEX_PREVIEW_LIMIT: usize = 256;
+/// Same idea for primitive-string fields (e.g. JSON payloads decoded
+/// into a single `Primitive { type: "string" }`). 1 KiB is plenty for
+/// the agent to spot the schema / make a filtering decision.
+const SNAPSHOT_STRING_PREVIEW_LIMIT: usize = 1024;
+/// Cap on the `raw_hex` mirror string. 192 chars ≈ 64 raw bytes shown
+/// as `"AB CD EF ..."` — matches the `LayerTree`'s preview row.
+const SNAPSHOT_RAW_HEX_PREVIEW_LIMIT: usize = 192;
+
 #[tool_router]
 impl KaptureMcp {
     #[tool(description = "Return ring-buffer + throughput stats for the active capture.")]
@@ -311,7 +328,7 @@ impl KaptureMcp {
     }
 
     #[tool(
-        description = "Return up to `limit` (cap 500) recent captured messages, with the active filter applied. Iterates the ring buffer newest-first and short-circuits when the limit is reached."
+        description = "Return up to `limit` (cap 500) recent captured messages, with the active filter applied. Iterates the ring buffer newest-first and short-circuits when the limit is reached. Payload previews are trimmed (hex ≤ 256 chars, strings ≤ 1 KiB, raw_hex ≤ 192 chars) so a single response cannot starve the agent's token budget — call `kafka_inspect_message` with an id to get the untrimmed body. Original byte length is preserved on every Bytes field."
     )]
     fn kafka_snapshot(
         &self,
@@ -328,6 +345,14 @@ impl KaptureMcp {
             .buffer
             .recent_filtered(cap, |m| filter.as_ref().is_none_or(|f| f.matches(m)));
         let returned = messages.len();
+        // Trim each message's payload preview before serialisation so a
+        // 4 KB × 500 row response cannot blow past the agent's token
+        // budget. Full payloads remain available via
+        // `kafka_inspect_message`.
+        let messages: Vec<CapturedMessage> = messages
+            .into_iter()
+            .map(trim_message_for_snapshot)
+            .collect();
         // Total under filter is best-effort: report what we gathered;
         // computing the true total would require scanning the buffer
         // a second time. The agent can call again with a higher limit
@@ -742,6 +767,86 @@ impl ServerHandler for KaptureMcp {
             &params.uri,
         )]))
     }
+}
+
+/// Trim a `CapturedMessage` so a `kafka_snapshot` response can carry
+/// many rows without nuking the agent's token budget. The original
+/// byte sizes are preserved on `Bytes { length }` and on
+/// `size_bytes`, so the agent can decide whether to reach for
+/// `kafka_inspect_message` on a specific id. Truncated string/hex
+/// fields are suffixed with `…[+N more]` so the agent sees the
+/// elision was deliberate and not corruption.
+fn trim_message_for_snapshot(mut m: CapturedMessage) -> CapturedMessage {
+    m.raw_hex = trim_string(&m.raw_hex, SNAPSHOT_RAW_HEX_PREVIEW_LIMIT);
+    m.payload = trim_decoded(m.payload);
+    if let Some(k) = m.key.as_mut() {
+        if k.len() > SNAPSHOT_STRING_PREVIEW_LIMIT {
+            *k = trim_string(k, SNAPSHOT_STRING_PREVIEW_LIMIT);
+        }
+    }
+    for h in &mut m.headers {
+        if h.value.len() > SNAPSHOT_STRING_PREVIEW_LIMIT {
+            h.value = trim_string(&h.value, SNAPSHOT_STRING_PREVIEW_LIMIT);
+        }
+    }
+    m
+}
+
+fn trim_decoded(v: crate::decode::DecodedValue) -> crate::decode::DecodedValue {
+    use crate::decode::DecodedValue;
+    match v {
+        DecodedValue::Bytes { hex, length } => {
+            let trimmed = if hex.len() > SNAPSHOT_HEX_PREVIEW_LIMIT {
+                use std::fmt::Write as _;
+                let mut s = hex[..SNAPSHOT_HEX_PREVIEW_LIMIT].to_owned();
+                let _ = write!(
+                    &mut s,
+                    "…[+{} more chars]",
+                    hex.len() - SNAPSHOT_HEX_PREVIEW_LIMIT
+                );
+                s
+            } else {
+                hex
+            };
+            DecodedValue::Bytes {
+                hex: trimmed,
+                length,
+            }
+        }
+        DecodedValue::Primitive { ty, value } => DecodedValue::Primitive {
+            ty,
+            value: trim_string(&value, SNAPSHOT_STRING_PREVIEW_LIMIT),
+        },
+        DecodedValue::Object { fields } => DecodedValue::Object {
+            fields: fields
+                .into_iter()
+                .map(|f| crate::decode::DecodedField {
+                    name: f.name,
+                    value: trim_decoded(f.value),
+                })
+                .collect(),
+        },
+        DecodedValue::Array { items } => DecodedValue::Array {
+            items: items.into_iter().map(trim_decoded).collect(),
+        },
+    }
+}
+
+fn trim_string(s: &str, max: usize) -> String {
+    use std::fmt::Write as _;
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    // Cut on a UTF-8 boundary at or before `max` so we never split a
+    // multi-byte char. `floor_char_boundary` is unstable, so do it by
+    // hand: walk back until we find a char boundary.
+    let mut cut = max;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut out = s[..cut].to_owned();
+    let _ = write!(&mut out, "…[+{} more chars]", s.len() - cut);
+    out
 }
 
 /// Redact / truncate a `ProtoFrame` before it crosses the MCP boundary.

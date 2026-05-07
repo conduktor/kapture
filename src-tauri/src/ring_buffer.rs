@@ -22,6 +22,11 @@ pub struct CaptureStats {
     pub buffer_byte_capacity: usize,
     pub drops: u64,
     pub throughput_per_sec: f64,
+    /// Drops/sec over the same rolling window as `throughput_per_sec`.
+    /// Lets the UI tell hemorrhage (>0 sustained) from a one-shot byte
+    /// cap eviction (spikes then 0). Computed by the stats emitter,
+    /// which holds the prior `drops` baseline.
+    pub drops_per_sec: f64,
 }
 
 #[derive(Debug)]
@@ -94,6 +99,14 @@ impl RingBuffer {
         state.items.iter().cloned().collect()
     }
 
+    /// Look up a single message by id. `None` if it has aged out of
+    /// the ring buffer. Cheap O(n) scan — n ≤ 100k and the buffer
+    /// is in-memory; we don't bother with an id index.
+    pub fn find_by_id(&self, id: &str) -> Option<CapturedMessage> {
+        let state = self.inner.read();
+        state.items.iter().find(|m| m.id == id).cloned()
+    }
+
     /// Iterate the most recent matching messages without cloning the
     /// whole buffer. `keep` is called per message in newest-first
     /// order; iteration stops once `limit` messages have matched.
@@ -130,6 +143,14 @@ impl RingBuffer {
     }
 
     pub fn stats(&self, throughput_per_sec: f64) -> CaptureStats {
+        self.stats_with_drops_rate(throughput_per_sec, 0.0)
+    }
+
+    pub fn stats_with_drops_rate(
+        &self,
+        throughput_per_sec: f64,
+        drops_per_sec: f64,
+    ) -> CaptureStats {
         let state = self.inner.read();
         CaptureStats {
             total_received: state.total_received,
@@ -139,6 +160,7 @@ impl RingBuffer {
             buffer_byte_capacity: state.byte_capacity,
             drops: state.drops,
             throughput_per_sec,
+            drops_per_sec,
         }
     }
 }
@@ -153,6 +175,7 @@ mod tests {
             id: id.to_owned(),
             timestamp: "2026-05-05T12:00:00Z".to_owned(),
             topic: "t".to_owned(),
+            topic_id: None,
             partition: 0,
             offset: 0,
             key: None,

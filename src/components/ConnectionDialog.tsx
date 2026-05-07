@@ -13,6 +13,8 @@ import type {
 } from "../types";
 
 const DEFAULT_LISTEN_PORT = 9092;
+/** localStorage key for the last profile that successfully started a proxy. */
+const LAST_PROFILE_KEY = "kapture.lastProfile";
 
 interface Initial {
   upstream: string;
@@ -125,7 +127,39 @@ export function ConnectionDialog({
   }, []);
 
   useEffect(() => {
-    void refreshProfiles();
+    // First mount: load profiles, then auto-apply the one used the last
+    // time the user started a proxy. Skip when editing or when the
+    // parent passed an explicit `initial` — both cases mean the form
+    // already has a meaningful state and a profile load would clobber
+    // user intent.
+    void (async () => {
+      await refreshProfiles();
+      if (isEditing || initial !== undefined) {
+        return;
+      }
+      let lastName: string | null = null;
+      try {
+        lastName = window.localStorage.getItem(LAST_PROFILE_KEY);
+      } catch {
+        /* ignore */
+      }
+      if (lastName !== null && lastName !== "") {
+        // Only apply if the profile still exists — it may have been
+        // deleted since the last session. Safe to read profiles via
+        // backend rather than the in-flight `profiles` state, which
+        // hasn't propagated through React yet.
+        try {
+          const list = await invoke<ProfileMetadata[]>("list_profiles");
+          if (list.some((p) => p.name === lastName)) {
+            await applyProfile(lastName);
+          }
+        } catch (err) {
+          console.warn("auto-apply last profile failed", err);
+        }
+      }
+    })();
+    // Run-once-on-mount; deps are intentionally read-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Clear any pending auto-dismiss timer on unmount so a state-update
@@ -137,6 +171,30 @@ export function ConnectionDialog({
       }
     };
   }, []);
+
+  // Esc closes the dialog when a cancel handler is wired in. We skip
+  // when the inline "save profile" name input is open — Esc there
+  // should just dismiss that row, not the whole dialog. Same for the
+  // SnippetsModal / McpModal pattern.
+  useEffect(() => {
+    if (!onCancel) {
+      return;
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") {
+        return;
+      }
+      if (profileNameInput !== null) {
+        setProfileNameInput(null);
+        return;
+      }
+      onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onCancel, profileNameInput]);
 
   /**
    * Drop the inline Test result. Called from every form-field setter
@@ -383,6 +441,55 @@ export function ConnectionDialog({
           upstreamTls,
           upstreamSasl,
         });
+        // Auto-save edits back to the loaded profile. If the user
+        // started from an existing profile, any tweak they made
+        // (upstream, TLS toggle, SASL creds) is rolled into a save
+        // on Start — no separate "Save profile" click needed. The
+        // "Save profile…" button is only surfaced when starting
+        // ad-hoc (no profile loaded) so the user can name it.
+        if (selectedProfile !== "") {
+          const saveTls = useTls
+            ? {
+                serverName: tlsServerName,
+                caPath: tlsCaPath.trim() === "" ? null : tlsCaPath.trim(),
+                skipHostnameVerification: tlsSkipHostname,
+              }
+            : null;
+          const saveSasl = useSasl
+            ? {
+                mechanism: saslMechanism,
+                username: saslUsername,
+                password: saslPassword === "" ? null : saslPassword,
+              }
+            : null;
+          const args: SaveProfileArgs = {
+            name: selectedProfile,
+            bootstrapServers: trimmedUpstream,
+            topicPattern: null,
+            schemaRegistryUrl: null,
+            auth: null,
+            fromBeginning: false,
+            upstreamTls: saveTls,
+            upstreamSasl: saveSasl,
+          };
+          try {
+            await invoke("save_profile", { args });
+          } catch (err) {
+            // Silent: the proxy is already up. Surface a console
+            // hint so a power user can see why their tweak didn't
+            // round-trip — but don't block the connection flow.
+            console.warn("auto-save profile failed", err);
+          }
+        }
+        try {
+          // Remember the profile (or empty string when ad-hoc) so the
+          // next session opens the dialog pre-filled with what worked
+          // last time. Empty value clears any prior remembrance — the
+          // user explicitly started without a profile.
+          window.localStorage.setItem(LAST_PROFILE_KEY, selectedProfile);
+        } catch {
+          /* localStorage may be unavailable — best-effort */
+        }
         onProxyStarted(status);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -400,7 +507,20 @@ export function ConnectionDialog({
           submit();
         }}
       >
-        <h2 className="dialog__title">{isEditing ? "Edit proxy" : "Start proxy"}</h2>
+        <div className="dialog__header">
+          <h2 className="dialog__title">{isEditing ? "Edit proxy" : "Start proxy"}</h2>
+          {onCancel ? (
+            <button
+              type="button"
+              className="modal__close"
+              onClick={onCancel}
+              aria-label="Close dialog"
+              title="Close"
+            >
+              ×
+            </button>
+          ) : null}
+        </div>
         <div className="dialog__profile-row">
           <select
             className="dialog__input"
@@ -581,17 +701,17 @@ export function ConnectionDialog({
         {validationError !== null ? <p className="dialog__error">{validationError}</p> : null}
         {error !== null ? <p className="dialog__error">{error}</p> : null}
         <div className="dialog__actions">
-          <button
-            type="button"
-            className="btn"
-            onClick={openSaveProfileRow}
-            disabled={profileBusy || savingProfile || profileNameInput !== null}
-          >
-            Save profile…
-          </button>
-          {onCancel ? (
-            <button type="button" className="btn" onClick={onCancel}>
-              Cancel
+          {selectedProfile === "" ? (
+            // Only surfaced when starting from scratch (no profile
+            // loaded). When an existing profile is loaded, edits are
+            // auto-saved on Start — see the `submit()` handler.
+            <button
+              type="button"
+              className="btn"
+              onClick={openSaveProfileRow}
+              disabled={profileBusy || savingProfile || profileNameInput !== null}
+            >
+              Save profile…
             </button>
           ) : null}
           <button

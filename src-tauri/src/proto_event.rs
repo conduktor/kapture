@@ -104,6 +104,7 @@ impl ProtoEvent {
             56 => "AlterPartition",
             57 => "UpdateFeatures",
             58 => "Envelope",
+            59 => "FetchSnapshot",
             60 => "DescribeCluster",
             61 => "DescribeProducers",
             62 => "BrokerRegistration",
@@ -114,29 +115,56 @@ impl ProtoEvent {
             67 => "AllocateProducerIds",
             68 => "ConsumerGroupHeartbeat",
             69 => "ConsumerGroupDescribe",
+            70 => "ControllerRegistration",
             71 => "GetTelemetrySubscriptions",
             72 => "PushTelemetry",
-            74 => "AssignReplicasToDirs",
-            75 => "ListClientMetricsResources",
-            76 => "DescribeTopicPartitions",
-            78 => "AddRaftVoter",
-            79 => "RemoveRaftVoter",
-            80 => "UpdateRaftVoter",
-            81 => "InitializeShareGroupState",
-            82 => "ReadShareGroupState",
-            83 => "WriteShareGroupState",
-            84 => "DeleteShareGroupState",
-            85 => "ReadShareGroupStateSummary",
-            86 => "ShareGroupHeartbeat",
-            87 => "ShareGroupDescribe",
-            88 => "ShareFetch",
-            89 => "ShareAcknowledge",
+            73 => "AssignReplicasToDirs",
+            74 => "ListConfigResources",
+            75 => "DescribeTopicPartitions",
+            76 => "ShareGroupHeartbeat",
+            77 => "ShareGroupDescribe",
+            78 => "ShareFetch",
+            79 => "ShareAcknowledge",
+            80 => "AddRaftVoter",
+            81 => "RemoveRaftVoter",
+            82 => "UpdateRaftVoter",
+            83 => "InitializeShareGroupState",
+            84 => "ReadShareGroupState",
+            85 => "WriteShareGroupState",
+            86 => "DeleteShareGroupState",
+            87 => "ReadShareGroupStateSummary",
+            88 => "StreamsGroupHeartbeat",
+            89 => "StreamsGroupDescribe",
             90 => "DescribeShareGroupOffsets",
             91 => "AlterShareGroupOffsets",
             92 => "DeleteShareGroupOffsets",
-            93 => "StreamsGroupHeartbeat",
-            94 => "StreamsGroupDescribe",
             _ => "Unknown",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kafka_protocol::messages::ApiKey;
+
+    /// Cross-check `api_name()` against the source-of-truth `ApiKey`
+    /// enum from the forked `kafka-protocol-rs`. The hand-maintained
+    /// match has drifted from Apache Kafka 4.x in the past (e.g.
+    /// `ShareFetch` was labelled "`AddRaftVoter`" because the table still
+    /// reflected an older numbering). This test fails the build if any
+    /// known variant maps to "Unknown" or to a name that differs from
+    /// the enum's `Debug` form.
+    #[test]
+    fn api_name_matches_kafka_protocol_enum() {
+        for api in ApiKey::iter() {
+            let key = i32::from(api as i16);
+            let expected = format!("{api:?}");
+            let actual = ProtoEvent::api_name(key);
+            assert_eq!(
+                actual, expected,
+                "api_name({key}) = {actual:?} but ApiKey enum says {expected:?}"
+            );
         }
     }
 }

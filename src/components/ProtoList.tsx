@@ -9,6 +9,7 @@ import {
 } from "react";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { ProtoDirection, ProtoFrame } from "../types";
+import { formatBytes } from "../lib/formatBytes";
 import {
   applyFilter,
   hasPredicate,
@@ -445,7 +446,12 @@ function ProtoRow({
         </span>
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
       </FilterableCell>
-      <span className="proto__col proto__col--size">{frame.size}b</span>
+      <span
+        className="proto__col proto__col--size"
+        title={`${frame.size.toLocaleString()} bytes wire size`}
+      >
+        {formatBytes(frame.size)}
+      </span>
       <FilterableCell
         className="proto__col proto__col--broker"
         kind="connectionId"

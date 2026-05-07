@@ -1,6 +1,7 @@
 import { type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
 import { parseDebug, type DebugNode } from "../lib/debugTree";
+import { formatBytes } from "../lib/formatBytes";
 import type { ProtoFilterMode } from "../lib/protoFilter";
 
 /**
@@ -37,13 +38,13 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           <Field name="api_version" value={`v${frame.apiVersion}`} />
           <Field name="connection_id" value={String(frame.connectionId)} />
           <Field name="corr_id" value={String(frame.corrId)} />
-          <Field name="size (wire)" value={`${frame.size} bytes`} />
+          <Field name="size (wire)" value={formatBytes(frame.size)} />
           <Field
             name="captured"
             value={
               frame.captured === frame.size
-                ? `${frame.captured} bytes (full)`
-                : `${frame.captured} of ${frame.size} bytes (truncated at 64 KiB cap)`
+                ? `${formatBytes(frame.captured)} (full)`
+                : `${formatBytes(frame.captured)} of ${formatBytes(frame.size)} (truncated at 64 KiB cap)`
             }
           />
           {frame.direction === "recv" ? (

@@ -1,106 +1,116 @@
 # Kapture
 
-**Wireshark for Kafka events.** A desktop inspector for live Kafka traffic with deep decoding, expressive filters, and key-aware stream following. Built for developers debugging streaming pipelines, not browsing topics.
-
-> Status: pre-alpha. UI shell + Tauri scaffold + strict lint pipeline. Capture engine and filter parser are next.
+**Wireshark for Kafka.** A desktop app that speaks the Kafka protocol natively, intercepts the traffic between your client and the broker, and shows you what's really going through the wire.
 
 ## Why
 
-Kafka tooling is saturated with topic browsers (Conduktor, Redpanda Console, AKHQ, Kafdrop). None of them help you _understand what's flowing right now_. Kapture is the missing layer: see messages live, decode them through schema layers, follow a single key across topics, and write filters that actually express intent.
+Most engineers building apps on Kafka have no good way to see what their clients actually do. Logs and dashboards lie about latency and frequency, and topic browsers (Conduktor Console, Redpanda Console, AKHQ, Kafdrop) show data at rest, not the protocol exchange.
 
-## The vision (2 pillars)
+That's where the bad patterns hide:
 
-1. **Inspector** — Wireshark-style live capture with decoded layers, filter DSL, follow-by-key. **MVP.**
-2. **Debugger** — Time-travel debugger for Kafka Streams / Flink consumers (breakpoints by predicate, step messages, inspect state stores).
+- `OffsetCommit` after every single record. Yes, it happens.
+- A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record. Yes, it happens.
+- A `Metadata` storm because someone disabled the cache.
+- Tiny Produce batches behind a high message rate (`linger.ms=0` + tiny `batch.size`).
+- A consumer group rebalancing every few seconds because the heartbeat config is wrong.
 
-Kapture also exposes an **MCP server** on `http://127.0.0.1:7878/mcp` so AI agents (Claude Desktop, IDE assistants, custom clients) can drive captures directly: list / load profiles, set filters, snapshot recent messages, inspect a single message by id. Secrets stay server-side — agents never see SASL or TLS-key passwords.
+Invisible from logs. Obvious once you see the protocol.
 
-The full design lives in [`docs/spec.md`](./docs/spec.md).
+If you debugged HTTP with Fiddler ten years ago, this is the same idea, for Kafka.
 
-## Tech stack
+## How it works
 
-- **Tauri 2** + **Rust** for the capture engine and IPC core
-- **React 19** + **TypeScript** + **Vite** for the UI
-- **Wireshark-style filter DSL** (Pest parser, planned)
-- **rdkafka** for cluster I/O (planned)
+Kapture runs a local TCP proxy. You point your Kafka client at `127.0.0.1:9092` (instead of your real broker), Kapture forwards every byte upstream, and copies a decoded view into the inspector.
 
-Wire-compatible with Apache Kafka and any derivative (Redpanda, MSK, Confluent Cloud, Aiven, WarpStream...).
+```
+your client ──▶ 127.0.0.1:9092 ──▶ real broker
+                    │
+                    ▼
+                Kapture inspector (live)
+```
 
-## Quick start
+No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's there. SASL/PLAIN, SASL/SCRAM-SHA-256/512, and TLS upstream are all passed through correctly.
 
-Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82, Docker. No system Kafka or SASL package required — Kapture's vendored librdkafka builds with built-in SASL (PLAIN / SCRAM-SHA-256/512 / OAUTHBEARER) and no `libsasl2` runtime dependency.
+## What you get
 
-The dev stack runs **two Kafka clusters side-by-side** so Kapture can be smoke-tested against canonical Apache Kafka and Redpanda in parallel:
+- **Live wire view.** Every Kafka API request/response with `corr_id`, RTT, payload size, decoded body. Apache Kafka 4.x covered, including KIP-516 (topic IDs in Produce/Fetch v13+) and KIP-932 (Share Groups: `ShareFetch`, `ShareGroupHeartbeat`, `ShareAcknowledge`).
+- **Messages tab.** Decoded records flattened from Produce requests and Fetch responses. Backlinks every record to the originating frame so you can jump from the message to the wire.
+- **Filter DSL.** Wireshark-style: `topic == "orders" && envelope.size > 1024 && headers.tenant == "acme"`. Compose, autocomplete, save.
+- **MCP server.** `http://127.0.0.1:7878/mcp` exposes 13 tools so an agentic IDE (Claude Code, Cursor, Windsurf, etc.) can drive captures, set filters, and inspect frames. Bearer-authenticated; SASL frames are redacted before crossing the boundary. Open the MCP modal in the app for one-click setup snippets.
+- **Drop-aware ring buffer.** 100k messages or 256 MiB, whichever fills first. `drops/sec` surfaced in the status bar so you can tell hemorrhage from a single spike. Optional auto-pause when the rate is unsustainable.
+- **Connection profiles.** Bootstrap, TLS, SASL — saved locally; passwords in the OS keychain. Last-used profile is pre-selected on launch.
 
-| Cluster      | Kafka API         | Schema Registry          |
+## Install & run
+
+Prerequisites: Node ≥ 20, pnpm ≥ 9, Rust ≥ 1.82.
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+That's it. The app boots, the MCP server comes up, and the Connection dialog opens.
+
+In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at your upstream broker (`localhost:29092`, your Confluent Cloud endpoint, your MSK, etc.). Configure SASL/TLS if your broker needs it. Hit Start.
+
+Then point any Kafka client at `127.0.0.1:9092` and watch.
+
+## Test it locally
+
+A docker stack is included with two clusters side-by-side so you can validate against canonical Apache Kafka and Redpanda in parallel:
+
+| Cluster      | Bootstrap         | Schema Registry          |
 | ------------ | ----------------- | ------------------------ |
 | Redpanda     | `localhost:19092` | `http://localhost:18081` |
 | Apache Kafka | `localhost:29092` | `http://localhost:28081` |
 
 ```bash
-# 1. Install JS deps and build the Kapture-patched librdkafka
-pnpm install
-# librdkafka is vendored under vendor/librdkafka with two Kapture
-# patches: rd_kafka_set_proto_hook_cb (per-message protocol
-# context) and a CMakeLists tweak that lets WITH_SASL_CYRUS=OFF
-# disable the libsasl2 link entirely. The result is a single
-# librdkafka.dylib that needs no system SASL package at runtime.
-pnpm librdkafka:build
-
-# 2. Boot one (or both) local clusters
-pnpm stack:up:redpanda     # Redpanda only
-pnpm stack:up:kafka        # Apache Kafka + cp-schema-registry only
-pnpm stack:up              # both
-
-# 3. Inject test data — five topics, mixing payload encodings:
-#      orders.raw         JSON (no Schema Registry)
-#      orders.enriched    JSON (no Schema Registry)
-#      users.events       JSON (no Schema Registry)
-#      orders.avro        Avro via Confluent Schema Registry
-#      orders.jsonschema  JSON Schema via Confluent Schema Registry
-pnpm seed                  # Redpanda, one-shot 200 msg
-pnpm seed:loop             # Redpanda, continuous ~10 msg/s
-pnpm seed:kafka            # Apache Kafka, one-shot
-pnpm seed:loop:kafka       # Apache Kafka, continuous
-
-# 4. Smoke-test the Rust capture pipeline
-pnpm rust:smoke            # plain JSON path
-pnpm rust:sr-smoke         # SR + Avro + JSON Schema decode
-cargo run --manifest-path src-tauri/Cargo.toml --example proto_smoke
-                           # proto-hook end-to-end (per-message protocol context)
-
-# 5. Launch the desktop app
-pnpm tauri dev
+pnpm stack:up              # both clusters
+pnpm seed                  # 200 messages of mixed encodings (JSON, Avro, JSON Schema)
+pnpm seed:loop             # continuous ~10 msg/s
+pnpm stack:down            # tear it down
 ```
 
-The Connection dialog supports PLAINTEXT and **SASL/PLAIN, SASL/SCRAM-SHA-256, SASL/SCRAM-SHA-512** with optional TLS (`SASL_SSL`). Use it directly against managed Kafka offerings (Confluent Cloud, Aiven, MSK, WarpStream) by entering bootstrap, mechanism, username, password, and toggling the TLS box.
+Then in Kapture, set upstream to one of the cluster addresses and produce/consume normally.
 
-When you're done:
+## Stress test
 
-```bash
-pnpm stack:down
-```
+The numbers from a recent local run on M-series hardware, 80k × 4 KiB at 1.2k msg/s sustained:
+
+- Ring buffer at the byte cap (256 MiB exact).
+- Drop-oldest active, no crash, mem stable.
+- Producer p99 latency dominated by the proxy IPC path, not the broker.
+- All MCP tools (`kafka_snapshot`, `kafka_set_filter`, `kafka_inspect_frame`) responsive under load.
+
+`drops` you see are observability eviction (oldest captured frames being recycled to make room). The Kafka traffic itself is never lost — TCP flow control is the only backpressure mechanism between client and broker, and it works whether Kapture is in the middle or not.
 
 ## Quality gates
 
-Strict from day one. The pre-commit hook runs all of these:
+Strict from day one. Pre-commit runs all of these:
 
-| Layer      | Tool                                                                                                      |
-| ---------- | --------------------------------------------------------------------------------------------------------- |
-| TypeScript | `tsc --noEmit` (strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`)                       |
-| JS / React | ESLint flat config — `typescript-eslint` strict-type-checked + react / react-hooks / react-refresh        |
-| Formatting | Prettier (TS, CSS, HTML, JSON, MD)                                                                        |
-| Rust style | `cargo fmt --check`                                                                                       |
-| Rust lints | `cargo clippy -- -D warnings` with `pedantic` + `nursery` denied, `unwrap` / `expect` / `panic` forbidden |
-
-Manual run:
+| Layer      | Tool                                                                                                  |
+| ---------- | ----------------------------------------------------------------------------------------------------- |
+| TypeScript | `tsc --noEmit` (strict + `noUncheckedIndexedAccess` + `exactOptionalPropertyTypes`)                   |
+| JS / React | ESLint flat config — `typescript-eslint` strict-type-checked + react / react-hooks / react-refresh    |
+| Formatting | Prettier                                                                                              |
+| Rust style | `cargo fmt --check`                                                                                   |
+| Rust lints | `cargo clippy -- -D warnings`, `pedantic` + `nursery` denied, `unwrap` / `expect` / `panic` forbidden |
+| Tests      | `cargo test --lib` — 116 tests, including a cross-check against the Kafka protocol enum               |
 
 ```bash
 pnpm check          # all checks
-pnpm lint:fix       # auto-fix JS/TS
-pnpm format         # auto-format
-pnpm rust:fmt:fix   # auto-format Rust
 ```
+
+## Roadmap
+
+- **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, metadata storm, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
+- **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
+- **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
+
+## Feedback
+
+- Email: [stephane@conduktor.io](mailto:stephane@conduktor.io)
+- Issues: https://github.com/sderosiaux/kapture/issues (will move to `conduktor/kapture`)
 
 ## License
 

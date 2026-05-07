@@ -68,12 +68,56 @@ export interface ProtoFrameDetail extends ProtoFrame {
   decoded: string | null;
 }
 
+/**
+ * Live wire format for the Messages tab.
+ *
+ * The backend ring buffer holds the full `CapturedMessage`, but the
+ * `kapture:messages` event and the `snapshot` command both transmit
+ * this lightweight projection — no payload, no rawHex, no headers.
+ * That's what keeps the Messages tab responsive at high throughput
+ * (measured: ~80× IPC reduction vs full message). When the user
+ * selects a row, the full body is fetched lazily via
+ * `inspect_message_by_id`.
+ */
 export interface KafkaMessage {
   id: string;
   timestamp: string;
   topic: string;
+  /** KIP-516 topic UUID. Null on legacy wire formats (Produce/Fetch v0-12). */
+  topicId: string | null;
   partition: number;
   offset: number;
+  /** Stringified key, truncated to ~128 chars for the live preview. */
+  key: string | null;
+  schemaName: string | null;
+  schemaId: number | null;
+  sizeBytes: number;
+  /** Number of headers; full keys+values are on `KafkaMessageDetail`. */
+  headersCount: number;
+  /** Originating Fetch frame for backlinks; null on extraction failure. */
+  fetch: FetchMetadata | null;
+  /**
+   * Identifier for the proxy TCP connection that carried this record.
+   * `null` when the record couldn't be attributed to a connection.
+   */
+  connectionId: number | null;
+}
+
+/**
+ * Full body — fetched lazily when the user selects a message via
+ * `inspect_message_by_id`. Mirrors the backend `CapturedMessage`.
+ * Distinct from `KafkaMessage` (the summary) because the wire shape
+ * differs: this one carries `headers` (the full vec), the summary
+ * carries `headersCount`.
+ */
+export interface KafkaMessageDetail {
+  id: string;
+  timestamp: string;
+  topic: string;
+  topicId: string | null;
+  partition: number;
+  offset: number;
+  /** Full key, untruncated. */
   key: string | null;
   schemaName: string | null;
   schemaId: number | null;
@@ -81,12 +125,7 @@ export interface KafkaMessage {
   headers: KafkaHeader[];
   payload: DecodedValue;
   rawHex: string;
-  /** Originating Fetch frame for backlinks; null on extraction failure. */
   fetch: FetchMetadata | null;
-  /**
-   * Identifier for the proxy TCP connection that carried this record.
-   * `null` when the record couldn't be attributed to a connection.
-   */
   connectionId: number | null;
 }
 
@@ -174,6 +213,8 @@ export interface CaptureStats {
   bufferByteCapacity: number;
   drops: number;
   throughputPerSec: number;
+  /** Drops/sec over the last stats tick. Sustained > 0 = hemorrhage. */
+  dropsPerSec: number;
 }
 
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";

@@ -1,12 +1,15 @@
 import type { JSX, MouseEvent, ReactNode } from "react";
-import type { DecodedValue, KafkaMessage } from "../types";
+import type { DecodedValue, KafkaMessageDetail } from "../types";
 import { isValidPath, isValidPathSegment, type PrimitiveLiteral } from "../lib/filterExpr";
+import { formatBytes } from "../lib/formatBytes";
 import type { FilterTarget } from "./FilterMenu";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
 
 interface Props {
-  message: KafkaMessage | null;
+  /** Full message body — lazy-fetched on selection. `null` while
+   *  loading or when no row is selected. */
+  message: KafkaMessageDetail | null;
   onOpenFilterMenu: OpenFilterMenu;
 }
 
@@ -27,6 +30,17 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           target={{ path: "topic", literal: { kind: "string", value: message.topic } }}
           onOpenFilterMenu={onOpenFilterMenu}
         />
+        {message.topicId !== null ? (
+          <Field
+            name="topic_id"
+            value={message.topicId}
+            target={{
+              path: "envelope.topic_id",
+              literal: { kind: "string", value: message.topicId },
+            }}
+            onOpenFilterMenu={onOpenFilterMenu}
+          />
+        ) : null}
         <Field
           name="partition"
           value={String(message.partition)}
@@ -70,7 +84,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
         />
         <Field
           name="size"
-          value={`${message.sizeBytes} bytes`}
+          value={formatBytes(message.sizeBytes)}
           target={{
             path: "envelope.size",
             literal: { kind: "number", value: String(message.sizeBytes) },
@@ -109,7 +123,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           />
           <Field
             name="response_size"
-            value={`${message.fetch.responseSize.toLocaleString()} bytes`}
+            value={formatBytes(message.fetch.responseSize)}
             target={{
               path: "fetch.response_size",
               literal: { kind: "number", value: String(message.fetch.responseSize) },

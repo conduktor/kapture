@@ -8,6 +8,7 @@ import { LayerTree } from "./components/LayerTree";
 import { HexDump } from "./components/HexDump";
 import { StatusBar } from "./components/StatusBar";
 import { SnippetsModal } from "./components/SnippetsModal";
+import { McpModal } from "./components/McpModal";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
@@ -30,6 +31,7 @@ import type {
   CaptureStats,
   ConnectionState,
   KafkaMessage,
+  KafkaMessageDetail,
   ProtoFrame,
   ProtoFrameDetail,
   ProxyStatus,
@@ -53,6 +55,7 @@ const INITIAL_STATS: CaptureStats = {
   bufferByteCapacity: 256 * 1024 * 1024,
   drops: 0,
   throughputPerSec: 0,
+  dropsPerSec: 0,
 };
 
 const INITIAL_CONNECTION: ConnectionState = {
@@ -62,6 +65,23 @@ const INITIAL_CONNECTION: ConnectionState = {
   proxyStatus: null,
 };
 
+/** Read a clamped split ratio from localStorage, falling back to default. */
+function readSplit(key: string, fallback: number): number {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) {
+      return fallback;
+    }
+    const n = Number.parseFloat(raw);
+    if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) {
+      return n;
+    }
+  } catch {
+    /* localStorage may be unavailable (private mode, file://) — fall through */
+  }
+  return fallback;
+}
+
 function App(): JSX.Element {
   const [filter, setFilter] = useState("");
   const [filterError, setFilterError] = useState<string | null>(null);
@@ -69,9 +89,43 @@ function App(): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
+  // Manual UI freeze. Backend keeps capturing — proxy forwards
+  // bytes, ring buffer keeps growing, MCP / inspect / snapshot all
+  // still work. We just stop appending to the visible lists so the
+  // user can investigate a row without it scrolling away.
+  // Distinct from "Stop proxy", which tears down the TCP listener
+  // and would surface as broker disconnects on the client side.
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  /** Toggle UI pause. On resume, replay the snapshot so the user
+   *  catches up to the ring buffer state instead of seeing only
+   *  whatever happens to land next. Keeps current selection — the
+   *  detail panel doesn't blank out. */
+  const toggleUiPaused = useCallback(
+    (next: boolean): void => {
+      setPaused(next);
+      if (!next && connection.status === "connected") {
+        void (async () => {
+          try {
+            const snap = await invoke<KafkaMessage[]>("snapshot");
+            messagesRef.current = snap.slice(-UI_MAX_MESSAGES);
+            setMessages(messagesRef.current);
+          } catch (err) {
+            console.warn("resume snapshot failed", err);
+          }
+        })();
+      }
+    },
+    [connection.status],
+  );
   // Lifted: snippets modal lives at App level so the backdrop covers
   // the full viewport and Escape/backdrop close work uniformly.
   const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [mcpOpen, setMcpOpen] = useState(false);
   // Open the dialog automatically on first launch when nothing is
   // connected. Cancelling the dialog flips this to false and we stay in
   // the disconnected workspace; the user re-opens via the cluster pill.
@@ -106,23 +160,17 @@ function App(): JSX.Element {
   // visible. The protocol split is persisted to localStorage so the
   // user's preferred list/detail width survives reloads.
   const PROTO_SPLIT_KEY = "kapture.proto.splitRatio";
-  const [msgSplitTop, setMsgSplitTop] = useState(0.4);
-  const [msgSplitMid, setMsgSplitMid] = useState(0.7);
-  const [protoSplit, setProtoSplit] = useState<number>(() => {
-    try {
-      const raw = window.localStorage.getItem(PROTO_SPLIT_KEY);
-      if (raw === null) {
-        return 0.45;
-      }
-      const n = Number.parseFloat(raw);
-      if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) {
-        return n;
-      }
-    } catch {
-      /* localStorage may be unavailable (private mode, file://) — fall through */
-    }
-    return 0.45;
-  });
+  const MSG_SPLIT_KEY = "kapture.msg.splitRatio";
+  const MSG_DETAIL_SPLIT_KEY = "kapture.msg.detailSplitRatio";
+  // Messages: list on the left, [LayerTree above HexDump] on the right
+  // — same shape as Protocol (mimics the Wireshark inspector layout).
+  // `msgSplit` is the list/detail horizontal split; `msgDetailSplit`
+  // is the LayerTree/HexDump vertical split inside the right pane.
+  const [msgSplit, setMsgSplit] = useState<number>(() => readSplit(MSG_SPLIT_KEY, 0.4));
+  const [msgDetailSplit, setMsgDetailSplit] = useState<number>(() =>
+    readSplit(MSG_DETAIL_SPLIT_KEY, 0.55),
+  );
+  const [protoSplit, setProtoSplit] = useState<number>(() => readSplit(PROTO_SPLIT_KEY, 0.45));
   useEffect(() => {
     try {
       window.localStorage.setItem(PROTO_SPLIT_KEY, String(protoSplit));
@@ -130,6 +178,20 @@ function App(): JSX.Element {
       /* ignore quota / unavailable */
     }
   }, [protoSplit]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MSG_SPLIT_KEY, String(msgSplit));
+    } catch {
+      /* ignore */
+    }
+  }, [msgSplit]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MSG_DETAIL_SPLIT_KEY, String(msgDetailSplit));
+    } catch {
+      /* ignore */
+    }
+  }, [msgDetailSplit]);
   const panesRef = useRef<HTMLDivElement | null>(null);
   const messagesRef = useRef<KafkaMessage[]>([]);
   // Monotonic generation. Each filter change bumps it; only the latest
@@ -169,8 +231,19 @@ function App(): JSX.Element {
     };
 
     void (async () => {
-      messageUnlisten = await listen<KafkaMessage>("kapture:message", (event) => {
-        pending.push(event.payload);
+      // Backend coalesces messages into batches (50 ms / 256 max).
+      // Each event payload is `KafkaMessage[]`; we still rAF-batch on
+      // top because multiple batches may land in the same frame under
+      // sustained load. When the user paused the UI, we drop incoming
+      // events on the floor — the ring buffer keeps capturing so
+      // nothing is lost; resume re-syncs via `snapshot`.
+      messageUnlisten = await listen<KafkaMessage[]>("kapture:messages", (event) => {
+        if (pausedRef.current) {
+          return;
+        }
+        for (const m of event.payload) {
+          pending.push(m);
+        }
         if (!rafScheduled) {
           rafScheduled = true;
           window.requestAnimationFrame(flush);
@@ -208,8 +281,11 @@ function App(): JSX.Element {
     }
     let cancelled = false;
     const tick = async (): Promise<void> => {
+      if (pausedRef.current) {
+        return;
+      }
       try {
-        const frames = await invoke<ProtoFrame[]>("proto_frames", { limit: 2000 });
+        const frames = await invoke<ProtoFrame[]>("proto_frames", { limit: 5000 });
         if (!cancelled) {
           setProtoFrames(frames);
         }
@@ -360,15 +436,48 @@ function App(): JSX.Element {
     };
   }, [filter, connection.status]);
 
-  const selected = useMemo(
-    () => messages.find((m) => m.id === selectedId) ?? null,
-    [messages, selectedId],
-  );
+  // Lazily-fetched full body of the selected message. The live event
+  // and the snapshot command both ship summaries (no payload, no
+  // rawHex, no headers) — measured at ~80× IPC reduction. When the
+  // user picks a row we fetch the heavy fields once via
+  // `inspect_message_by_id`. `null` means "no row selected" or
+  // "still loading"; the LayerTree / HexDump panels render a muted
+  // placeholder in that state.
+  const [selectedDetail, setSelectedDetail] = useState<KafkaMessageDetail | null>(null);
+  const messageDetailCancelRef = useRef(false);
+  useEffect(() => {
+    if (selectedId === null) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: clear stale detail on deselection
+      setSelectedDetail(null);
+      return;
+    }
+    messageDetailCancelRef.current = false;
+    const id = selectedId;
+    void (async () => {
+      try {
+        const detail = await invoke<KafkaMessageDetail | null>("inspect_message_by_id", {
+          id,
+        });
+        if (!messageDetailCancelRef.current) {
+          setSelectedDetail(detail);
+        }
+      } catch (err) {
+        if (!messageDetailCancelRef.current) {
+          console.warn("inspect_message_by_id failed", err);
+          setSelectedDetail(null);
+        }
+      }
+    })();
+    return () => {
+      messageDetailCancelRef.current = true;
+    };
+  }, [selectedId]);
 
   // Proxy lifecycle: ConnectionDialog drives `start_proxy` and pushes the
   // result back via these callbacks. The dialog is the only entry point
   // since client (rdkafka) mode was removed.
   const handleProxyStarting = (): void => {
+    // eslint-disable-next-line react-hooks/immutability -- ref is our source of truth for the rAF batcher; state mirrors it
     messagesRef.current = [];
     setMessages([]);
     setSelectedId(null);
@@ -426,6 +535,7 @@ function App(): JSX.Element {
     void invoke("clear_capture").catch((err: unknown) => {
       console.error("clear failed", err);
     });
+    // eslint-disable-next-line react-hooks/immutability -- see handleProxyStarting
     messagesRef.current = [];
     setMessages([]);
     setProtoFrames([]);
@@ -618,6 +728,11 @@ function App(): JSX.Element {
         onOpenSnippets={() => {
           setSnippetsOpen(true);
         }}
+        onOpenMcp={() => {
+          setMcpOpen(true);
+        }}
+        paused={paused}
+        onTogglePaused={toggleUiPaused}
       />
       <main className="layout">
         <div className="layout__main">
@@ -668,12 +783,8 @@ function App(): JSX.Element {
           ) : tab === "messages" ? (
             <div
               ref={panesRef}
-              className="layout__panes"
-              style={{
-                gridTemplateRows: `${msgSplitTop}fr 6px ${
-                  msgSplitMid - msgSplitTop
-                }fr 6px ${1 - msgSplitMid}fr`,
-              }}
+              className="layout__panes layout__panes--horizontal"
+              style={{ gridTemplateColumns: `${msgSplit}fr 6px ${1 - msgSplit}fr` }}
             >
               <MessageList
                 messages={messages}
@@ -683,17 +794,25 @@ function App(): JSX.Element {
                 onJumpToFetchFrame={handleJumpToFetchFrame}
               />
               <Splitter
-                onResize={(dy) => {
-                  adjustSplit(setMsgSplitTop, dy);
+                orientation="horizontal"
+                onResize={(dx) => {
+                  adjustSplit(setMsgSplit, dx, "x");
                 }}
               />
-              <LayerTree message={selected} onOpenFilterMenu={openFilterMenu} />
-              <Splitter
-                onResize={(dy) => {
-                  adjustSplit(setMsgSplitMid, dy);
+              <div
+                className="layout__msg-detail"
+                style={{
+                  gridTemplateRows: `${msgDetailSplit}fr 6px ${1 - msgDetailSplit}fr`,
                 }}
-              />
-              <HexDump message={selected} />
+              >
+                <LayerTree message={selectedDetail} onOpenFilterMenu={openFilterMenu} />
+                <Splitter
+                  onResize={(dy) => {
+                    adjustSplit(setMsgDetailSplit, dy);
+                  }}
+                />
+                <HexDump message={selectedDetail} />
+              </div>
             </div>
           ) : (
             <div
@@ -736,6 +855,13 @@ function App(): JSX.Element {
           listenAddr={connection.proxyStatus.listenAddr}
           onClose={() => {
             setSnippetsOpen(false);
+          }}
+        />
+      ) : null}
+      {mcpOpen ? (
+        <McpModal
+          onClose={() => {
+            setMcpOpen(false);
           }}
         />
       ) : null}

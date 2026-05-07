@@ -1,4 +1,6 @@
 import type { JSX } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { formatBytes } from "../lib/formatBytes";
 import type { CaptureStats, ConnectionState, ProxyStatusSummary } from "../types";
 
 interface Props {
@@ -58,45 +60,78 @@ export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
         ·
       </span>
       <span className="statusbar__group">{brokers.toLocaleString()} brokers</span>
+      {(() => {
+        // Buffer fill — only surface when it's actually getting full.
+        // Below threshold the bar would just show "0%" forever, which
+        // is noise. The drops chip already signals overflow when it
+        // matters; this is the early warning.
+        const msgFill = stats.bufferCapacity > 0 ? stats.inBuffer / stats.bufferCapacity : 0;
+        const byteFill =
+          stats.bufferByteCapacity > 0 ? stats.bufferBytes / stats.bufferByteCapacity : 0;
+        const fill = Math.max(msgFill, byteFill);
+        if (fill < 0.25) {
+          return null;
+        }
+        const pct = Math.round(fill * 100);
+        const danger = fill >= 0.9;
+        const warn = !danger && fill >= 0.75;
+        return (
+          <>
+            <span className="statusbar__sep" aria-hidden="true">
+              ·
+            </span>
+            <span
+              className={
+                danger
+                  ? "statusbar__group statusbar__group--danger"
+                  : warn
+                    ? "statusbar__group statusbar__group--warn"
+                    : "statusbar__group"
+              }
+              title={`Long-term capture buffer — ${stats.inBuffer.toLocaleString()} / ${stats.bufferCapacity.toLocaleString()} messages, ${formatBytes(stats.bufferBytes)} / ${formatBytes(stats.bufferByteCapacity, 0)}. This is the depth available to filters: a query (e.g. \`topic == "rare-topic"\`) scans the whole buffer, not just the 5,000 rows currently visible. At 100% the oldest captured messages are evicted to make room. Kafka traffic itself is unaffected — TCP forwarding is independent of the inspection buffer.`}
+            >
+              buf {pct}%
+            </span>
+          </>
+        );
+      })()}
+      {stats.throughputPerSec >= 1 ? (
+        <>
+          <span className="statusbar__sep" aria-hidden="true">
+            ·
+          </span>
+          <span
+            className="statusbar__group"
+            title={`${stats.throughputPerSec.toFixed(1)} msg/s (last tick)`}
+          >
+            {Math.round(stats.throughputPerSec).toLocaleString()} msg/s
+          </span>
+        </>
+      ) : null}
+      <span className="statusbar__spacer" />
+      <button
+        type="button"
+        className="statusbar__link"
+        title="Email feedback to the author"
+        onClick={() => {
+          void openUrl("mailto:stephane@conduktor.io?subject=Kapture%20feedback");
+        }}
+      >
+        feedback
+      </button>
       <span className="statusbar__sep" aria-hidden="true">
         ·
       </span>
-      <span className="statusbar__group" title="In-buffer / capacity (messages)">
-        {abbrev(stats.inBuffer)} / {abbrev(stats.bufferCapacity)}
-      </span>
-      {stats.throughputPerSec > 0 ? (
-        <>
-          <span className="statusbar__sep" aria-hidden="true">
-            ·
-          </span>
-          <span className="statusbar__group">{stats.throughputPerSec.toLocaleString()} msg/s</span>
-        </>
-      ) : null}
-      {stats.drops > 0 ? (
-        <>
-          <span className="statusbar__sep" aria-hidden="true">
-            ·
-          </span>
-          <span className="statusbar__group statusbar__group--danger">
-            {stats.drops.toLocaleString()} drops
-          </span>
-        </>
-      ) : null}
+      <button
+        type="button"
+        className="statusbar__link"
+        title="Open an issue on GitHub"
+        onClick={() => {
+          void openUrl("https://github.com/sderosiaux/kapture/issues");
+        }}
+      >
+        github
+      </button>
     </footer>
   );
-}
-
-/** Compact integer formatter: 1234 → "1.2k", 1_500_000 → "1.5M". Bare
- * integers under 1k stay as-is to avoid stripping precision from small
- * counts. */
-function abbrev(n: number): string {
-  if (n < 1000) {
-    return n.toLocaleString();
-  }
-  if (n < 1_000_000) {
-    const v = n / 1000;
-    return `${v.toFixed(v < 10 ? 1 : 0)}k`;
-  }
-  const v = n / 1_000_000;
-  return `${v.toFixed(v < 10 ? 1 : 0)}M`;
 }

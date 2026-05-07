@@ -575,6 +575,7 @@ mod tests {
             id: "id".into(),
             timestamp: "2026-05-05T12:00:00Z".into(),
             topic: "orders.raw".into(),
+            topic_id: None,
             partition: 3,
             offset: 1042,
             key: Some("u-42".into()),

@@ -37,6 +37,11 @@ use crate::proxy_topic_ids::TopicIdMap;
 #[derive(Debug, Clone)]
 pub struct ExtractedRecord {
     pub topic: String,
+    /// KIP-516 topic UUID. `None` on v0-12 wire formats that didn't
+    /// carry one, or when the wire field was nil. Surfaced in the UI
+    /// envelope so users can correlate Produce/Fetch frames against the
+    /// `topic_id` `KRaft` uses internally.
+    pub topic_id: Option<String>,
     pub partition: i32,
     /// `-1` for Produce-side records — the broker assigns it.
     pub offset: i64,
@@ -62,12 +67,23 @@ pub struct ExtractedRecord {
 /// record out. Returns an empty `Vec` on any parse / decode failure —
 /// we never want a malformed Produce frame to bubble up and kill the
 /// proxy pump.
+///
+/// `topic_ids` is consulted on Produce v13+ where the wire field shifted
+/// from `Name` (string) to `TopicId` (UUID) per KIP-516 phase 2.
 #[must_use]
-pub fn extract_from_produce_request(version: i16, frame: &[u8]) -> Vec<ExtractedRecord> {
-    extract_from_produce_request_inner(version, frame).unwrap_or_default()
+pub fn extract_from_produce_request(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> Vec<ExtractedRecord> {
+    extract_from_produce_request_inner(version, frame, topic_ids).unwrap_or_default()
 }
 
-fn extract_from_produce_request_inner(version: i16, frame: &[u8]) -> Option<Vec<ExtractedRecord>> {
+fn extract_from_produce_request_inner(
+    version: i16,
+    frame: &[u8],
+    topic_ids: &TopicIdMap,
+) -> Option<Vec<ExtractedRecord>> {
     let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ProduceRequest::header_version(version);
     let _hdr = RequestHeader::decode(&mut buf, header_version).ok()?;
@@ -75,13 +91,20 @@ fn extract_from_produce_request_inner(version: i16, frame: &[u8]) -> Option<Vec<
 
     let mut out = Vec::new();
     for topic in &req.topic_data {
-        let topic_name = topic.name.0.to_string();
+        let topic_name = resolve_topic_name(
+            version,
+            &topic.name.0.to_string(),
+            topic.topic_id,
+            topic_ids,
+        );
+        let topic_id_str = uuid_or_none(topic.topic_id);
         for partition in &topic.partition_data {
             let Some(records_bytes) = &partition.records else {
                 continue;
             };
             push_records(
                 &topic_name,
+                topic_id_str.as_deref(),
                 partition.index,
                 records_bytes.clone(),
                 &mut out,
@@ -143,6 +166,7 @@ fn extract_from_fetch_response_inner(
             topic.topic_id,
             topic_ids,
         );
+        let topic_id_str = uuid_or_none(topic.topic_id);
         for partition in &topic.partitions {
             let Some(records_bytes) = &partition.records else {
                 continue;
@@ -152,6 +176,7 @@ fn extract_from_fetch_response_inner(
             }
             push_records_fetch(
                 &topic_name,
+                topic_id_str.as_deref(),
                 partition.partition_index,
                 records_bytes.clone(),
                 version,
@@ -188,6 +213,17 @@ fn resolve_topic_name(
     format!("[topic-id {topic_id}]")
 }
 
+/// Render a UUID for the UI envelope. `None` for the nil UUID
+/// (placeholder used by v0-12 wire formats that don't carry one), so
+/// the `LayerTree` can hide the field instead of showing all-zeros.
+fn uuid_or_none(topic_id: Uuid) -> Option<String> {
+    if topic_id.is_nil() {
+        None
+    } else {
+        Some(topic_id.to_string())
+    }
+}
+
 /// Decode every `RecordBatch` in `records_bytes` and push the
 /// flattened `ExtractedRecord` list onto `out`. Decode failures here
 /// are swallowed — the wire bytes are always forwarded verbatim by the
@@ -196,7 +232,13 @@ fn resolve_topic_name(
 ///
 /// Produce-side variant: `fetch_*` fields are all `None` because there
 /// is no Fetch frame to backlink to.
-fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec<ExtractedRecord>) {
+fn push_records(
+    topic: &str,
+    topic_id: Option<&str>,
+    partition: i32,
+    records_bytes: Bytes,
+    out: &mut Vec<ExtractedRecord>,
+) {
     let mut buf = records_bytes;
     let Ok(batches) = RecordBatchDecoder::decode_all(&mut buf) else {
         return;
@@ -210,6 +252,7 @@ fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec
                 .collect();
             out.push(ExtractedRecord {
                 topic: topic.to_owned(),
+                topic_id: topic_id.map(ToOwned::to_owned),
                 partition,
                 offset: rec.offset,
                 timestamp_ms: rec.timestamp,
@@ -226,8 +269,10 @@ fn push_records(topic: &str, partition: i32, records_bytes: Bytes, out: &mut Vec
 
 /// Fetch-side variant: stamps the originating Fetch frame's coordinates
 /// onto every record so the UI can backlink Messages → Protocol.
+#[allow(clippy::too_many_arguments)]
 fn push_records_fetch(
     topic: &str,
+    topic_id: Option<&str>,
     partition: i32,
     records_bytes: Bytes,
     fetch_api_version: i16,
@@ -248,6 +293,7 @@ fn push_records_fetch(
                 .collect();
             out.push(ExtractedRecord {
                 topic: topic.to_owned(),
+                topic_id: topic_id.map(ToOwned::to_owned),
                 partition,
                 offset: rec.offset,
                 timestamp_ms: rec.timestamp,
@@ -333,6 +379,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         id: Uuid::new_v4().to_string(),
         timestamp,
         topic: rec.topic,
+        topic_id: rec.topic_id,
         partition: rec.partition,
         offset: rec.offset,
         key,
@@ -504,7 +551,8 @@ mod tests {
         let bytes =
             build_produce_request_bytes(9, "records-test", &[(0, p0_records), (1, p1_records)]);
 
-        let extracted = extract_from_produce_request(9, &bytes);
+        let topic_ids = TopicIdMap::new();
+        let extracted = extract_from_produce_request(9, &bytes, &topic_ids);
         assert_eq!(extracted.len(), 6);
         let p0: Vec<_> = extracted.iter().filter(|r| r.partition == 0).collect();
         let p1: Vec<_> = extracted.iter().filter(|r| r.partition == 1).collect();
@@ -603,7 +651,8 @@ mod tests {
         header.encode(&mut out, header_version).unwrap();
         req.encode(&mut out, version).unwrap();
 
-        let extracted = extract_from_produce_request(version, &out);
+        let topic_ids = TopicIdMap::new();
+        let extracted = extract_from_produce_request(version, &out, &topic_ids);
         assert!(extracted.is_empty());
     }
 
@@ -611,9 +660,9 @@ mod tests {
     fn extract_garbage_returns_empty() {
         // Must not panic on bogus input.
         let topic_ids = TopicIdMap::new();
-        assert!(extract_from_produce_request(9, &[0u8; 4]).is_empty());
+        assert!(extract_from_produce_request(9, &[0u8; 4], &topic_ids).is_empty());
         assert!(extract_from_fetch_response(13, &[0u8; 4], &topic_ids, 0, 0).is_empty());
-        assert!(extract_from_produce_request(9, &[]).is_empty());
+        assert!(extract_from_produce_request(9, &[], &topic_ids).is_empty());
         assert!(extract_from_fetch_response(13, &[], &topic_ids, 0, 0).is_empty());
     }
 
@@ -625,6 +674,7 @@ mod tests {
         ];
         let rec = ExtractedRecord {
             topic: "t".to_owned(),
+            topic_id: None,
             partition: 7,
             offset: 42,
             timestamp_ms: 1_700_000_000_000,
@@ -655,6 +705,7 @@ mod tests {
     fn extracted_to_captured_populates_fetch_backlink() {
         let rec = ExtractedRecord {
             topic: "t".to_owned(),
+            topic_id: None,
             partition: 0,
             offset: 1,
             timestamp_ms: 0,

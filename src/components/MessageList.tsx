@@ -10,6 +10,7 @@ import {
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
 import type { FilterTarget } from "./FilterMenu";
+import { formatBytes } from "../lib/formatBytes";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
 type JumpToFetchFrame = (connectionId: number, corrId: number) => void;
@@ -233,7 +234,12 @@ function MessageRow({
           message.schemaName,
         )
       )}
-      <span className="msglist__col msglist__col--size">{message.sizeBytes}b</span>
+      <span
+        className="msglist__col msglist__col--size"
+        title={`${message.sizeBytes.toLocaleString()} bytes`}
+      >
+        {formatBytes(message.sizeBytes)}
+      </span>
       {message.fetch === null ? (
         <span className="msglist__col msglist__col--fetch">
           <em className="muted">—</em>

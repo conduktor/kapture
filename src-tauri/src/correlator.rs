@@ -30,8 +30,10 @@ use crate::proto_event::{ProtoDirection, ProtoEvent};
 
 const FETCH_API_KEY: i32 = 1;
 /// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
-/// the serialized JSON; 4000 entries ≈ 8 MB at the high water mark.
-const PROTO_FRAMES_CAPACITY: usize = 4000;
+/// the serialized JSON; 5000 entries ≈ 10 MB at the high water mark.
+/// Aligned with the Messages tab UI cap so both tabs surface a
+/// consistent recent-history depth.
+const PROTO_FRAMES_CAPACITY: usize = 5000;
 /// We trim in chunks to avoid per-event O(n) shift cost on the `VecDeque`.
 const PROTO_FRAMES_TRIM_HEADROOM: usize = 256;
 

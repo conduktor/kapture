@@ -13,6 +13,15 @@ interface Props {
   onEdit: () => void;
   /** Open the Snippets modal. Button is only rendered when connected. */
   onOpenSnippets: () => void;
+  /** Open the MCP integration modal. Always available — surfaces the
+   * local MCP URL + bearer token regardless of proxy state. */
+  onOpenMcp: () => void;
+  /** UI-paused = ring buffer keeps capturing, but Messages and
+   *  Protocol lists stop refreshing so the user can investigate
+   *  without scroll-away. Distinct from Stop (which would tear down
+   *  the proxy and disconnect clients). */
+  paused: boolean;
+  onTogglePaused: (next: boolean) => void;
 }
 
 export function TopBar({
@@ -26,6 +35,9 @@ export function TopBar({
   proxyStatus,
   onEdit,
   onOpenSnippets,
+  onOpenMcp,
+  paused,
+  onTogglePaused,
 }: Props): JSX.Element {
   // Cluster pill: show `{listenAddr} → {upstream}` when the listener
   // is up; "not connected" when nothing's running. "proxy" wording is
@@ -67,15 +79,40 @@ export function TopBar({
         {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
       </div>
       <div className="topbar__controls">
+        <button
+          type="button"
+          className="btn btn--ghost topbar__mcp"
+          onClick={onOpenMcp}
+          title="Wire Kapture into Claude Code, Cursor, etc."
+        >
+          MCP
+        </button>
         {capturing ? (
-          <button
-            type="button"
-            className="btn btn--ghost topbar__snippets"
-            onClick={onOpenSnippets}
-            title="Show test commands (kcat / kafka CLI)"
-          >
-            <span aria-hidden="true">{">_"}</span> Snippets
-          </button>
+          <>
+            <button
+              type="button"
+              className={paused ? "btn btn--paused" : "btn btn--ghost"}
+              onClick={() => {
+                onTogglePaused(!paused);
+              }}
+              aria-pressed={paused}
+              title={
+                paused
+                  ? "UI paused — ring buffer keeps capturing. Click to resume + sync the lists."
+                  : "Freeze the live lists so you can investigate without scroll-away. Capture and forwarding continue."
+              }
+            >
+              {paused ? "Resume UI" : "Pause UI"}
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost topbar__snippets"
+              onClick={onOpenSnippets}
+              title="Show test commands (kcat / kafka CLI)"
+            >
+              <span aria-hidden="true">{">_"}</span> Snippets
+            </button>
+          </>
         ) : null}
         <button
           type="button"
