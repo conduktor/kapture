@@ -182,6 +182,8 @@ mod tests {
             schema_name: None,
             schema_id: None,
             size_bytes: 0,
+            key_size: 0,
+            value_size: 0,
             headers: vec![],
             payload: DecodedValue::Bytes {
                 hex: String::new(),

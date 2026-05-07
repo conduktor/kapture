@@ -482,6 +482,8 @@ fn resolve_envelope<'a>(rest: &[String], message: &'a CapturedMessage) -> Value<
         "offset" => Value::Number(message.offset as f64),
         "timestamp" => Value::String(message.timestamp.as_str()),
         "size" => Value::Number(message.size_bytes as f64),
+        "key_size" => Value::Number(message.key_size as f64),
+        "value_size" => Value::Number(message.value_size as f64),
         "key" => match &message.key {
             Some(k) => Value::String(k.as_str()),
             None => Value::Null,
@@ -582,6 +584,8 @@ mod tests {
             schema_name: Some("OrderCreated".into()),
             schema_id: Some(17),
             size_bytes: 312,
+            key_size: 4,
+            value_size: 308,
             headers: vec![
                 KafkaHeader {
                     key: "tenant".into(),

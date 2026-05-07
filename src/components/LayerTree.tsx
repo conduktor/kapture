@@ -6,6 +6,14 @@ import type { FilterTarget } from "./FilterMenu";
 
 type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
 
+// Below 1 KiB `formatBytes` already prints the exact byte count
+// ("25 B"), so a `(25 B)` parenthetical is just noise. Above the
+// threshold the formatted value is rounded, so the raw count is
+// useful disambiguation.
+function sizeWithRaw(n: number): string {
+  return n < 1024 ? formatBytes(n) : `${formatBytes(n)} (${n.toLocaleString()} B)`;
+}
+
 interface Props {
   /** Full message body — lazy-fetched on selection. `null` while
    *  loading or when no row is selected. */
@@ -84,10 +92,28 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
         />
         <Field
           name="size"
-          value={formatBytes(message.sizeBytes)}
+          value={sizeWithRaw(message.sizeBytes)}
           target={{
             path: "envelope.size",
             literal: { kind: "number", value: String(message.sizeBytes) },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
+        <Field
+          name="key size"
+          value={sizeWithRaw(message.keySize)}
+          target={{
+            path: "envelope.key_size",
+            literal: { kind: "number", value: String(message.keySize) },
+          }}
+          onOpenFilterMenu={onOpenFilterMenu}
+        />
+        <Field
+          name="value size"
+          value={sizeWithRaw(message.valueSize)}
+          target={{
+            path: "envelope.value_size",
+            literal: { kind: "number", value: String(message.valueSize) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
         />

@@ -91,7 +91,13 @@ export interface KafkaMessage {
   key: string | null;
   schemaName: string | null;
   schemaId: number | null;
+  /** Total of `keySize` + `valueSize` (the user-meaningful bytes).
+   *  Wire framing (varints, attrs, header k/v lengths) is not counted. */
   sizeBytes: number;
+  /** Raw bytes in the record key (0 when null/absent). */
+  keySize: number;
+  /** Raw bytes in the record value (0 when null/absent). */
+  valueSize: number;
   /** Number of headers; full keys+values are on `KafkaMessageDetail`. */
   headersCount: number;
   /** Originating Fetch frame for backlinks; null on extraction failure. */
@@ -122,6 +128,8 @@ export interface KafkaMessageDetail {
   schemaName: string | null;
   schemaId: number | null;
   sizeBytes: number;
+  keySize: number;
+  valueSize: number;
   headers: KafkaHeader[];
   payload: DecodedValue;
   rawHex: string;

@@ -320,7 +320,9 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         .as_deref()
         .and_then(|bytes| std::str::from_utf8(bytes).ok().map(ToOwned::to_owned));
     let raw_hex = value_bytes.map_or_else(String::new, render_hex);
-    let size_bytes = value_bytes.map_or(0, <[u8]>::len);
+    let key_size = rec.key.as_deref().map_or(0, <[u8]>::len);
+    let value_size = value_bytes.map_or(0, <[u8]>::len);
+    let size_bytes = key_size + value_size;
     let timestamp = if rec.timestamp_ms > 0 {
         Utc.timestamp_millis_opt(rec.timestamp_ms)
             .single()
@@ -386,6 +388,8 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         schema_name: None,
         schema_id: None,
         size_bytes,
+        key_size,
+        value_size,
         headers,
         payload: decode_payload(value_bytes),
         raw_hex,
@@ -690,7 +694,10 @@ mod tests {
         assert_eq!(captured.partition, 7);
         assert_eq!(captured.offset, 42);
         assert_eq!(captured.key.as_deref(), Some("my-key"));
-        assert_eq!(captured.size_bytes, 7);
+        // size_bytes = key_size + value_size; "my-key" (6) + value (7) = 13.
+        assert_eq!(captured.key_size, 6);
+        assert_eq!(captured.value_size, 7);
+        assert_eq!(captured.size_bytes, 13);
         assert_eq!(captured.headers.len(), 2);
         assert_eq!(captured.headers[0].key, "h1");
         assert_eq!(captured.headers[0].value, "v1");

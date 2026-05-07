@@ -25,7 +25,17 @@ pub struct CapturedMessage {
     pub key: Option<String>,
     pub schema_name: Option<String>,
     pub schema_id: Option<u32>,
+    /// Total of `key_size` + `value_size`. The label "size" historically
+    /// meant just the value bytes; we keep the field name for backward
+    /// compatibility with downstream consumers (filter DSL, MCP) but
+    /// redefine it here to "what the user thinks of as message size" =
+    /// key + value. Wire framing (varints, attrs, header k/v lengths)
+    /// is not included — useful but rarely actionable in debug.
     pub size_bytes: usize,
+    /// Raw bytes in the record key (0 when null/absent).
+    pub key_size: usize,
+    /// Raw bytes in the record value (0 when null/absent).
+    pub value_size: usize,
     pub headers: Vec<KafkaHeader>,
     pub payload: DecodedValue,
     /// Raw bytes rendered as space-separated hex.
@@ -66,6 +76,8 @@ pub struct MessageSummary {
     pub schema_name: Option<String>,
     pub schema_id: Option<u32>,
     pub size_bytes: usize,
+    pub key_size: usize,
+    pub value_size: usize,
     /// Number of headers; the keys + values come back via inspect.
     pub headers_count: usize,
     pub fetch: Option<FetchMetadata>,
@@ -102,6 +114,8 @@ impl MessageSummary {
             schema_name: m.schema_name.clone(),
             schema_id: m.schema_id,
             size_bytes: m.size_bytes,
+            key_size: m.key_size,
+            value_size: m.value_size,
             headers_count: m.headers.len(),
             fetch: m.fetch.clone(),
             connection_id: m.connection_id,
