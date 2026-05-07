@@ -3,10 +3,14 @@
 //! The schema is parsed once per id (cached upstream by the schema
 //! registry client), then reused across messages.
 //!
-//! Currently unused at runtime — paired with `schema_registry`. Kept
-//! for proxy-mode wiring once the proxy exposes Schema-Registry-aware
-//! record decoding.
-#![allow(dead_code)]
+//! Wired by `schema_resolver.rs`: when the proxy session has a
+//! Schema Registry URL configured, the resolver fetches the Avro
+//! schema for each record's id, parses it via `parse_schema`, and
+//! decodes the post-envelope value bytes through `decode`. The
+//! resulting `DecodedValue` tree replaces the raw-bytes payload on
+//! the captured message so the inspector renders a JSON-ish view
+//! instead of hex.
+#![allow(dead_code)] // SchemaKind variants we don't decode (Protobuf path) live next door
 
 use apache_avro::types::Value as AvroValue;
 use apache_avro::Schema;

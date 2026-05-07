@@ -71,6 +71,11 @@ export function useSchemaResolvedListener(args: Args): void {
               ...detail,
               schemaName: patch.schemaName,
               schemaKind: patch.schemaKind,
+              // Only overwrite payload when the resolver actually
+              // decoded it. On UNRESOLVED / NO_REGISTRY / Protobuf
+              // paths the patch's payload is null — keep the raw-
+              // bytes view we already have.
+              payload: patch.payload ?? detail.payload,
             });
           }
         }

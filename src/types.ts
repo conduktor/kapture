@@ -36,6 +36,11 @@ export interface SchemaResolvedPatch {
   id: string;
   schemaName: string | null;
   schemaKind: string | null;
+  /** Decoded payload tree once the resolver has parsed the value
+   *  bytes against the schema (Avro / JSON-Schema). `null` when
+   *  decoding wasn't attempted (Protobuf, hex-parse failure) or
+   *  when only the schema metadata changed. */
+  payload: DecodedValue | null;
 }
 
 /**

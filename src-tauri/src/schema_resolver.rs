@@ -23,19 +23,29 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
+use crate::avro;
+use crate::decode::{decode_payload, DecodedValue};
 use crate::ring_buffer::RingBuffer;
-use crate::schema_registry::SchemaRegistryClient;
+use crate::schema_registry::{ResolvedSchema, SchemaKind, SchemaRegistryClient};
 
 /// One row of `kapture:message-schema-resolved`. Sent batched in a
 /// `Vec` so the UI gets one rAF-friendly emit per `FLUSH_INTERVAL`
 /// (or sooner when the buffer fills) even when many records resolve
 /// in tight succession.
+///
+/// `payload` is `Some` only when the resolver successfully decoded
+/// the value bytes against the resolved schema (Avro / JSON-Schema).
+/// The frontend hook merges this into a currently-selected detail
+/// so the user sees the structured tree without a re-fetch.
+/// Subsequent `inspect_message_by_id` calls already see the patched
+/// payload because the resolver writes it back into the ring buffer.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SchemaResolvedPatch {
     pub id: String,
     pub schema_name: Option<String>,
     pub schema_kind: Option<String>,
+    pub payload: Option<DecodedValue>,
 }
 
 const FAIL_TTL: Duration = Duration::from_secs(300);
@@ -102,14 +112,26 @@ async fn handle_one(
         Ok(resolved) => {
             let name = resolved.subject.clone();
             let kind = resolved.kind.label().to_owned();
-            if buffer.update_message_with(&message_id, |m| {
+            // Decode the value bytes against the now-known schema.
+            // Best-effort: a failure leaves the original bytes view
+            // in place. We hold the write lock for both the patch
+            // and the read of `raw_hex` so a concurrent eviction
+            // doesn't slice the bytes from under us.
+            let mut decoded_payload: Option<DecodedValue> = None;
+            let patched = buffer.update_message_with(&message_id, |m| {
                 m.schema_name.clone_from(&name);
                 m.schema_kind = Some(kind.clone());
-            }) {
+                if let Some(d) = decode_with_schema(&resolved, &m.raw_hex) {
+                    m.payload = d.clone();
+                    decoded_payload = Some(d);
+                }
+            });
+            if patched {
                 pending.push(SchemaResolvedPatch {
                     id: message_id,
                     schema_name: name,
                     schema_kind: Some(kind),
+                    payload: decoded_payload,
                 });
             }
         }
@@ -119,6 +141,39 @@ async fn handle_one(
             push_unresolved(buffer, pending, message_id);
         }
     }
+}
+
+/// Strip the 5-byte Confluent envelope and decode the remaining
+/// bytes against the resolved schema. Returns `None` on hex-parse
+/// failure (the stored `raw_hex` was unparseable), envelope-too-short,
+/// schema-parse failure, or an unsupported kind (Protobuf — we'd
+/// need the descriptor, not just the schema text).
+fn decode_with_schema(resolved: &ResolvedSchema, raw_hex: &str) -> Option<DecodedValue> {
+    let bytes = parse_render_hex(raw_hex)?;
+    if bytes.len() <= 5 {
+        return None;
+    }
+    let body = &bytes[5..];
+    match resolved.kind {
+        SchemaKind::Avro => {
+            let schema = avro::parse_schema(&resolved.raw).ok()?;
+            avro::decode(&schema, body).ok()
+        }
+        SchemaKind::JsonSchema => {
+            // The body is plain JSON for JSON-Schema-encoded records;
+            // `decode_payload` already handles the JSON-or-bytes
+            // dispatch, including nested objects / arrays.
+            Some(decode_payload(Some(body)))
+        }
+        SchemaKind::Protobuf => None,
+    }
+}
+
+/// Parse the space-separated hex stored on `CapturedMessage.raw_hex`
+/// (output of `decode::render_hex`) back into raw bytes.
+fn parse_render_hex(s: &str) -> Option<Vec<u8>> {
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    hex::decode(&cleaned).ok()
 }
 
 fn push_unresolved(
@@ -133,6 +188,7 @@ fn push_unresolved(
             id: message_id,
             schema_name: None,
             schema_kind: Some(UNRESOLVED_KIND.to_owned()),
+            payload: None,
         });
     }
 }
