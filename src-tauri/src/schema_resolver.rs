@@ -25,8 +25,10 @@ use tauri::{AppHandle, Emitter};
 
 use crate::avro;
 use crate::decode::{decode_payload, DecodedValue};
+use crate::message::CapturedMessage;
 use crate::ring_buffer::RingBuffer;
 use crate::schema_registry::{ResolvedSchema, SchemaKind, SchemaRegistryClient};
+use crate::state::AppState;
 
 /// One row of `kapture:message-schema-resolved`. Sent batched in a
 /// `Vec` so the UI gets one rAF-friendly emit per `FLUSH_INTERVAL`
@@ -112,26 +114,20 @@ async fn handle_one(
         Ok(resolved) => {
             let name = resolved.subject.clone();
             let kind = resolved.kind.label().to_owned();
-            // Decode the value bytes against the now-known schema.
-            // Best-effort: a failure leaves the original bytes view
-            // in place. We hold the write lock for both the patch
-            // and the read of `raw_hex` so a concurrent eviction
-            // doesn't slice the bytes from under us.
-            let mut decoded_payload: Option<DecodedValue> = None;
-            let patched = buffer.update_message_with(&message_id, |m| {
+            // Smart-lazy: only patch the schema metadata (name +
+            // kind) eagerly. Decoding the value bytes happens on
+            // selection (see `decode_on_inspect`) so we avoid the
+            // parse + decode cost on records that never get
+            // inspected — common at >1k msg/s.
+            if buffer.update_message_with(&message_id, |m| {
                 m.schema_name.clone_from(&name);
                 m.schema_kind = Some(kind.clone());
-                if let Some(d) = decode_with_schema(&resolved, &m.raw_hex) {
-                    m.payload = d.clone();
-                    decoded_payload = Some(d);
-                }
-            });
-            if patched {
+            }) {
                 pending.push(SchemaResolvedPatch {
                     id: message_id,
                     schema_name: name,
                     schema_kind: Some(kind),
-                    payload: decoded_payload,
+                    payload: None,
                 });
             }
         }
@@ -141,6 +137,42 @@ async fn handle_one(
             push_unresolved(buffer, pending, message_id);
         }
     }
+}
+
+/// Smart-lazy decode path: called by `inspect_message_by_id` when
+/// the user selects a row. If the record carries a Confluent
+/// envelope and the session has a registry client, fetch the schema
+/// (LRU-cached → typically zero HTTP) and decode the payload bytes.
+/// The decoded tree is written back into the ring buffer so a
+/// re-inspect short-circuits.
+///
+/// Eager decode (every captured record) was the previous design; the
+/// switch to lazy avoids paying parse + decode cost on the >99% of
+/// records that never get inspected. Filter DSL targeting `payload.*`
+/// continues to see the raw-bytes view on un-inspected records — a
+/// rare-enough case to accept the trade-off.
+pub async fn decode_on_inspect(
+    state: &AppState,
+    message: Option<CapturedMessage>,
+) -> Option<CapturedMessage> {
+    let mut message = message?;
+    let Some(schema_id) = message.schema_id else {
+        return Some(message);
+    };
+    if !matches!(message.payload, DecodedValue::Bytes { .. }) {
+        // Already decoded by an earlier inspect — nothing to do.
+        return Some(message);
+    }
+    let Some(client) = state.schema_registry() else {
+        return Some(message);
+    };
+    let resolved = client.fetch(schema_id).await.ok()?;
+    let decoded = decode_with_schema(&resolved, &message.raw_hex)?;
+    state.buffer.update_message_with(&message.id, |stored| {
+        stored.payload = decoded.clone();
+    });
+    message.payload = decoded;
+    Some(message)
 }
 
 /// Strip the 5-byte Confluent envelope and decode the remaining

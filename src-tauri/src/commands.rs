@@ -656,13 +656,18 @@ pub fn snapshot(state: State<'_, AppState>) -> Vec<MessageSummary> {
 /// pause time) is consulted first so a row the user can still see in
 /// the frozen list resolves even after the live ring evicts it.
 #[tauri::command]
-pub fn inspect_message_by_id(state: State<'_, AppState>, id: String) -> Option<CapturedMessage> {
-    if state.is_paused() {
-        if let Some(message) = state.pinned_message(&id) {
-            return Some(message);
-        }
-    }
-    state.buffer.find_by_id(&id)
+pub async fn inspect_message_by_id(
+    state: State<'_, AppState>,
+    id: String,
+) -> std::result::Result<Option<CapturedMessage>, String> {
+    let message = if state.is_paused() {
+        state
+            .pinned_message(&id)
+            .or_else(|| state.buffer.find_by_id(&id))
+    } else {
+        state.buffer.find_by_id(&id)
+    };
+    Ok(crate::schema_resolver::decode_on_inspect(state.inner(), message).await)
 }
 
 #[tauri::command]
