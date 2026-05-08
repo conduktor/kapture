@@ -1,19 +1,17 @@
 import { type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
-import { parseDebug, type DebugNode } from "../lib/debugTree";
 import { formatBytes } from "../lib/formatBytes";
-import type { DecodedFieldTriple, ProtoFilterMode } from "../lib/protoFilter";
+import type { DecodedFieldPair, ProtoFilterMode } from "../lib/protoFilter";
 
 /**
- * Add a path-aware `decodedField` predicate from a clicked decoded
- * leaf. The triple captures the parent struct's name, the field
- * name, and the value — matched against the parsed Debug tree
- * server-side (`matchDebugField`), so a click on
- * `MetadataRequestTopic.name = "orders.avro"` does NOT bleed into
- * a `TopicProduceData.name = "orders.avro"` row even though both
- * Debug outputs contain the substring `name: "orders.avro"`.
+ * Add a `decodedField` predicate from a clicked decoded leaf. The
+ * pair carries the dotted JSON path from the body root to the leaf
+ * (`topic_data.partition_data.records.base_offset`) and the leaf
+ * value — `matchJsonPath` then walks the path strictly so a click
+ * on a nested `name` doesn't match a sibling `name` under a
+ * different parent.
  */
-type AddDecodedFn = (triple: DecodedFieldTriple, mode: ProtoFilterMode) => void;
+type AddDecodedFn = (pair: DecodedFieldPair, mode: ProtoFilterMode) => void;
 
 interface Props {
   frame: ProtoFrameDetail | null;
@@ -28,17 +26,17 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
       </section>
     );
   }
-  // Group hex into 16-byte rows for readability. Phase 2b will replace
-  // this with a typed decode (kafka-protocol crate).
+  // Group hex into 16-byte rows for readability.
   const rows = chunkHex(frame.payloadHex, 16);
+  const decoded = frame.decodedJson;
   return (
     <section className="layers" aria-label="Frame detail">
       <details className="layer" open>
         <summary className="layer__title">frame</summary>
         <div className="layer__body">
           <Field name="direction" value={frame.direction} />
-          <Field name="api" value={`${frame.apiName} (${frame.apiKey})`} />
-          <Field name="api_version" value={`v${frame.apiVersion}`} />
+          <Field name="api" value={`${frame.apiName} (${String(frame.apiKey)})`} />
+          <Field name="api_version" value={`v${String(frame.apiVersion)}`} />
           <Field name="connection_id" value={String(frame.connectionId)} />
           <Field name="corr_id" value={String(frame.corrId)} />
           <Field name="size (wire)" value={formatBytes(frame.size)} />
@@ -56,15 +54,18 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {frame.decoded ? (
+      {decoded !== undefined && decoded !== null ? (
         <DecodedTree
-          decoded={frame.decoded}
+          decoded={decoded}
           apiName={frame.apiName}
           {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
         />
       ) : null}
       {rows.length > 0 ? (
-        <details className="layer" {...(frame.decoded ? {} : { open: true })}>
+        <details
+          className="layer"
+          {...(decoded !== undefined && decoded !== null ? {} : { open: true })}
+        >
           <summary className="layer__title">payload — hex view</summary>
           <div className="layer__body">
             <pre className="proto-hex">
@@ -87,24 +88,23 @@ function Field({
   name,
   value,
   onAddDecodedFilter,
-  triple,
+  pair,
 }: {
   name: string;
   value: string;
   /** When set, value cell renders a hover-revealed funnel that
-   *  emits the path-aware `decodedField` predicate. */
+   *  emits the `decodedField` predicate. */
   onAddDecodedFilter?: AddDecodedFn;
-  /** Triple captured by the recursive walker — `null` when the
-   *  enclosing context isn't a struct (e.g. plain frame metadata
-   *  rows from the `frame` block, which have no Rust-side
-   *  parent struct to anchor against). */
-  triple?: DecodedFieldTriple | null;
+  /** Pair captured by the JSON walker. `null` when the leaf isn't
+   *  filterable (frame metadata rows, array indices, complex
+   *  values). */
+  pair?: DecodedFieldPair | null;
 }): JSX.Element {
   return (
     <div className="field">
       <span className="field__name">{name}</span>
-      {onAddDecodedFilter && triple ? (
-        <FilterableValue value={value} onAdd={onAddDecodedFilter} triple={triple} />
+      {onAddDecodedFilter && pair ? (
+        <FilterableValue value={value} onAdd={onAddDecodedFilter} pair={pair} />
       ) : (
         <span className="field__value">{value}</span>
       )}
@@ -114,32 +114,23 @@ function Field({
 
 /**
  * Hover-revealed filter affordance for a decoded leaf value. Click ⊕
- * adds an include predicate, alt-click adds an exclude. The actual
- * substring matched against the frame's `decoded` Debug output is
- * `"<fieldName>: <renderedValue>"` — that's exactly what the Rust
- * `{:#?}` Debug formatter emits for a struct field, so the substring
- * is reliable enough without parsing.
+ * adds an include predicate, alt-click adds an exclude.
  */
 function FilterableValue({
   value,
   onAdd,
-  triple,
+  pair,
 }: {
   value: string;
   onAdd: AddDecodedFn;
-  triple: DecodedFieldTriple;
+  pair: DecodedFieldPair;
 }): JSX.Element {
   const onClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    onAdd(triple, event.altKey ? "exclude" : "include");
+    onAdd(pair, event.altKey ? "exclude" : "include");
   };
   return (
-    // Reuse the canonical funnel chrome from `<FilterableField>` —
-    // naked SVG, hover-revealed, accent on hover. Behaviour is
-    // distinct from the popover-based path (substring decoded
-    // filter, alt/option-click = exclude) so we can't share the
-    // component itself yet, but the visual stays unified.
     <span className="filterable-field filterable-field--filterable field__value">
       <span className="filterable-field__content">{value}</span>
       <span
@@ -147,13 +138,13 @@ function FilterableValue({
         role="button"
         tabIndex={-1}
         aria-label="Filter on this field value"
-        title={`Filter on ${triple.struct}.${triple.field} == "${triple.value}" • Alt/Option-click to exclude`}
+        title={`Filter on ${pair.path} == "${pair.value}" • Alt/Option-click to exclude`}
         onClick={onClick}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             event.stopPropagation();
-            onAdd(triple, event.altKey ? "exclude" : "include");
+            onAdd(pair, event.altKey ? "exclude" : "include");
           }
         }}
       >
@@ -176,135 +167,114 @@ function DecodedTree({
   apiName,
   onAddDecodedFilter,
 }: {
-  decoded: string;
+  decoded: unknown;
   apiName: string;
   onAddDecodedFilter?: AddDecodedFn;
 }): JSX.Element {
-  const tree = parseDebug(decoded);
-  if (!tree) {
-    // Parser bailed out: surface the raw Debug string rather than nothing.
-    // This shouldn't happen for derive(Debug) output but the kafka-protocol
-    // crate may grow a hand-rolled Debug impl that breaks the grammar.
-    return (
-      <details className="layer" open>
-        <summary className="layer__title">decoded ({apiName})</summary>
-        <div className="layer__body">
-          <pre className="proto-decoded">{decoded}</pre>
-        </div>
-      </details>
+  // The layer already provides the top-level disclosure (`apiName`).
+  // The root JSON value is almost always the body's root object — we
+  // inline its fields directly under the layer instead of letting
+  // `JsonNodeView` build a second `<details>` with an empty summary
+  // (which collapses into a stray empty row when the layer is closed
+  // and re-opened).
+  let body: JSX.Element;
+  if (decoded !== null && typeof decoded === "object" && !Array.isArray(decoded)) {
+    const entries = Object.entries(decoded as Record<string, unknown>);
+    body =
+      entries.length === 0 ? (
+        <span className="muted">empty</span>
+      ) : (
+        <>
+          {entries.map(([key, value]) => (
+            <JsonNodeView
+              key={key}
+              node={value}
+              name={key}
+              path={[key]}
+              {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+            />
+          ))}
+        </>
+      );
+  } else {
+    body = (
+      <JsonNodeView
+        node={decoded}
+        path={[]}
+        {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+      />
     );
   }
-  // Top-level kafka-protocol message root is always a struct; inline
-  // its fields under the layer title rather than render a degenerate
-  // empty-name row carrying just "MetadataRequest" — the layer title
-  // already names the API.
   return (
     <details className="layer" open>
-      <summary className="layer__title">
-        {tree.kind === "struct" && tree.name !== "" ? tree.name : apiName}
-      </summary>
-      <div className="layer__body proto-decoded-tree">
-        {tree.kind === "struct" ? (
-          tree.fields.length === 0 ? (
-            <span className="muted">empty</span>
-          ) : (
-            tree.fields.map((f, i) => (
-              <DebugNodeView
-                key={i}
-                node={f.value}
-                name={f.name}
-                parentStruct={tree.name}
-                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-              />
-            ))
-          )
-        ) : (
-          <DebugNodeView
-            node={tree}
-            parentStruct={undefined}
-            {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-          />
-        )}
-      </div>
+      <summary className="layer__title">{apiName}</summary>
+      <div className="layer__body proto-decoded-tree">{body}</div>
     </details>
   );
 }
 
 /**
- * Render a parsed Debug tree as a flat indented tree — same visual
- * vocabulary as the `frame` block (`name | value` rows). Compound
- * nodes (struct, seq, tuple) get a chevron disclosure but no boxed
- * card around their children, so nesting reads as indentation rather
- * than a stack of nested containers.
+ * Render a typed JSON value. Compound nodes (objects, arrays) get a
+ * chevron disclosure; leaves render as `name | value` rows that can
+ * carry the filter affordance — clicking the funnel emits a
+ * `field "<name>" == "<value>"` predicate which the matcher walks
+ * the body for, anywhere in the tree.
  */
-function DebugNodeView({
+function JsonNodeView({
   node,
   name,
+  path,
   onAddDecodedFilter,
-  parentStruct,
 }: {
-  node: DebugNode;
-  name?: string;
-  onAddDecodedFilter?: AddDecodedFn;
-  /** Name of the enclosing `struct` node, threaded down so leaf
-   *  fields can build a path-aware `decodedField` predicate
-   *  (`<parentStruct>.<fieldName> == <value>`). `undefined` at the
-   *  document root and inside non-struct containers (seq / tuple
-   *  inherit their own parent's `parentStruct`). */
-  parentStruct: string | undefined;
+  node: unknown;
+  /** Field name in the enclosing object, or `[idx]` when this is an
+   *  array element. `undefined` at the document root. */
+  name?: string | undefined;
+  /** Full chain of object-key segments from the body root down to
+   *  this node — used by leaves to build a `decodedField` predicate
+   *  that the matcher can walk strictly. Array indices are *not*
+   *  segments (the matcher descends arrays per-element on the same
+   *  path), so the chain only grows on object-key descents. */
+  path: string[];
+  onAddDecodedFilter?: AddDecodedFn | undefined;
 }): JSX.Element | null {
-  // Hide kafka-protocol's empty `unknown_tagged_fields: {}` lines —
-  // they're meaningless noise (every struct has one, almost always
-  // empty). When the field is non-empty (rare, only when the broker
-  // sent unknown KIP tags), let it render normally.
-  if (name === "unknown_tagged_fields" && node.kind === "struct" && node.fields.length === 0) {
+  // Hide the routine empty `unknown_tagged_fields: {}` lines. Every
+  // generated message struct has one and they're almost always
+  // empty; a sea of `unknown_tagged_fields: {}` is just noise.
+  if (
+    name === "unknown_tagged_fields" &&
+    node !== null &&
+    typeof node === "object" &&
+    !Array.isArray(node) &&
+    Object.keys(node).length === 0
+  ) {
     return null;
   }
-  if (node.kind === "struct") {
-    // Children fields are anchored against THIS struct's name —
-    // leaf-level `decodedField` predicates use it.
-    const childParent = node.name === "" ? parentStruct : node.name;
+  if (Array.isArray(node)) {
+    // Narrow to unknown[] explicitly: TypeScript's Array.isArray
+    // refinement gives any[] when --strict isn't aggressive enough,
+    // and lint's no-unsafe-assignment then flags every recursive
+    // descent. The cast is a typing nudge; runtime is identical.
+    const items = node as unknown[];
     return (
       <details className="tree-node" open>
         <summary className="tree-node__summary">
           <span className="field__name">{name ?? ""}</span>
-          <span className="field__value">{node.name === "" ? "{}" : node.name}</span>
+          <span className="field__value">[{items.length}]</span>
         </summary>
         <div className="tree-node__children">
-          {node.fields.length === 0 ? (
+          {items.length === 0 ? (
             <span className="muted">empty</span>
           ) : (
-            node.fields.map((f, i) => (
-              <DebugNodeView
-                key={i}
-                node={f.value}
-                name={f.name}
-                parentStruct={childParent}
-                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-              />
-            ))
-          )}
-        </div>
-      </details>
-    );
-  }
-  if (node.kind === "seq") {
-    return (
-      <details className="tree-node" open>
-        <summary className="tree-node__summary">
-          <span className="field__name">{name ?? ""}</span>
-          <span className="field__value">[{node.items.length}]</span>
-        </summary>
-        <div className="tree-node__children">
-          {node.items.length === 0 ? (
-            <span className="muted">empty</span>
-          ) : (
-            node.items.map((item, i) => (
-              <DebugNodeView
+            items.map((item, i) => (
+              <JsonNodeView
                 key={i}
                 node={item}
-                name={`[${i}]`}
-                parentStruct={parentStruct}
+                name={`[${String(i)}]`}
+                // Array index isn't a JSON-path segment — the matcher
+                // descends arrays per-element on the same path. So
+                // children inherit the path unchanged.
+                path={path}
                 {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
               />
             ))
@@ -313,77 +283,81 @@ function DebugNodeView({
       </details>
     );
   }
-  if (node.kind === "tuple") {
-    // Single-item tuple wrappers (`Some(x)`, `TopicName("foo")`) are
-    // visually noisy when nested — flatten by combining the wrapper
-    // name into the field label. `Some` specifically is hidden: it's
-    // pure Rust noise (Option::Some) — the value's presence already
-    // implies it. `Ok(_)` is treated the same way for symmetry.
-    if (node.items.length === 1) {
-      const inner = node.items[0];
-      if (!inner) {
-        return (
-          <Field
-            name={name ?? ""}
-            value={`${node.name}()`}
-            {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-          />
-        );
-      }
-      const isOptionalWrapper = node.name === "Some" || node.name === "Ok";
-      const label = isOptionalWrapper ? (name ?? "") : name ? `${name} (${node.name})` : node.name;
-      return (
-        <DebugNodeView
-          node={inner}
-          name={label}
-          parentStruct={parentStruct}
-          {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-        />
-      );
-    }
+  if (node !== null && typeof node === "object") {
+    const entries = Object.entries(node as Record<string, unknown>);
     return (
       <details className="tree-node" open>
         <summary className="tree-node__summary">
           <span className="field__name">{name ?? ""}</span>
-          <span className="field__value">{node.name}(…)</span>
+          <span className="field__value">{entries.length === 0 ? "{}" : ""}</span>
         </summary>
         <div className="tree-node__children">
-          {node.items.map((item, i) => (
-            <DebugNodeView
-              key={i}
-              node={item}
-              name={`[${i}]`}
-              parentStruct={parentStruct}
-              {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-            />
-          ))}
+          {entries.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            entries.map(([key, value]) => (
+              <JsonNodeView
+                key={key}
+                node={value}
+                name={key}
+                path={[...path, key]}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
+          )}
         </div>
       </details>
     );
   }
-  // Leaf: build a path-aware triple `<parentStruct>.<field> = <value>`.
-  // Strings strip the surrounding quotes (the Debug-tree walker
-  // matches against the unquoted leaf text via `debugNodeText`).
-  // Primitives use their raw text (numbers, booleans, idents like
-  // `None`).
-  const displayed = node.kind === "string" ? `"${node.value}"` : node.text;
+  // Leaf: build the path/value pair from the accumulated segment
+  // chain. Strings render with their surrounding quotes; numbers /
+  // booleans render raw. The pair's `value` carries the unquoted
+  // string view, matching how `matchJsonPath` compares.
+  const displayed = renderLeaf(node);
+  const matchValue = leafMatchValue(node);
   const fieldName = name ?? "";
-  // Tuple-flattened labels like `topic_id (TopicName)` aren't real
-  // field names — the bare segment before the parenthesis is.
-  const baseName = fieldName.replace(/\s*\([^)]*\)\s*$/, "");
-  const matchValue = node.kind === "string" ? node.value : node.text;
-  const triple: DecodedFieldTriple | null =
-    parentStruct !== undefined && baseName !== ""
-      ? { struct: parentStruct, field: baseName, value: matchValue }
-      : null;
+  // Need a non-empty path AND a primitive leaf value to build a
+  // useful predicate. Empty path means the root scalar (rare —
+  // Kafka bodies are always objects) which can't anchor a path
+  // match.
+  const pair: DecodedFieldPair | null =
+    path.length > 0 && matchValue !== null ? { path: path.join("."), value: matchValue } : null;
   return (
     <Field
       name={fieldName}
       value={displayed}
-      triple={triple}
+      pair={pair}
       {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
     />
   );
+}
+
+function renderLeaf(node: unknown): string {
+  if (node === null) {
+    return "null";
+  }
+  if (typeof node === "string") {
+    return `"${node}"`;
+  }
+  if (typeof node === "number" || typeof node === "boolean" || typeof node === "bigint") {
+    return String(node);
+  }
+  // Defensive: should be unreachable since arrays + objects are
+  // handled in the caller. Render as JSON for visibility.
+  return JSON.stringify(node);
+}
+
+function leafMatchValue(node: unknown): string | null {
+  if (node === null) {
+    return "null";
+  }
+  if (typeof node === "string") {
+    return node;
+  }
+  if (typeof node === "number" || typeof node === "boolean" || typeof node === "bigint") {
+    return String(node);
+  }
+  return null;
 }
 
 interface HexRow {

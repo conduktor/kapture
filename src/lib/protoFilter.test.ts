@@ -22,8 +22,7 @@ import {
 } from "./protoFilter";
 
 const decodedFieldPredicate = encodeDecodedField({
-  struct: "MetadataRequestTopic",
-  field: "name",
+  path: "topics.name",
   value: "orders.avro",
 });
 
@@ -87,11 +86,17 @@ describe("parseExpression", () => {
     expect(r.filter.decodedContains.include).toEqual(["topic_id"]);
   });
 
-  it("parses a decoded field include", () => {
-    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+  it("parses a dotted-path field predicate", () => {
+    const r = parseExpression('topics.name == "orders.avro"');
     expect(r.error).toBeNull();
     expect(r.filter.decodedField.include).toEqual([decodedFieldPredicate]);
     expect(r.filter.decodedField.exclude).toEqual([]);
+  });
+
+  it("accepts integer values on field predicates (compared via string view)", () => {
+    const r = parseExpression("error_code == 35");
+    expect(r.error).toBeNull();
+    expect(r.filter.decodedField.include).toEqual(["error_code=35"]);
   });
 
   it("preserves && inside quoted strings", () => {
@@ -100,10 +105,13 @@ describe("parseExpression", () => {
     expect(r.filter.apiNames.include).toEqual(["Fetch && weird"]);
   });
 
-  it("rejects unknown kind with a positional error", () => {
+  it("treats unknown idents as field names (no reserved-kind error)", () => {
+    // Any non-reserved ident becomes a JSON field-name predicate.
+    // The matcher just won't find `foo` in any frame body, so the
+    // filter rejects everything — but the parse itself succeeds.
     const r = parseExpression('foo == "bar"');
-    expect(r.error).toMatch(/unknown filter kind/);
-    expect(isFilterEmpty(r.filter)).toBe(true);
+    expect(r.error).toBeNull();
+    expect(r.filter.decodedField.include).toEqual(["foo=bar"]);
   });
 
   it("rejects integer for apiName", () => {
@@ -130,11 +138,6 @@ describe("parseExpression", () => {
     const r = parseExpression("corrId == -1");
     expect(r.error).toBeNull();
     expect(r.filter.corrIds.include).toEqual([-1]);
-  });
-
-  it("rejects a decoded field clause without a path string", () => {
-    const r = parseExpression('field == "orders.avro"');
-    expect(r.error).toMatch(/path|field/);
   });
 });
 
@@ -173,10 +176,16 @@ describe("serializeFilter", () => {
     expect(serializeFilter(r.filter)).toBe('apiName == "weird\\"name"');
   });
 
-  it("renders decoded field predicates as path-aware DSL", () => {
-    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+  it("renders field-path predicates path-first", () => {
+    const r = parseExpression('topics.name == "orders.avro"');
     expect(r.error).toBeNull();
-    expect(serializeFilter(r.filter)).toBe('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(serializeFilter(r.filter)).toBe('topics.name == "orders.avro"');
+  });
+
+  it("stringifies integer field values with quotes", () => {
+    const r = parseExpression("error_code == 35");
+    expect(r.error).toBeNull();
+    expect(serializeFilter(r.filter)).toBe('error_code == "35"');
   });
 });
 
@@ -190,7 +199,7 @@ describe("round-trip parseExpression ∘ serializeFilter", () => {
     "direction == send",
     "direction != recv",
     'decoded == "topic_id"',
-    'field "MetadataRequestTopic.name" == "orders.avro"',
+    'topics.name == "orders.avro"',
     'apiName == "Fetch" && conn != 42 && corrId == 7',
   ];
   for (const input of cases) {
@@ -205,7 +214,7 @@ describe("round-trip parseExpression ∘ serializeFilter", () => {
   }
 
   it("preserves equivalent shape for apiName plus decoded field", () => {
-    const input = 'apiName == "Fetch" && field "MetadataRequestTopic.name" == "orders.avro"';
+    const input = 'apiName == "Fetch" && topics.name == "orders.avro"';
     const first = parseExpression(input);
     expect(first.error).toBeNull();
     const canonical = serializeFilter(first.filter);
@@ -248,35 +257,57 @@ describe("appendClause", () => {
 });
 
 describe("applyFilter decodedField", () => {
-  it("accepts a frame whose decoded body matches the field predicate", () => {
-    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+  // Filter syntax is path-aware — the user qualifies the leaf with
+  // its parent chain so a `name` under `topics[]` doesn't collide
+  // with an unrelated `name` under another RPC's `topic_data[]`.
+  it("accepts a frame whose decoded body matches the path predicate", () => {
+    const r = parseExpression('topics.name == "orders.avro"');
     expect(r.error).toBeNull();
     expect(
-      applyFilter(
-        r.filter,
-        protoFrame,
-        () =>
-          'MetadataRequest { topics: [MetadataRequestTopic { topic_id: 00000000-0000-0000-0000-000000000000, name: "orders.avro" }] }',
-      ),
+      applyFilter(r.filter, protoFrame, () => ({
+        topics: [
+          {
+            topic_id: "00000000-0000-0000-0000-000000000000",
+            name: "orders.avro",
+          },
+        ],
+      })),
     ).toBe(true);
   });
 
   it("rejects when the decoded body is not cached", () => {
-    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    const r = parseExpression('topics.name == "orders.avro"');
     expect(r.error).toBeNull();
     expect(applyFilter(r.filter, protoFrame, () => undefined)).toBe(false);
   });
 
-  it("rejects the same field value on a different parent struct", () => {
-    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+  it("rejects a bare field predicate when the field is nested", () => {
+    // Strict path semantics: `name == "..."` only matches the root
+    // `name`, not a `topics[].name` further down. The user must
+    // write the qualifying path.
+    const r = parseExpression('name == "events"');
+    expect(r.error).toBeNull();
+    expect(applyFilter(r.filter, protoFrame, () => ({ topics: [{ name: "events" }] }))).toBe(false);
+    expect(applyFilter(r.filter, protoFrame, () => ({ name: "events" }))).toBe(true);
+  });
+
+  it("does not bleed across parent contexts with the same leaf name", () => {
+    // Two RPCs surface a `name` field under different parents;
+    // `topics.name` matches only the topics chain.
+    const r = parseExpression('topics.name == "audit"');
     expect(r.error).toBeNull();
     expect(
-      applyFilter(
-        r.filter,
-        protoFrame,
-        () => 'ProduceRequest { topic_data: [TopicProduceData { name: "orders.avro" }] }',
-      ),
+      applyFilter(r.filter, protoFrame, () => ({
+        topics: [{ name: "events" }],
+        topic_data: [{ name: "audit" }],
+      })),
     ).toBe(false);
+  });
+
+  it("rejects when the path is absent from the body", () => {
+    const r = parseExpression("topics.acks == 1");
+    expect(r.error).toBeNull();
+    expect(applyFilter(r.filter, protoFrame, () => ({ topics: [{ name: "events" }] }))).toBe(false);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Client-side filter for the Protocol tab. Distinct from the message
  * DSL (`src-tauri/src/filter.pest`) — the proto frame ring buffer is
- * small (≤ 4000 frames) so we filter in JS, no backend round-trip.
+ * small (≤ 5000 frames) so we filter in JS, no backend round-trip.
  *
  * Predicates are grouped by kind. Within a kind, includes are ORed
  * (a row matches if any include in that kind matches); excludes are
@@ -9,14 +9,17 @@
  * across each other. Empty include + empty exclude on a kind = no
  * constraint from that kind.
  *
- * `decodedContains` matches against the frame's `decoded` Debug-format
- * string (e.g. `topic_id: 86c8d3a0-…`). The summary list rows don't
- * carry `decoded`, so callers pass an opportunistic cache mapping
- * frame id → decoded text. Frames whose detail hasn't been fetched
- * yet bypass the predicate (over-include rather than over-exclude).
+ * `decodedContains` and `decodedField` match against the frame's
+ * `decodedJson` — the typed body emitted by the Kapture fork of
+ * kafka-protocol (which derives `serde::Serialize` on every message
+ * struct). The summary list rows don't carry `decodedJson`, so
+ * callers pass an opportunistic cache mapping frame id → JSON value.
+ * Frames whose detail hasn't been fetched yet are REJECTED — a
+ * filter is a hard constraint, not a hint; the caller pre-warms the
+ * cache when one of these predicates is active.
  */
 import type { ProtoDirection, ProtoFrame } from "../types";
-import { matchDebugField, parseDebug } from "./debugTree";
+import { matchJsonPath } from "./jsonField";
 
 export type ProtoFilterKind =
   | "apiName"
@@ -41,34 +44,35 @@ export interface ProtoFilter {
   decodedField: { include: string[]; exclude: string[] };
 }
 
-/** Decoded-field triple. `struct` is the parent struct's name (e.g.
- *  "MetadataRequestTopic"), `field` is the field name within it
- *  (e.g. "name"), and `value` is the string view of the leaf (no
- *  surrounding quotes for strings, raw text for primitives).
- *  Encoded into the filter slot as `<struct>.<field>=<value>` —
- *  Rust idents can't contain `.` or `=`, so the separators are
- *  unambiguous; only the value half can carry arbitrary chars. */
-export interface DecodedFieldTriple {
-  struct: string;
-  field: string;
+/** Decoded-field pair. `path` is a dotted chain of object-key
+ *  segments rooted at the decoded body
+ *  (`topic_data.partition_data.records.base_offset`); `value` is
+ *  the string view of the leaf. Encoded into the filter slot as
+ *  `<path>=<value>` — segments use `.`, `=` separates path from
+ *  value; the value half can carry arbitrary chars including `=`,
+ *  captured by `slice(eq + 1)`.
+ *
+ *  Semantics: walked via `matchJsonPath` which descends through
+ *  arrays per-element. The path is *strict* — a bare `name`
+ *  matches only the root-level `name`, never a nested
+ *  `topics[].name`. The user disambiguates by writing the full
+ *  path. */
+export interface DecodedFieldPair {
+  path: string;
   value: string;
 }
 
-export function encodeDecodedField(t: DecodedFieldTriple): string {
-  return `${t.struct}.${t.field}=${t.value}`;
+export function encodeDecodedField(p: DecodedFieldPair): string {
+  return `${p.path}=${p.value}`;
 }
 
-export function decodeDecodedField(s: string): DecodedFieldTriple | null {
+export function decodeDecodedField(s: string): DecodedFieldPair | null {
   const eq = s.indexOf("=");
   if (eq < 0) return null;
   const path = s.slice(0, eq);
   const value = s.slice(eq + 1);
-  const dot = path.indexOf(".");
-  if (dot < 0) return null;
-  const struct = path.slice(0, dot);
-  const field = path.slice(dot + 1);
-  if (struct === "" || field === "") return null;
-  return { struct, field, value };
+  if (path === "") return null;
+  return { path, value };
 }
 
 export const EMPTY_PROTO_FILTER: ProtoFilter = {
@@ -112,7 +116,7 @@ export function isFilterEmpty(f: ProtoFilter): boolean {
 export function applyFilter(
   f: ProtoFilter,
   frame: ProtoFrame,
-  decodedFor?: (id: string) => string | undefined,
+  decodedFor?: (id: string) => unknown,
 ): boolean {
   if (!matchSet(f.apiNames, frame.apiName)) {
     return false;
@@ -127,46 +131,43 @@ export function applyFilter(
     return false;
   }
   const dc = f.decodedContains;
+  const df = f.decodedField;
+  const needsBody =
+    dc.include.length > 0 ||
+    dc.exclude.length > 0 ||
+    df.include.length > 0 ||
+    df.exclude.length > 0;
+  if (!needsBody) {
+    return true;
+  }
+  const json = decodedFor?.(frame.id);
+  if (json === undefined) {
+    // Hard filter semantics: no cached decoded body means we can't
+    // confirm a match — reject rather than over-include.
+    return false;
+  }
   if (dc.include.length > 0 || dc.exclude.length > 0) {
-    const decoded = decodedFor?.(frame.id);
-    if (decoded === undefined) {
-      // Hard filter semantics: no cached decoded body means we can't
-      // confirm a match — reject rather than over-include.
+    // Substring match against the JSON serialisation. `JSON.stringify`
+    // on a typical proto body is sub-millisecond; per-frame cost is
+    // negligible vs the 5000-frame ring cap. Cached behaviour mirrors
+    // the legacy Debug-string predicate without parsing.
+    const text = JSON.stringify(json);
+    if (dc.exclude.some((s) => text.includes(s))) {
       return false;
     }
-    if (dc.exclude.some((s) => decoded.includes(s))) {
-      return false;
-    }
-    if (dc.include.length > 0 && !dc.include.some((s) => decoded.includes(s))) {
+    if (dc.include.length > 0 && !dc.include.some((s) => text.includes(s))) {
       return false;
     }
   }
-  const df = f.decodedField;
   if (df.include.length > 0 || df.exclude.length > 0) {
-    const decoded = decodedFor?.(frame.id);
-    if (decoded === undefined) {
-      // Same hard-filter semantics as `decodedContains` — the decoded
-      // body must be cached for path-aware matching to evaluate.
+    const pairs = (slot: string[]): DecodedFieldPair[] =>
+      slot.map(decodeDecodedField).filter((p): p is DecodedFieldPair => p !== null);
+    const excludes = pairs(df.exclude);
+    if (excludes.some((p) => matchJsonPath(json, p.path, p.value))) {
       return false;
     }
-    const tree = parseDebug(decoded);
-    if (tree === null) {
-      // Debug-output parse failed (suspicious — kafka-protocol's
-      // derive(Debug) shouldn't drift). Reject so the user sees an
-      // empty list instead of false-positive matches.
-      return false;
-    }
-    const triples = (slot: string[]): DecodedFieldTriple[] =>
-      slot.map(decodeDecodedField).filter((t): t is DecodedFieldTriple => t !== null);
-    const excludes = triples(df.exclude);
-    if (excludes.some((t) => matchDebugField(tree, t.struct, t.field, t.value))) {
-      return false;
-    }
-    const includes = triples(df.include);
-    if (
-      includes.length > 0 &&
-      !includes.some((t) => matchDebugField(tree, t.struct, t.field, t.value))
-    ) {
+    const includes = pairs(df.include);
+    if (includes.length > 0 && !includes.some((p) => matchJsonPath(json, p.path, p.value))) {
       return false;
     }
   }
@@ -189,7 +190,7 @@ interface KindMap {
   connectionId: number;
   corrId: number;
   decodedContains: string;
-  /** JSON-encoded `DecodedFieldTriple` (see `encodeDecodedField`). */
+  /** JSON-encoded `DecodedFieldPair` (see `encodeDecodedField`). */
   decodedField: string;
 }
 
@@ -377,7 +378,7 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
 // Whitespace flexible. Quoted strings via "..." with `\"` and `\\` escapes.
 // ---------------------------------------------------------------------------
 
-type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded" | "field";
+type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded";
 
 const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
   apiName: "apiName",
@@ -385,16 +386,14 @@ const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
   conn: "connectionId",
   corrId: "corrId",
   decoded: "decodedContains",
-  field: "decodedField",
 };
 
-const AST_TO_DSL: Record<ProtoFilterKind, DslKind> = {
+const AST_TO_DSL: Record<Exclude<ProtoFilterKind, "decodedField">, DslKind> = {
   apiName: "apiName",
   direction: "direction",
   connectionId: "conn",
   corrId: "corrId",
   decodedContains: "decoded",
-  decodedField: "field",
 };
 
 const KIND_ORDER: ProtoFilterKind[] = [
@@ -456,41 +455,41 @@ export function serializeFilter(f: ProtoFilter): string {
   const parts: string[] = [];
   for (const astKind of KIND_ORDER) {
     const slot = slotForReadOnly(f, astKind);
-    const dsl = AST_TO_DSL[astKind];
     const sortedInclude = sortValues(astKind, slot.include);
     const sortedExclude = sortValues(astKind, slot.exclude);
+    if (astKind === "decodedField") {
+      for (const v of sortedInclude) {
+        parts.push(formatFieldClause("==", String(v)));
+      }
+      for (const v of sortedExclude) {
+        parts.push(formatFieldClause("!=", String(v)));
+      }
+      continue;
+    }
+    const dsl = AST_TO_DSL[astKind];
     for (const v of sortedInclude) {
-      parts.push(formatClause(astKind, dsl, "==", v));
+      parts.push(`${dsl} == ${formatValue(astKind, v)}`);
     }
     for (const v of sortedExclude) {
-      parts.push(formatClause(astKind, dsl, "!=", v));
+      parts.push(`${dsl} != ${formatValue(astKind, v)}`);
     }
   }
   return parts.join(" && ");
 }
 
-/** `decodedField` renders as `field "<struct>.<field>" == "<value>"`
- *  so the filter bar reads like a path expression instead of an
- *  opaque encoded blob. All other kinds use the standard
- *  `<dsl> <op> <value>` shape. */
-function formatClause(
-  astKind: ProtoFilterKind,
-  dsl: string,
-  op: "==" | "!=",
-  v: string | number,
-): string {
-  if (astKind === "decodedField") {
-    const t = decodeDecodedField(String(v));
-    if (t === null) {
-      return `${dsl} ${op} ${formatValue(astKind, v)}`;
-    }
-    return `${dsl} "${escapeQuoted(`${t.struct}.${t.field}`)}" ${op} ${quoteString(t.value)}`;
+/** A decodedField clause renders path-first: `<a.b.c> == "<value>"`.
+ *  No leading kind keyword — the parser recognises any non-reserved
+ *  ident (dotted segments allowed) as a path predicate. Reads like
+ *  a direct property check
+ *  (`error_code == "0"`, `topic_data.name == "events"`). */
+function formatFieldClause(op: "==" | "!=", encoded: string): string {
+  const p = decodeDecodedField(encoded);
+  if (p === null) {
+    // Defensive fallback: shouldn't happen since the slot only ever
+    // carries values produced by `encodeDecodedField`.
+    return `field ${op} ${quoteString(encoded)}`;
   }
-  return `${dsl} ${op} ${formatValue(astKind, v)}`;
-}
-
-function escapeQuoted(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `${p.path} ${op} ${quoteString(p.value)}`;
 }
 
 /**
@@ -577,38 +576,16 @@ function parseClauses(text: string): ParsedClause[] {
     if (kindTok?.type !== "ident") {
       throw new Error(parseErrAt(text, kindTok?.pos ?? text.length, "expected filter kind"));
     }
+    // Reserved kind tokens (`apiName`, `direction`, `conn`, `corrId`,
+    // `decoded`) take the existing typed path. Any other ident —
+    // including dotted paths like `topic_data.partition_data.records.base_offset` —
+    // is a JSON path predicate, walked strictly from the body root
+    // by `matchJsonPath`.
     const dslKind = kindTok.text as DslKind;
-    if (!(dslKind in DSL_TO_AST)) {
-      throw new Error(
-        parseErrAt(
-          text,
-          kindTok.pos,
-          `unknown filter kind "${kindTok.text}" (expected apiName/direction/conn/corrId/decoded)`,
-        ),
-      );
-    }
-    const astKind = DSL_TO_AST[dslKind];
+    const isReservedKind = dslKind in DSL_TO_AST;
+    const astKind: ProtoFilterKind = isReservedKind ? DSL_TO_AST[dslKind] : "decodedField";
+    const fieldPath: string | null = isReservedKind ? null : kindTok.text;
     i += 1;
-
-    // `field "<struct>.<field>" <op> "<value>"` — path-aware
-    // predicate. The struct/field path is a quoted string between
-    // the kind token and the operator. All other kinds keep the
-    // standard `<kind> <op> <value>` shape.
-    let pathString: string | null = null;
-    if (astKind === "decodedField") {
-      const pathTok = tokens[i];
-      if (pathTok?.type !== "string") {
-        throw new Error(
-          parseErrAt(
-            text,
-            pathTok?.pos ?? text.length,
-            'field requires a quoted "<Struct>.<field>" path',
-          ),
-        );
-      }
-      pathString = pathTok.value as string;
-      i += 1;
-    }
 
     const opTok = tokens[i];
     if (opTok?.type !== "op") {
@@ -623,22 +600,20 @@ function parseClauses(text: string): ParsedClause[] {
     }
     let value: string | number;
     if (astKind === "decodedField") {
-      // The field-path was captured before the operator; combine it
-      // with the value into the encoded triple.
-      if (valTok.type !== "string") {
-        throw new Error(parseErrAt(text, valTok.pos, "field value must be a quoted string"));
+      // Comparison is on the *string view* of the JSON leaf —
+      // accept the same value forms as other kinds (quoted string,
+      // bareword ident, integer literal) and stringify each into
+      // the encoded `<path>=<value>` slot.
+      if (fieldPath === null || fieldPath === "") {
+        throw new Error(parseErrAt(text, valTok.pos, "field path must be non-empty"));
       }
-      const dot = (pathString ?? "").indexOf(".");
-      if (dot < 0 || pathString === null || pathString === "") {
-        throw new Error(
-          parseErrAt(text, valTok.pos, 'field path must look like "<Struct>.<field>"'),
-        );
-      }
-      value = encodeDecodedField({
-        struct: pathString.slice(0, dot),
-        field: pathString.slice(dot + 1),
-        value: valTok.value as string,
-      });
+      const stringValue =
+        valTok.type === "string"
+          ? (valTok.value as string)
+          : valTok.type === "int"
+            ? String(valTok.value)
+            : valTok.text;
+      value = encodeDecodedField({ path: fieldPath, value: stringValue });
     } else {
       value = coerceValue(astKind, valTok, text);
     }
@@ -660,7 +635,11 @@ function parseClauses(text: string): ParsedClause[] {
   return clauses;
 }
 
-function coerceValue(kind: ProtoFilterKind, tok: Token, text: string): string | number {
+function coerceValue(
+  kind: Exclude<ProtoFilterKind, "decodedField">,
+  tok: Token,
+  text: string,
+): string | number {
   if (kind === "connectionId" || kind === "corrId") {
     if (tok.type !== "int") {
       throw new Error(parseErrAt(text, tok.pos, `${AST_TO_DSL[kind]} requires an integer value`));
@@ -792,24 +771,44 @@ function tokenize(text: string): Token[] {
       tokens.push({ type: "int", text: slice, pos: start, value: n });
       continue;
     }
-    // Bareword: [A-Za-z_][A-Za-z0-9_]*
+    // Bareword: [A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*
+    // Dotted segments are allowed so `topic_data.partition_data.records.base_offset`
+    // tokenises as a single ident — that's the JSON path the user
+    // wrote, navigated as-is by `matchJsonPath`. A trailing dot or
+    // double dot fails the second-segment check and stops the lex
+    // loop, leaving the bare leading ident intact.
     if ((ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_") {
       const start = i;
-      while (i < text.length) {
-        const c = text[i];
-        if (c === undefined) {
+      const consumeSegment = (): boolean => {
+        const segStart = i;
+        while (i < text.length) {
+          const c = text[i];
+          if (c === undefined) {
+            break;
+          }
+          if (
+            (c >= "a" && c <= "z") ||
+            (c >= "A" && c <= "Z") ||
+            (c >= "0" && c <= "9") ||
+            c === "_"
+          ) {
+            i += 1;
+            continue;
+          }
           break;
         }
-        if (
-          (c >= "a" && c <= "z") ||
-          (c >= "A" && c <= "Z") ||
-          (c >= "0" && c <= "9") ||
-          c === "_"
-        ) {
-          i += 1;
-          continue;
+        return i > segStart;
+      };
+      consumeSegment();
+      while (text[i] === ".") {
+        const dotPos = i;
+        i += 1;
+        if (!consumeSegment()) {
+          // Roll back the dot so the parser sees a clean ident
+          // followed by an unexpected character it can complain about.
+          i = dotPos;
+          break;
         }
-        break;
       }
       tokens.push({ type: "ident", text: text.slice(start, i), pos: start });
       continue;

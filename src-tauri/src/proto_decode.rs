@@ -1,12 +1,14 @@
-//! Decode the wire bytes captured by the proto-hook into a typed,
-//! human-readable Kafka protocol structure.
+//! Decode the wire bytes captured by the proto-hook into a typed
+//! `serde_json::Value` representation of the request/response body.
 //!
-//! Strategy v1: dispatch on `(ApiKey, version, direction)` to the
-//! matching `kafka-protocol` crate type, decode it, and return the
-//! `Debug`-formatted output. The crate's types do not derive
-//! `Serialize`, so a pretty-printed `{:#?}` is the lowest-friction way
-//! to surface every field. Later iterations can replace this with a
-//! structured `DecodedValue` mapping per type.
+//! Strategy: dispatch on `(ApiKey, version, direction)` to the
+//! matching `kafka-protocol` crate type, decode it, and serialise to
+//! JSON via `serde_json::to_value`. The Kapture fork of
+//! kafka-protocol derives `serde::Serialize` on every message struct
+//! (see `vendor/kafka-protocol-rs/protocol_codegen/`); newtype
+//! wrappers like `GroupId(StrBytes)` flatten transparently to
+//! strings, `unknown_tagged_fields` surface as JSON objects keyed by
+//! their tag id.
 //!
 //! Anything we don't have an arm for falls through to `None`, and the
 //! UI continues to show the raw hex view. Adding a new API is one line
@@ -41,7 +43,7 @@ pub fn decode_frame(
     api_version: i16,
     direction: ProtoDirection,
     payload: &[u8],
-) -> Option<String> {
+) -> Option<serde_json::Value> {
     if payload.len() < 8 {
         return None;
     }
@@ -69,22 +71,12 @@ pub fn decode_frame(
     if api == ApiKey::ApiVersions {
         if api_version > MAX_KNOWN_API_VERSIONS_VERSION {
             if let Some(out) = try_decode_at(api, MAX_KNOWN_API_VERSIONS_VERSION, direction, &buf) {
-                return Some(annotate_apiversions_fallback(
-                    &out,
-                    api_version,
-                    direction,
-                    "crate-version cap",
-                ));
+                return Some(out);
             }
         }
         if matches!(direction, ProtoDirection::Recv) {
             if let Some(out) = try_decode_at(api, 0, direction, &buf) {
-                return Some(annotate_apiversions_fallback(
-                    &out,
-                    api_version,
-                    direction,
-                    "KIP-511 downgrade",
-                ));
+                return Some(out);
             }
         }
     }
@@ -99,7 +91,7 @@ fn try_decode_at(
     version: i16,
     direction: ProtoDirection,
     buf: &Bytes,
-) -> Option<String> {
+) -> Option<serde_json::Value> {
     let mut local = buf.clone();
     let _size = local.get_i32();
     match direction {
@@ -116,25 +108,83 @@ fn try_decode_at(
     }
 }
 
-/// Pass-through. Earlier versions of this fn injected `// comment`
-/// lines inside the struct body to explain the fallback; turns out
-/// the frontend's debugTree parser doesn't speak `//` so the tree
-/// view fell back to a raw `<pre>` block. The fallback is still
-/// observable from the data itself: `error_code: 35` in the body
-/// (KIP-511) or a `max_version` lower than what was requested
-/// (crate-version cap). No need to add ceremony.
-fn annotate_apiversions_fallback(
-    body: &str,
-    _requested_version: i16,
-    _direction: ProtoDirection,
-    _reason: &str,
-) -> String {
-    body.to_owned()
+fn decode_one<T: Decodable + serde::Serialize>(
+    buf: &mut Bytes,
+    version: i16,
+) -> Option<serde_json::Value> {
+    let msg = T::decode(buf, version).ok()?;
+    // `serde_json::to_value` only fails on NaN/Infinity floats or
+    // recursive types — neither shape exists in `kafka-protocol`
+    // messages. On the off-chance it does, we fall back to `None`
+    // rather than ship a half-decoded view.
+    let mut value = serde_json::to_value(&msg).ok()?;
+    elide_records(&mut value);
+    Some(value)
 }
 
-fn decode_one<T: Decodable + std::fmt::Debug>(buf: &mut Bytes, version: i16) -> Option<String> {
-    let msg = T::decode(buf, version).ok()?;
-    Some(format!("{msg:#?}"))
+/// Replace any `records: Bytes` field in the JSON tree with a
+/// compact placeholder. With the `bytes/serde` feature enabled, the
+/// crate's `bytes::Bytes` serialises as a JSON array of `u8`s — for
+/// a 64 KiB Fetch record batch, that's ~256 KiB of `[1, 2, ...]`
+/// noise embedded in `decoded_json`. The record content is opaque
+/// to us anyway (Avro / Protobuf payload decoding lives in the
+/// schema-registry path, separate from protocol decoding); we keep
+/// only the byte length so a future filter can reason about batch
+/// sizes without ever shipping the bytes themselves.
+///
+/// The walk is unconditional (cheap on any non-Produce/Fetch shape:
+/// no `records` field → no replacement) and field-name based — the
+/// kafka-protocol schema only uses `records` for actual record
+/// batches, never for unrelated byte fields.
+fn elide_records(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if k == "records" {
+                    if let Some(replacement) = elision_for(v) {
+                        *v = replacement;
+                        continue;
+                    }
+                }
+                elide_records(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items.iter_mut() {
+                elide_records(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Build the placeholder for a `records` field. Returns `None` when
+/// the value isn't a recognised byte-array shape (defensive — the
+/// codegen schema only uses `records` for opt-byte fields, but
+/// keeping the predicate explicit means an unrelated future field
+/// named `records` won't be silently mangled).
+fn elision_for(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let arr = value.as_array()?;
+    let length = arr.len();
+    // Cheap check that all entries are byte-sized integers; bails
+    // early if any element doesn't fit a u8 — leaves the value
+    // untouched, the caller falls through to a recursive walk.
+    let all_bytes = arr
+        .iter()
+        .all(|v| v.as_u64().is_some_and(|n| u8::try_from(n).is_ok()));
+    if !all_bytes {
+        return None;
+    }
+    let mut placeholder = serde_json::Map::new();
+    placeholder.insert(
+        "length".to_owned(),
+        serde_json::Value::Number(serde_json::Number::from(length)),
+    );
+    placeholder.insert(
+        "_elided".to_owned(),
+        serde_json::Value::String("record_batch".to_owned()),
+    );
+    Some(serde_json::Value::Object(placeholder))
 }
 
 // Both dispatch tables below are EXHAUSTIVE on `ApiKey` by design:
@@ -163,7 +213,7 @@ fn decode_one<T: Decodable + std::fmt::Debug>(buf: &mut Bytes, version: i16) -> 
 //     control-plane subsystem — defeating the human-review value.
 
 #[allow(clippy::too_many_lines, clippy::match_same_arms)]
-fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> {
+fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_json::Value> {
     match api {
         ApiKey::Produce => decode_one::<ProduceRequest>(buf, version),
         ApiKey::Fetch => decode_one::<FetchRequest>(buf, version),
@@ -278,7 +328,7 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> 
 }
 
 #[allow(clippy::too_many_lines, clippy::match_same_arms)]
-fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<String> {
+fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_json::Value> {
     match api {
         ApiKey::Produce => decode_one::<ProduceResponse>(buf, version),
         ApiKey::Fetch => decode_one::<FetchResponse>(buf, version),
@@ -423,12 +473,58 @@ mod tests {
         // Annotation comments were dropped because the frontend tree
         // parser couldn't handle injected `// ...` lines; the value of
         // the fallback is purely that the body decodes at all.
-        let out = decode_frame(18, 5, ProtoDirection::Recv, bytes).expect("v5 fallback decoded");
-        assert!(
-            out.contains("error_code"),
-            "should include error_code field"
+        // The fallback value is observable from the body itself:
+        // `error_code: 35` (KIP-511) or a `max_version` lower than
+        // what was requested (crate-version cap).
+        let body = decode_frame(18, 5, ProtoDirection::Recv, bytes).expect("v5 fallback decoded");
+        let obj = body.as_object().expect("body decodes as a JSON object");
+        assert_eq!(
+            obj.get("error_code").and_then(serde_json::Value::as_i64),
+            Some(35)
         );
-        assert!(out.contains("35") || out.contains("UnsupportedVersion"));
-        assert!(out.contains("api_key: ApiKey(18)") || out.contains("18"));
+    }
+
+    /// Records bytes inside a Produce/Fetch body must NOT be shipped
+    /// as a JSON array of u8s — that's where the size bomb came
+    /// from. `elide_records` replaces them with a compact
+    /// `{ length, _elided }` object, and the walk descends through
+    /// the typical `topic_data[*].partition_data[*].records` /
+    /// `responses[*].partitions[*].records` shapes.
+    #[test]
+    fn elide_records_replaces_byte_arrays_with_placeholder() {
+        let mut value = serde_json::json!({
+            "transactional_id": null,
+            "topic_data": [{
+                "name": "events",
+                "partition_data": [{
+                    "index": 0,
+                    "records": [1, 2, 3, 4, 5]
+                }]
+            }]
+        });
+        elide_records(&mut value);
+        let records = value
+            .pointer("/topic_data/0/partition_data/0/records")
+            .expect("records still navigable post-elision");
+        assert_eq!(
+            records.get("length").and_then(serde_json::Value::as_u64),
+            Some(5)
+        );
+        assert_eq!(
+            records.get("_elided").and_then(serde_json::Value::as_str),
+            Some("record_batch")
+        );
+    }
+
+    /// Defensive: a hypothetical future schema that names a *non*-byte
+    /// field `records` (e.g. an array of objects) must NOT be mangled.
+    #[test]
+    fn elide_records_leaves_non_byte_arrays_intact() {
+        let mut value = serde_json::json!({
+            "records": [{ "key": "a" }, { "key": "b" }]
+        });
+        let snapshot = value.clone();
+        elide_records(&mut value);
+        assert_eq!(value, snapshot);
     }
 }

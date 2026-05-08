@@ -868,10 +868,13 @@ fn trim_string(s: &str, max: usize) -> String {
 ///     clear. The proto-hook captures these so the GUI can show the
 ///     handshake locally; we MUST NOT propagate them to MCP callers
 ///     (an agent could echo them into a chat log).
-///  2. **Decoded-body bomb**. Pretty-printed `Debug` of a Fetch
-///     response with hundreds of records can balloon to MBs. Truncate
-///     at `PROTO_DECODED_HARD_LIMIT` so a single `inspect_frame` call
-///     can't blow up the JSON response.
+///  2. **Decoded-body bomb**. A typed JSON of a Fetch response with
+///     hundreds of records can balloon to MBs. Truncate the JSON
+///     serialisation at `PROTO_DECODED_HARD_LIMIT` so a single
+///     `inspect_frame` call can't blow up the response. We replace
+///     the structured value with a `String` placeholder when we
+///     truncate — preferring "obviously-truncated" over "looks
+///     well-formed but is silently incomplete".
 fn redact_frame_for_mcp(mut f: ProtoFrame) -> ProtoFrame {
     if matches!(
         f.api_key,
@@ -879,13 +882,19 @@ fn redact_frame_for_mcp(mut f: ProtoFrame) -> ProtoFrame {
     ) {
         f.payload_hex = String::new();
         f.captured = 0;
-        f.decoded = Some("[redacted: SASL credentials]".to_owned());
+        f.decoded_json = Some(serde_json::Value::String(
+            "[redacted: SASL credentials]".to_owned(),
+        ));
         return f;
     }
-    if let Some(d) = f.decoded.as_mut() {
-        if d.len() > PROTO_DECODED_HARD_LIMIT {
-            d.truncate(PROTO_DECODED_HARD_LIMIT);
-            d.push_str("\n... [truncated by MCP boundary]");
+    if let Some(json) = f.decoded_json.as_ref() {
+        if let Ok(serialised) = serde_json::to_string(json) {
+            if serialised.len() > PROTO_DECODED_HARD_LIMIT {
+                let mut truncated = serialised;
+                truncated.truncate(PROTO_DECODED_HARD_LIMIT);
+                truncated.push_str("... [truncated by MCP boundary]");
+                f.decoded_json = Some(serde_json::Value::String(truncated));
+            }
         }
     }
     f

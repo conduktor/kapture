@@ -137,13 +137,20 @@ pub struct ProtoFrame {
     /// Lowercase hex of the captured prefix. Empty when `captured == 0`.
     /// At ~64 KiB cap → ~128 KiB of hex per frame in the worst case.
     pub payload_hex: String,
-    /// Pretty-printed `Debug` of the decoded request/response body, when
-    /// the `api_key` is in our supported set. `None` for APIs we don't
-    /// have a `kafka-protocol` decode arm for, when the bytes are
-    /// truncated past the body, or when the header parse fails.
-    pub decoded: Option<String>,
-    /// Typed projection of the decoded body (subset of fields). `None`
-    /// for APIs that aren't projected. See [`crate::proto_summary`].
+    /// Typed JSON of the decoded request/response body. The Kapture
+    /// fork of `kafka-protocol` derives `serde::Serialize` on every
+    /// message struct; this is the result of `serde_json::to_value`.
+    /// Newtype wrappers like `GroupId` and `TopicName` flatten
+    /// transparently to strings; `unknown_tagged_fields` surface as
+    /// JSON objects keyed by tag id. `None` for APIs we don't decode
+    /// yet, when the bytes are truncated past the body, or when the
+    /// header parse fails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decoded_json: Option<serde_json::Value>,
+    /// Narrow typed projection driving the Session Activity tab —
+    /// see [`crate::proto_summary`]. Subset of `decoded_json` for the
+    /// few APIs we aggregate; lets the frontend fold without walking
+    /// the full body.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<FrameSummary>,
 }
@@ -185,20 +192,21 @@ impl ProtoCorrelator {
             // responses stay sub-ms. Anything we don't have a decoder
             // arm for returns None and the UI falls back to the hex
             // view.
-            let (decoded, summary) = if event.payload.is_empty() {
+            let (decoded_json, summary) = if event.payload.is_empty() {
                 (None, None)
             } else {
                 let api_version = i16::try_from(event.api_version).unwrap_or(0);
-                // Two passes over the same captured prefix: the
-                // existing Debug-string formatter (for the inspector
-                // pane) and the typed projection (for Session
-                // Activity aggregates). Both are bounded by the
-                // ≤ 64 KiB capture cap and decode in microseconds for
-                // the small control-plane bodies; for big Fetch
-                // responses only the Debug-string pass actually walks
-                // the body — `extract_summary` returns `None` early
-                // for non-projected APIs.
-                let decoded = proto_decode::decode_frame(
+                // Two passes over the same captured prefix:
+                //  * `decode_frame` walks the body once and emits a
+                //    typed `serde_json::Value` (full inspector tree
+                //    + decodedContains/decodedField filtering);
+                //  * `extract_summary` runs a *narrow* second decode
+                //    only for the few APIs that drive Session
+                //    Activity aggregates — keeps the IPC summary
+                //    payload small without forcing the frontend to
+                //    walk full bodies.
+                // Both are bounded by the ≤ 64 KiB capture cap.
+                let json = proto_decode::decode_frame(
                     event.api_key,
                     api_version,
                     event.direction,
@@ -210,7 +218,7 @@ impl ProtoCorrelator {
                     event.direction,
                     &event.payload,
                 );
-                (decoded, summary)
+                (json, summary)
             };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
@@ -226,7 +234,7 @@ impl ProtoCorrelator {
                 captured,
                 rtt_ms: event.rtt_ms,
                 payload_hex: hex::encode(&event.payload),
-                decoded,
+                decoded_json,
                 summary,
             };
             let mut frames = self.frames.lock();

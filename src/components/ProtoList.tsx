@@ -30,8 +30,9 @@ interface Props {
   onRemoveChip: (chip: ProtoFilterChip) => void;
   /** Clear the entire filter text. */
   onClearFilter: () => void;
-  /** Cache lookup for decodedContains predicates (frame id → decoded body). */
-  decodedFor?: (id: string) => string | undefined;
+  /** Cache lookup for decodedContains / decodedField predicates
+   *  (frame id → typed JSON body). */
+  decodedFor?: (id: string) => unknown;
   /** Opens the global FilterMenu popover scoped to the protocol DSL. */
   onOpenFilterMenu: OpenFilterMenu;
   /** Stable key of the FilterTarget whose popover is currently open

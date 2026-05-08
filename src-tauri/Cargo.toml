@@ -24,7 +24,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 # Updater + process plugins are desktop-only. See target-specific section below.
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
@@ -39,7 +39,7 @@ bytes = "1"
 # and we need newer ApiVersions / Fetch / Metadata schemas + a couple
 # of small bug fixes. See `vendor/kafka-protocol-rs/README.md` and the
 # kapture-conventions memory note.
-kafka-protocol = { path = "../vendor/kafka-protocol-rs" }
+kafka-protocol = { path = "../vendor/kafka-protocol-rs", features = ["serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 pest = "2"

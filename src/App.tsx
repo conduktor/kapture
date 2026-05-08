@@ -22,7 +22,7 @@ import {
   parseExpression as parseProtoExpression,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
-  type DecodedFieldTriple,
+  type DecodedFieldPair,
   type ProtoFilterChip,
   type ProtoFilterMode,
 } from "./lib/protoFilter";
@@ -135,17 +135,19 @@ function App(): JSX.Element {
   // frames don't go through the message DSL.
   const [protoFilterText, setProtoFilterText] = useState("");
   // Opportunistic LRU of fetched decoded bodies keyed by frame id.
-  // Used by the decodedContains predicate; frames not in the cache
-  // bypass the predicate (over-include rather than over-exclude).
+  // Used by the decodedContains and decodedField predicates; frames
+  // not in the cache are REJECTED by those predicates (hard filter
+  // semantics — see `applyFilter` in protoFilter.ts). Cache stores
+  // the typed JSON value (parsed from the backend's `decodedJson`).
   // Bounded so the chip-based filter doesn't pin unbounded memory.
-  const decodedCacheRef = useRef<Map<string, string>>(new Map());
+  const decodedCacheRef = useRef<Map<string, unknown>>(new Map());
   // Sized to cover the proto ring buffer (5000 frames). The earlier
   // 50-entry cap turned the decodedContains hard-filter into a
   // ghost: the prefetch warmed up to 500 entries, but the next
   // detail-fetch eviction trimmed back to 50, so >99 % of frames
   // had `decoded === undefined` and got rejected. Bumping to 5000
-  // keeps memory bounded (each `decoded` string is ~1-10 KiB → max
-  // ~50 MiB worst case, acceptable on the inspector workstation).
+  // keeps memory bounded (each typed JSON body is ~0.5-5 KiB → max
+  // ~25 MiB worst case, acceptable on the inspector workstation).
   const DECODED_CACHE_MAX = 5000;
   // Pane splits, expressed as fr ratios. Messages tab is stacked
   // top-to-bottom (two vertical splits between MessageList/LayerTree and
@@ -350,10 +352,10 @@ function App(): JSX.Element {
           // Seed the decoded LRU. Map iteration order is insertion
           // order, so re-inserting (delete + set) bumps the entry to
           // the most-recent slot; oldest is the first key.
-          if (detail?.decoded != null) {
+          if (detail?.decodedJson !== undefined && detail.decodedJson !== null) {
             const cache = decodedCacheRef.current;
             cache.delete(detail.id);
-            cache.set(detail.id, detail.decoded);
+            cache.set(detail.id, detail.decodedJson);
             while (cache.size > DECODED_CACHE_MAX) {
               const oldest = cache.keys().next();
               if (oldest.done === true) {
@@ -665,8 +667,8 @@ function App(): JSX.Element {
             });
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- mutated by cleanup return
             if (state.cancelled) return;
-            if (detail?.decoded != null) {
-              cache.set(detail.id, detail.decoded);
+            if (detail?.decodedJson !== undefined && detail.decodedJson !== null) {
+              cache.set(detail.id, detail.decodedJson);
             }
           } catch {
             /* best effort — skip on transient errors */
@@ -697,24 +699,17 @@ function App(): JSX.Element {
   };
   const topFilterError = tab === "messages" ? filterError : protoFilterError;
 
-  const decodedFor = useCallback(
-    (id: string): string | undefined => decodedCacheRef.current.get(id),
-    [],
-  );
+  const decodedFor = useCallback((id: string): unknown => decodedCacheRef.current.get(id), []);
 
-  // Click on a decoded leaf appends a `field "<Struct>.<field>"
-  // == "<value>"` clause — path-aware against the parsed Rust
-  // Debug tree, so a click on `MetadataRequestTopic.name` doesn't
-  // bleed into `TopicProduceData.name` rows just because the
-  // substring happens to match.
-  const onAddDecodedFilter = useCallback(
-    (triple: DecodedFieldTriple, mode: ProtoFilterMode): void => {
-      setProtoFilterText((prev) =>
-        appendProtoClause(prev, "decodedField", encodeDecodedField(triple), mode),
-      );
-    },
-    [],
-  );
+  // Click on a decoded leaf appends a `<name> == "<value>"` clause
+  // (bareword field name, no `field` keyword). The matcher walks the
+  // JSON body looking for any object exposing that property —
+  // auto-adapts to whatever schema the frame carries.
+  const onAddDecodedFilter = useCallback((pair: DecodedFieldPair, mode: ProtoFilterMode): void => {
+    setProtoFilterText((prev) =>
+      appendProtoClause(prev, "decodedField", encodeDecodedField(pair), mode),
+    );
+  }, []);
 
   // Hover-cell click: TOGGLE the (kind, value, mode) predicate.
   //  - Already present in this mode → remove it (the user is undoing).

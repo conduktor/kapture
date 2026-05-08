@@ -243,7 +243,7 @@ fn print_decoder_stats(
             };
             let key = (frame.api_name.to_owned(), frame.api_version, dir);
             let entry = stats.entry(key).or_insert((0, 0));
-            if frame.decoded.is_some() {
+            if frame.decoded_json.is_some() {
                 entry.0 += 1;
             } else {
                 entry.1 += 1;

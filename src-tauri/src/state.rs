@@ -271,7 +271,7 @@ mod tests {
             captured: 0,
             rtt_ms: 0.0,
             payload_hex: String::new(),
-            decoded: None,
+            decoded_json: None,
             summary: None,
         }
     }

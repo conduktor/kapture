@@ -142,12 +142,16 @@ export interface ProtoFrameDetail extends ProtoFrame {
   /** Lowercase hex of the captured prefix. Empty when capture was 0 bytes. */
   payloadHex: string;
   /**
-   * Pretty-printed Debug of the decoded request/response body via the
-   * `kafka-protocol` crate, when the apiKey is in our supported set.
-   * `null` for APIs we don't decode yet — the UI then falls back to
-   * the raw hex view.
+   * Typed JSON of the decoded request/response body. Emitted by the
+   * Kapture fork of `kafka-protocol` (which derives `serde::Serialize`
+   * on every message struct). Newtype wrappers like `GroupId`,
+   * `TopicName` flatten transparently to strings; `unknownTaggedFields`
+   * surface as objects keyed by tag id. `undefined` for APIs we don't
+   * decode yet, when the bytes were truncated past the body, or when
+   * the header parse failed — the UI then falls back to the raw hex
+   * view.
    */
-  decoded: string | null;
+  decodedJson?: unknown;
 }
 
 /**
