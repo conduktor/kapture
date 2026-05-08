@@ -460,7 +460,7 @@ section.msglist[aria-label="Protocol frames"] .msglist__row {
    * carried it. */
   grid-template-columns:
     20px 180px minmax(180px, 1fr) minmax(0, 70px)
-    minmax(0, 80px) minmax(0, 70px);
+    minmax(0, 110px) minmax(0, 70px);
 }
 /* Grid children need `min-width: 0` to shrink below content size. The
  * `proto__col` already declares `overflow: hidden` (ellipsis), but the
@@ -1392,17 +1392,14 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
  * etc.). The wrapper is `position: relative` so the absolute icon
  * floats without participating in layout. */
 .filterable-field {
-  /* Position-relative wrapper that does NOT reserve space for the
-   * icon — the icon is absolutely positioned outside the wrapper's
-   * inline box at `left: 100%`, so it sits right after the
-   * content without consuming cell width. Tight cells (80 px
-   * conn·corr) keep their full width for the value; wide cells
-   * with short values still show the icon next to the value, not
-   * pinned to the column's far edge. */
+  /* Wrapper IS the cell (or fills its grid track) — `position:
+   * relative` so the absolute-positioned icon anchors to the cell
+   * box. `display: block` (not inline-block, not inline-flex) so
+   * grid items stretch as expected and the icon's `right: 4px`
+   * lands at the cell's visible right edge. */
   position: relative;
-  display: inline-block;
+  display: block;
   max-width: 100%;
-  vertical-align: middle;
 }
 .filterable-field--filterable {
   cursor: pointer;
@@ -1418,20 +1415,28 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 }
 .filterable-field__icon {
   position: absolute;
-  left: 100%;
+  right: 4px;
   top: 50%;
   transform: translateY(-50%);
-  margin-left: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+  background: var(--bg-elevated);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
   transition:
     opacity 0.12s,
     color 0.12s;
+}
+/* Match the row's hover bg so the icon's opaque backdrop doesn't
+ * stand out as a white box on the hovered row. */
+.msglist__row:hover .filterable-field__icon {
+  background: var(--bg-hover);
+}
+.msglist__row.is-selected .filterable-field__icon {
+  background: var(--bg-selected);
 }
 .filterable-field__icon svg {
   display: block;
