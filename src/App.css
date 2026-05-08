@@ -1339,6 +1339,13 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   border-bottom: 1px solid var(--border);
   margin-bottom: 4px;
 }
+/* Second section header sits inside the menu body — no top border,
+ * a small top margin to separate it from the previous group. */
+.filter-menu__head--secondary {
+  margin-top: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
 /* Mono `<code>` inside menu items renders the literal DSL the
  * predicate would add — e.g. `topic == "streams-input"`. The
  * "AND" prefix is muted so the predicate itself is the visual
