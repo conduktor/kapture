@@ -109,9 +109,32 @@ export function TopBar({
           onChange={(event) => {
             onFilterChange(event.target.value);
           }}
+          onKeyDown={(event) => {
+            // Esc on a non-empty filter clears it. The browser's
+            // native search-input behaviour, ported to our text input
+            // since we can't use type="search" without inheriting the
+            // UA's pill chrome.
+            if (event.key === "Escape" && filter.length > 0) {
+              event.preventDefault();
+              onFilterChange("");
+            }
+          }}
           aria-invalid={filterError !== null ? "true" : "false"}
           title={filterError ?? undefined}
         />
+        {filter.length > 0 ? (
+          <button
+            type="button"
+            className="topbar__filter-clear"
+            onClick={() => {
+              onFilterChange("");
+            }}
+            aria-label="Clear filter"
+            title="Clear filter (Esc)"
+          >
+            ×
+          </button>
+        ) : null}
         {filterError !== null ? <span className="topbar__filter-error">{filterError}</span> : null}
       </div>
       <button

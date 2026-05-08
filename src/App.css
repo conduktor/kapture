@@ -152,7 +152,9 @@ body,
 .topbar__filter {
   font-family: var(--mono);
   font-size: 12.5px;
-  padding: 8px 12px;
+  /* Trailing right-padding leaves room for the absolute-positioned
+     clear button so a long filter expression doesn't slide under it. */
+  padding: 8px 28px 8px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--bg-elevated);
@@ -162,6 +164,37 @@ body,
     border-color 0.15s,
     box-shadow 0.15s;
   width: 100%;
+}
+.topbar__filter-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.topbar__filter-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.topbar__filter-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 .topbar__filter:focus {
   border-color: var(--accent);
