@@ -21,13 +21,7 @@
 import type { ProtoDirection, ProtoFrame } from "../types";
 import { matchJsonPath } from "./jsonField";
 
-export type ProtoFilterKind =
-  | "apiName"
-  | "direction"
-  | "connectionId"
-  | "corrId"
-  | "decodedContains"
-  | "decodedField";
+export type ProtoFilterKind = "apiName" | "direction" | "connectionId" | "corrId" | "decodedField";
 
 export type ProtoFilterMode = "include" | "exclude";
 
@@ -36,11 +30,9 @@ export interface ProtoFilter {
   directions: { include: ProtoDirection[]; exclude: ProtoDirection[] };
   connectionIds: { include: number[]; exclude: number[] };
   corrIds: { include: number[]; exclude: number[] };
-  /** Free-text "decoded body must contain this substring" predicates. */
-  decodedContains: { include: string[]; exclude: string[] };
-  /** Path-aware "<StructName>.<fieldName> == <value>" predicates.
-   *  Stored as JSON-encoded triples for primitive equality semantics
-   *  in the include/exclude arrays. */
+  /** Path-aware "<dotted.path> == <value>" predicates over the typed
+   *  decoded body. Stored as JSON-encoded `DecodedFieldPair`s for
+   *  primitive equality semantics in the include/exclude arrays. */
   decodedField: { include: string[]; exclude: string[] };
 }
 
@@ -80,7 +72,6 @@ export const EMPTY_PROTO_FILTER: ProtoFilter = {
   directions: { include: [], exclude: [] },
   connectionIds: { include: [], exclude: [] },
   corrIds: { include: [], exclude: [] },
-  decodedContains: { include: [], exclude: [] },
   decodedField: { include: [], exclude: [] },
 };
 
@@ -101,20 +92,15 @@ export function isFilterEmpty(f: ProtoFilter): boolean {
 /**
  * Does the filter need the decoded body to evaluate?
  *
- * Both `decodedContains` and `decodedField` are hard-filter
- * predicates that REJECT a frame whose `decodedJson` isn't cached
- * yet (`applyFilter` semantics). The App-level prefetch loop reads
- * this to decide whether to walk the ring and warm the cache for
- * every visible frame — without that, a filter on a not-yet-clicked
- * frame would silently drop it from the list.
+ * `decodedField` is a hard-filter predicate that REJECTS a frame
+ * whose `decodedJson` isn't cached yet (`applyFilter` semantics).
+ * The App-level prefetch loop reads this to decide whether to walk
+ * the ring and warm the cache for every visible frame — without
+ * that, a filter on a not-yet-clicked frame would silently drop it
+ * from the list.
  */
 export function hasBodyTouchingPredicate(f: ProtoFilter): boolean {
-  return (
-    f.decodedContains.include.length > 0 ||
-    f.decodedContains.exclude.length > 0 ||
-    f.decodedField.include.length > 0 ||
-    f.decodedField.exclude.length > 0
-  );
+  return f.decodedField.include.length > 0 || f.decodedField.exclude.length > 0;
 }
 
 /**
@@ -146,14 +132,8 @@ export function applyFilter(
   if (!matchSet(f.corrIds, frame.corrId)) {
     return false;
   }
-  const dc = f.decodedContains;
   const df = f.decodedField;
-  const needsBody =
-    dc.include.length > 0 ||
-    dc.exclude.length > 0 ||
-    df.include.length > 0 ||
-    df.exclude.length > 0;
-  if (!needsBody) {
+  if (df.include.length === 0 && df.exclude.length === 0) {
     return true;
   }
   const json = decodedFor?.(frame.id);
@@ -162,30 +142,15 @@ export function applyFilter(
     // confirm a match — reject rather than over-include.
     return false;
   }
-  if (dc.include.length > 0 || dc.exclude.length > 0) {
-    // Substring match against the JSON serialisation. `JSON.stringify`
-    // on a typical proto body is sub-millisecond; per-frame cost is
-    // negligible vs the 5000-frame ring cap. Cached behaviour mirrors
-    // the legacy Debug-string predicate without parsing.
-    const text = JSON.stringify(json);
-    if (dc.exclude.some((s) => text.includes(s))) {
-      return false;
-    }
-    if (dc.include.length > 0 && !dc.include.some((s) => text.includes(s))) {
-      return false;
-    }
+  const pairs = (slot: string[]): DecodedFieldPair[] =>
+    slot.map(decodeDecodedField).filter((p): p is DecodedFieldPair => p !== null);
+  const excludes = pairs(df.exclude);
+  if (excludes.some((p) => matchJsonPath(json, p.path, p.value))) {
+    return false;
   }
-  if (df.include.length > 0 || df.exclude.length > 0) {
-    const pairs = (slot: string[]): DecodedFieldPair[] =>
-      slot.map(decodeDecodedField).filter((p): p is DecodedFieldPair => p !== null);
-    const excludes = pairs(df.exclude);
-    if (excludes.some((p) => matchJsonPath(json, p.path, p.value))) {
-      return false;
-    }
-    const includes = pairs(df.include);
-    if (includes.length > 0 && !includes.some((p) => matchJsonPath(json, p.path, p.value))) {
-      return false;
-    }
+  const includes = pairs(df.include);
+  if (includes.length > 0 && !includes.some((p) => matchJsonPath(json, p.path, p.value))) {
+    return false;
   }
   return true;
 }
@@ -205,7 +170,6 @@ interface KindMap {
   direction: ProtoDirection;
   connectionId: number;
   corrId: number;
-  decodedContains: string;
   /** JSON-encoded `DecodedFieldPair` (see `encodeDecodedField`). */
   decodedField: string;
 }
@@ -306,27 +270,7 @@ export function filterChips(f: ProtoFilter): ProtoFilterChip[] {
   for (const v of f.corrIds.exclude) {
     chips.push({ kind: "corrId", mode: "exclude", value: v, label: `corr ≠ ${String(v)}` });
   }
-  for (const v of f.decodedContains.include) {
-    chips.push({
-      kind: "decodedContains",
-      mode: "include",
-      value: v,
-      label: `body ⊃ ${truncate(v)}`,
-    });
-  }
-  for (const v of f.decodedContains.exclude) {
-    chips.push({
-      kind: "decodedContains",
-      mode: "exclude",
-      value: v,
-      label: `body ⊅ ${truncate(v)}`,
-    });
-  }
   return chips;
-}
-
-function truncate(s: string, max = 40): string {
-  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
 
 interface Slot<K extends ProtoFilterKind> {
@@ -344,8 +288,6 @@ function slotFor<K extends ProtoFilterKind>(f: ProtoFilter, kind: K): Slot<K> {
       return f.connectionIds as unknown as Slot<K>;
     case "corrId":
       return f.corrIds as unknown as Slot<K>;
-    case "decodedContains":
-      return f.decodedContains as unknown as Slot<K>;
     case "decodedField":
       return f.decodedField as unknown as Slot<K>;
     default: {
@@ -366,8 +308,6 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
       return { ...f, connectionIds: slot as unknown as ProtoFilter["connectionIds"] };
     case "corrId":
       return { ...f, corrIds: slot as unknown as ProtoFilter["corrIds"] };
-    case "decodedContains":
-      return { ...f, decodedContains: slot as unknown as ProtoFilter["decodedContains"] };
     case "decodedField":
       return { ...f, decodedField: slot as unknown as ProtoFilter["decodedField"] };
     default: {
@@ -383,25 +323,27 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
 // Grammar (AND-only, no OR):
 //   expression := clause ('&&' clause)*
 //   clause     := <kind> <op> <value>
-//   kind       := 'apiName' | 'direction' | 'conn' | 'corrId' | 'decoded'
+//   kind       := 'apiName' | 'direction' | 'conn' | 'corrId' | <ident>
 //   op         := '==' | '!='
 //   value      := <quoted-string> | <bareword> | <integer>
 //
 // User-facing kind tokens differ from the AST keys:
 //   conn    ↔ connectionId
-//   decoded ↔ decodedContains
+//
+// Any non-reserved ident (including dotted paths like
+// `topic_data.partition_data.records.base_offset`) lands in the
+// `decodedField` slot — walked strictly against the typed JSON body.
 //
 // Whitespace flexible. Quoted strings via "..." with `\"` and `\\` escapes.
 // ---------------------------------------------------------------------------
 
-type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded";
+type DslKind = "apiName" | "direction" | "conn" | "corrId";
 
 const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
   apiName: "apiName",
   direction: "direction",
   conn: "connectionId",
   corrId: "corrId",
-  decoded: "decodedContains",
 };
 
 const AST_TO_DSL: Record<Exclude<ProtoFilterKind, "decodedField">, DslKind> = {
@@ -409,7 +351,6 @@ const AST_TO_DSL: Record<Exclude<ProtoFilterKind, "decodedField">, DslKind> = {
   direction: "direction",
   connectionId: "conn",
   corrId: "corrId",
-  decodedContains: "decoded",
 };
 
 const KIND_ORDER: ProtoFilterKind[] = [
@@ -417,7 +358,6 @@ const KIND_ORDER: ProtoFilterKind[] = [
   "direction",
   "connectionId",
   "corrId",
-  "decodedContains",
   "decodedField",
 ];
 
@@ -545,8 +485,6 @@ function slotForReadOnly(
       return f.connectionIds;
     case "corrId":
       return f.corrIds;
-    case "decodedContains":
-      return f.decodedContains;
     case "decodedField":
       return f.decodedField;
   }
@@ -573,7 +511,7 @@ function formatValue(kind: ProtoFilterKind, value: string | number): string {
     // Bareword form for direction — matches what the popover would emit.
     return String(value);
   }
-  // apiName, decodedContains: always quoted.
+  // apiName: always quoted.
   return quoteString(String(value));
 }
 

@@ -852,10 +852,21 @@ function App(): JSX.Element {
           {tab === "session" ? (
             <SessionActivityTab
               protoFrames={protoFrames}
-              onJumpToProtocol={(value, frameId) => {
-                setProtoFilterText((prev) =>
-                  appendProtoClause(prev, "decodedContains", value, "include"),
-                );
+              onJumpToProtocol={(predicates, frameId) => {
+                if (predicates.length > 0) {
+                  setProtoFilterText((prev) => {
+                    let next = prev;
+                    for (const p of predicates) {
+                      next = appendProtoClause(
+                        next,
+                        "decodedField",
+                        encodeDecodedField(p),
+                        "include",
+                      );
+                    }
+                    return next;
+                  });
+                }
                 if (frameId !== undefined) {
                   setSelectedFrameId(frameId);
                 }

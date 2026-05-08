@@ -80,12 +80,6 @@ describe("parseExpression", () => {
     expect(r.filter.directions.include).toEqual(["send"]);
   });
 
-  it("parses decoded substring", () => {
-    const r = parseExpression('decoded == "topic_id"');
-    expect(r.error).toBeNull();
-    expect(r.filter.decodedContains.include).toEqual(["topic_id"]);
-  });
-
   it("parses a dotted-path field predicate", () => {
     const r = parseExpression('topics.name == "orders.avro"');
     expect(r.error).toBeNull();
@@ -198,7 +192,6 @@ describe("round-trip parseExpression ∘ serializeFilter", () => {
     "conn == 7 && conn == 42 && conn == 100",
     "direction == send",
     "direction != recv",
-    'decoded == "topic_id"',
     'topics.name == "orders.avro"',
     'apiName == "Fetch" && conn != 42 && corrId == 7',
   ];

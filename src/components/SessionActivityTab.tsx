@@ -1,6 +1,7 @@
 import { useMemo, type JSX } from "react";
 
 import { aggregateSession, type SessionState } from "../lib/sessionStats";
+import type { DecodedFieldPair } from "../lib/protoFilter";
 import type { ProtoFrame } from "../types";
 
 interface Props {
@@ -11,13 +12,25 @@ interface Props {
    */
   protoFrames: ProtoFrame[];
   /**
-   * Apply a `decodedContains` substring filter on the Protocol tab
-   * and switch to it. Wired through App.tsx so a click on a topic /
-   * group / error frame jumps into the existing protocol inspector
-   * with the right scope already applied.
+   * Switch to the Protocol tab and apply path-aware predicates that
+   * scope it to the clicked entity. The caller (App.tsx) appends each
+   * pair as a `decodedField` clause; multiple pairs in the same call
+   * land in the same slot and OR within the kind, so a topic click
+   * (which surfaces under `topics.name` / `topic_data.name` /
+   * `topics.topic` depending on the RPC) matches any of those paths.
+   * `frameId` pre-selects a specific row — used by the Errors list.
    */
-  onJumpToProtocol: (decodedContainsValue: string, frameId?: string) => void;
+  onJumpToProtocol: (predicates: DecodedFieldPair[], frameId?: string) => void;
 }
+
+/** Paths under which a topic name surfaces across the supported
+ *  RPCs. ORed when the user clicks a topic in the table. */
+const TOPIC_PATHS: readonly string[] = [
+  "topics.name", // MetadataResponse, OffsetCommitRequest, FetchRequest v0..=12 (`name`)
+  "topics.topic", // FetchRequest v0..=12 (`topic` field on FetchTopic)
+  "topic_data.name", // ProduceRequest
+  "responses.name", // ProduceResponse, FetchResponse
+];
 
 export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JSX.Element {
   const session: SessionState = useMemo(() => aggregateSession(protoFrames), [protoFrames]);
@@ -131,7 +144,7 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                     role="row"
                     title={`Filter Protocol tab on "${name}"`}
                     onClick={() => {
-                      onJumpToProtocol(name);
+                      onJumpToProtocol(TOPIC_PATHS.map((path) => ({ path, value: name })));
                     }}
                   >
                     <div className="session__cell session__cell--name" role="cell">
@@ -205,7 +218,7 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                       role="row"
                       title={`Filter Protocol tab on "${id}"`}
                       onClick={() => {
-                        onJumpToProtocol(id);
+                        onJumpToProtocol([{ path: "group_id", value: id }]);
                       }}
                     >
                       <div className="session__cell session__cell--name" role="cell">
@@ -251,7 +264,12 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                     type="button"
                     className="session__error-row"
                     onClick={() => {
-                      onJumpToProtocol(e.errorName, e.frameId);
+                      // Errors get no scoping filter — the Protocol
+                      // list opens unfiltered with the offending frame
+                      // pre-selected, so the user can read its full
+                      // body without first guessing which path the
+                      // error code lives at.
+                      onJumpToProtocol([], e.frameId);
                     }}
                     title="Open this frame in the Protocol tab"
                   >
