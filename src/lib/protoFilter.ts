@@ -16,13 +16,15 @@
  * yet bypass the predicate (over-include rather than over-exclude).
  */
 import type { ProtoDirection, ProtoFrame } from "../types";
+import { matchDebugField, parseDebug } from "./debugTree";
 
 export type ProtoFilterKind =
   | "apiName"
   | "direction"
   | "connectionId"
   | "corrId"
-  | "decodedContains";
+  | "decodedContains"
+  | "decodedField";
 
 export type ProtoFilterMode = "include" | "exclude";
 
@@ -33,6 +35,40 @@ export interface ProtoFilter {
   corrIds: { include: number[]; exclude: number[] };
   /** Free-text "decoded body must contain this substring" predicates. */
   decodedContains: { include: string[]; exclude: string[] };
+  /** Path-aware "<StructName>.<fieldName> == <value>" predicates.
+   *  Stored as JSON-encoded triples for primitive equality semantics
+   *  in the include/exclude arrays. */
+  decodedField: { include: string[]; exclude: string[] };
+}
+
+/** Decoded-field triple. `struct` is the parent struct's name (e.g.
+ *  "MetadataRequestTopic"), `field` is the field name within it
+ *  (e.g. "name"), and `value` is the string view of the leaf (no
+ *  surrounding quotes for strings, raw text for primitives).
+ *  Encoded into the filter slot as `<struct>.<field>=<value>` —
+ *  Rust idents can't contain `.` or `=`, so the separators are
+ *  unambiguous; only the value half can carry arbitrary chars. */
+export interface DecodedFieldTriple {
+  struct: string;
+  field: string;
+  value: string;
+}
+
+export function encodeDecodedField(t: DecodedFieldTriple): string {
+  return `${t.struct}.${t.field}=${t.value}`;
+}
+
+export function decodeDecodedField(s: string): DecodedFieldTriple | null {
+  const eq = s.indexOf("=");
+  if (eq < 0) return null;
+  const path = s.slice(0, eq);
+  const value = s.slice(eq + 1);
+  const dot = path.indexOf(".");
+  if (dot < 0) return null;
+  const struct = path.slice(0, dot);
+  const field = path.slice(dot + 1);
+  if (struct === "" || field === "") return null;
+  return { struct, field, value };
 }
 
 export const EMPTY_PROTO_FILTER: ProtoFilter = {
@@ -41,6 +77,7 @@ export const EMPTY_PROTO_FILTER: ProtoFilter = {
   connectionIds: { include: [], exclude: [] },
   corrIds: { include: [], exclude: [] },
   decodedContains: { include: [], exclude: [] },
+  decodedField: { include: [], exclude: [] },
 };
 
 export function isFilterEmpty(f: ProtoFilter): boolean {
@@ -54,7 +91,9 @@ export function isFilterEmpty(f: ProtoFilter): boolean {
     f.corrIds.include.length === 0 &&
     f.corrIds.exclude.length === 0 &&
     f.decodedContains.include.length === 0 &&
-    f.decodedContains.exclude.length === 0
+    f.decodedContains.exclude.length === 0 &&
+    f.decodedField.include.length === 0 &&
+    f.decodedField.exclude.length === 0
   );
 }
 
@@ -102,6 +141,35 @@ export function applyFilter(
       return false;
     }
   }
+  const df = f.decodedField;
+  if (df.include.length > 0 || df.exclude.length > 0) {
+    const decoded = decodedFor?.(frame.id);
+    if (decoded === undefined) {
+      // Same hard-filter semantics as `decodedContains` — the decoded
+      // body must be cached for path-aware matching to evaluate.
+      return false;
+    }
+    const tree = parseDebug(decoded);
+    if (tree === null) {
+      // Debug-output parse failed (suspicious — kafka-protocol's
+      // derive(Debug) shouldn't drift). Reject so the user sees an
+      // empty list instead of false-positive matches.
+      return false;
+    }
+    const triples = (slot: string[]): DecodedFieldTriple[] =>
+      slot.map(decodeDecodedField).filter((t): t is DecodedFieldTriple => t !== null);
+    const excludes = triples(df.exclude);
+    if (excludes.some((t) => matchDebugField(tree, t.struct, t.field, t.value))) {
+      return false;
+    }
+    const includes = triples(df.include);
+    if (
+      includes.length > 0 &&
+      !includes.some((t) => matchDebugField(tree, t.struct, t.field, t.value))
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 
@@ -121,6 +189,8 @@ interface KindMap {
   connectionId: number;
   corrId: number;
   decodedContains: string;
+  /** JSON-encoded `DecodedFieldTriple` (see `encodeDecodedField`). */
+  decodedField: string;
 }
 
 /**
@@ -259,6 +329,8 @@ function slotFor<K extends ProtoFilterKind>(f: ProtoFilter, kind: K): Slot<K> {
       return f.corrIds as unknown as Slot<K>;
     case "decodedContains":
       return f.decodedContains as unknown as Slot<K>;
+    case "decodedField":
+      return f.decodedField as unknown as Slot<K>;
     default: {
       // Exhaustiveness: TS will flag an unhandled kind at compile time.
       const exhaustive: never = kind;
@@ -279,6 +351,8 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
       return { ...f, corrIds: slot as unknown as ProtoFilter["corrIds"] };
     case "decodedContains":
       return { ...f, decodedContains: slot as unknown as ProtoFilter["decodedContains"] };
+    case "decodedField":
+      return { ...f, decodedField: slot as unknown as ProtoFilter["decodedField"] };
     default: {
       const exhaustive: never = kind;
       throw new Error(`unknown kind: ${String(exhaustive)}`);
@@ -303,7 +377,7 @@ function withSlot<K extends ProtoFilterKind>(f: ProtoFilter, kind: K, slot: Slot
 // Whitespace flexible. Quoted strings via "..." with `\"` and `\\` escapes.
 // ---------------------------------------------------------------------------
 
-type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded";
+type DslKind = "apiName" | "direction" | "conn" | "corrId" | "decoded" | "field";
 
 const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
   apiName: "apiName",
@@ -311,6 +385,7 @@ const DSL_TO_AST: Record<DslKind, ProtoFilterKind> = {
   conn: "connectionId",
   corrId: "corrId",
   decoded: "decodedContains",
+  field: "decodedField",
 };
 
 const AST_TO_DSL: Record<ProtoFilterKind, DslKind> = {
@@ -319,6 +394,7 @@ const AST_TO_DSL: Record<ProtoFilterKind, DslKind> = {
   connectionId: "conn",
   corrId: "corrId",
   decodedContains: "decoded",
+  decodedField: "field",
 };
 
 const KIND_ORDER: ProtoFilterKind[] = [
@@ -327,6 +403,7 @@ const KIND_ORDER: ProtoFilterKind[] = [
   "connectionId",
   "corrId",
   "decodedContains",
+  "decodedField",
 ];
 
 interface ParsedClause {
@@ -383,13 +460,37 @@ export function serializeFilter(f: ProtoFilter): string {
     const sortedInclude = sortValues(astKind, slot.include);
     const sortedExclude = sortValues(astKind, slot.exclude);
     for (const v of sortedInclude) {
-      parts.push(`${dsl} == ${formatValue(astKind, v)}`);
+      parts.push(formatClause(astKind, dsl, "==", v));
     }
     for (const v of sortedExclude) {
-      parts.push(`${dsl} != ${formatValue(astKind, v)}`);
+      parts.push(formatClause(astKind, dsl, "!=", v));
     }
   }
   return parts.join(" && ");
+}
+
+/** `decodedField` renders as `field "<struct>.<field>" == "<value>"`
+ *  so the filter bar reads like a path expression instead of an
+ *  opaque encoded blob. All other kinds use the standard
+ *  `<dsl> <op> <value>` shape. */
+function formatClause(
+  astKind: ProtoFilterKind,
+  dsl: string,
+  op: "==" | "!=",
+  v: string | number,
+): string {
+  if (astKind === "decodedField") {
+    const t = decodeDecodedField(String(v));
+    if (t === null) {
+      return `${dsl} ${op} ${formatValue(astKind, v)}`;
+    }
+    return `${dsl} "${escapeQuoted(`${t.struct}.${t.field}`)}" ${op} ${quoteString(t.value)}`;
+  }
+  return `${dsl} ${op} ${formatValue(astKind, v)}`;
+}
+
+function escapeQuoted(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 /**
@@ -431,6 +532,8 @@ function slotForReadOnly(
       return f.corrIds;
     case "decodedContains":
       return f.decodedContains;
+    case "decodedField":
+      return f.decodedField;
   }
 }
 
@@ -487,6 +590,26 @@ function parseClauses(text: string): ParsedClause[] {
     const astKind = DSL_TO_AST[dslKind];
     i += 1;
 
+    // `field "<struct>.<field>" <op> "<value>"` — path-aware
+    // predicate. The struct/field path is a quoted string between
+    // the kind token and the operator. All other kinds keep the
+    // standard `<kind> <op> <value>` shape.
+    let pathString: string | null = null;
+    if (astKind === "decodedField") {
+      const pathTok = tokens[i];
+      if (pathTok?.type !== "string") {
+        throw new Error(
+          parseErrAt(
+            text,
+            pathTok?.pos ?? text.length,
+            'field requires a quoted "<Struct>.<field>" path',
+          ),
+        );
+      }
+      pathString = pathTok.value as string;
+      i += 1;
+    }
+
     const opTok = tokens[i];
     if (opTok?.type !== "op") {
       throw new Error(parseErrAt(text, opTok?.pos ?? text.length, "expected '==' or '!='"));
@@ -498,7 +621,27 @@ function parseClauses(text: string): ParsedClause[] {
     if (!valTok || (valTok.type !== "string" && valTok.type !== "ident" && valTok.type !== "int")) {
       throw new Error(parseErrAt(text, valTok?.pos ?? text.length, "expected a value"));
     }
-    const value = coerceValue(astKind, valTok, text);
+    let value: string | number;
+    if (astKind === "decodedField") {
+      // The field-path was captured before the operator; combine it
+      // with the value into the encoded triple.
+      if (valTok.type !== "string") {
+        throw new Error(parseErrAt(text, valTok.pos, "field value must be a quoted string"));
+      }
+      const dot = (pathString ?? "").indexOf(".");
+      if (dot < 0 || pathString === null || pathString === "") {
+        throw new Error(
+          parseErrAt(text, valTok.pos, 'field path must look like "<Struct>.<field>"'),
+        );
+      }
+      value = encodeDecodedField({
+        struct: pathString.slice(0, dot),
+        field: pathString.slice(dot + 1),
+        value: valTok.value as string,
+      });
+    } else {
+      value = coerceValue(astKind, valTok, text);
+    }
     i += 1;
     clauses.push({ kind: astKind, mode, value });
 

@@ -2,15 +2,18 @@ import { type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
 import { parseDebug, type DebugNode } from "../lib/debugTree";
 import { formatBytes } from "../lib/formatBytes";
-import type { ProtoFilterMode } from "../lib/protoFilter";
+import type { DecodedFieldTriple, ProtoFilterMode } from "../lib/protoFilter";
 
 /**
- * Add a `decodedContains` predicate from a clicked decoded leaf. The
- * substring is `"<fieldName>: <renderedValue>"` so it matches the exact
- * line emitted by the Rust `format!("{:#?}", msg)` Debug output that
- * powers the decoded view (the kafka-protocol crate uses `derive(Debug)`).
+ * Add a path-aware `decodedField` predicate from a clicked decoded
+ * leaf. The triple captures the parent struct's name, the field
+ * name, and the value — matched against the parsed Debug tree
+ * server-side (`matchDebugField`), so a click on
+ * `MetadataRequestTopic.name = "orders.avro"` does NOT bleed into
+ * a `TopicProduceData.name = "orders.avro"` row even though both
+ * Debug outputs contain the substring `name: "orders.avro"`.
  */
-type AddDecodedFn = (substring: string, mode: ProtoFilterMode) => void;
+type AddDecodedFn = (triple: DecodedFieldTriple, mode: ProtoFilterMode) => void;
 
 interface Props {
   frame: ProtoFrameDetail | null;
@@ -84,24 +87,24 @@ function Field({
   name,
   value,
   onAddDecodedFilter,
-  filterSubstring,
+  triple,
 }: {
   name: string;
   value: string;
-  /** When set, value cell renders a hover-revealed ⊕/⊖ filter button. */
+  /** When set, value cell renders a hover-revealed funnel that
+   *  emits the path-aware `decodedField` predicate. */
   onAddDecodedFilter?: AddDecodedFn;
-  /** Substring used by the predicate; defaults to `name: value` (no quotes). */
-  filterSubstring?: string;
+  /** Triple captured by the recursive walker — `null` when the
+   *  enclosing context isn't a struct (e.g. plain frame metadata
+   *  rows from the `frame` block, which have no Rust-side
+   *  parent struct to anchor against). */
+  triple?: DecodedFieldTriple | null;
 }): JSX.Element {
   return (
     <div className="field">
       <span className="field__name">{name}</span>
-      {onAddDecodedFilter ? (
-        <FilterableValue
-          value={value}
-          onAdd={onAddDecodedFilter}
-          substring={filterSubstring ?? `${name}: ${value}`}
-        />
+      {onAddDecodedFilter && triple ? (
+        <FilterableValue value={value} onAdd={onAddDecodedFilter} triple={triple} />
       ) : (
         <span className="field__value">{value}</span>
       )}
@@ -120,16 +123,16 @@ function Field({
 function FilterableValue({
   value,
   onAdd,
-  substring,
+  triple,
 }: {
   value: string;
   onAdd: AddDecodedFn;
-  substring: string;
+  triple: DecodedFieldTriple;
 }): JSX.Element {
   const onClick = (event: MouseEvent<HTMLButtonElement>): void => {
     event.preventDefault();
     event.stopPropagation();
-    onAdd(substring, event.altKey ? "exclude" : "include");
+    onAdd(triple, event.altKey ? "exclude" : "include");
   };
   return (
     // Reuse the canonical funnel chrome from `<FilterableField>` —
@@ -144,13 +147,13 @@ function FilterableValue({
         role="button"
         tabIndex={-1}
         aria-label="Filter on this field value"
-        title={`Filter on "${substring}" • Alt/Option-click to exclude`}
+        title={`Filter on ${triple.struct}.${triple.field} == "${triple.value}" • Alt/Option-click to exclude`}
         onClick={onClick}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             event.stopPropagation();
-            onAdd(substring, event.altKey ? "exclude" : "include");
+            onAdd(triple, event.altKey ? "exclude" : "include");
           }
         }}
       >
@@ -210,12 +213,17 @@ function DecodedTree({
                 key={i}
                 node={f.value}
                 name={f.name}
+                parentStruct={tree.name}
                 {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
               />
             ))
           )
         ) : (
-          <DebugNodeView node={tree} {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})} />
+          <DebugNodeView
+            node={tree}
+            parentStruct={undefined}
+            {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+          />
         )}
       </div>
     </details>
@@ -233,10 +241,17 @@ function DebugNodeView({
   node,
   name,
   onAddDecodedFilter,
+  parentStruct,
 }: {
   node: DebugNode;
   name?: string;
   onAddDecodedFilter?: AddDecodedFn;
+  /** Name of the enclosing `struct` node, threaded down so leaf
+   *  fields can build a path-aware `decodedField` predicate
+   *  (`<parentStruct>.<fieldName> == <value>`). `undefined` at the
+   *  document root and inside non-struct containers (seq / tuple
+   *  inherit their own parent's `parentStruct`). */
+  parentStruct: string | undefined;
 }): JSX.Element | null {
   // Hide kafka-protocol's empty `unknown_tagged_fields: {}` lines —
   // they're meaningless noise (every struct has one, almost always
@@ -246,6 +261,9 @@ function DebugNodeView({
     return null;
   }
   if (node.kind === "struct") {
+    // Children fields are anchored against THIS struct's name —
+    // leaf-level `decodedField` predicates use it.
+    const childParent = node.name === "" ? parentStruct : node.name;
     return (
       <details className="tree-node" open>
         <summary className="tree-node__summary">
@@ -261,6 +279,7 @@ function DebugNodeView({
                 key={i}
                 node={f.value}
                 name={f.name}
+                parentStruct={childParent}
                 {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
               />
             ))
@@ -285,6 +304,7 @@ function DebugNodeView({
                 key={i}
                 node={item}
                 name={`[${i}]`}
+                parentStruct={parentStruct}
                 {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
               />
             ))
@@ -316,6 +336,7 @@ function DebugNodeView({
         <DebugNodeView
           node={inner}
           name={label}
+          parentStruct={parentStruct}
           {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
         />
       );
@@ -332,6 +353,7 @@ function DebugNodeView({
               key={i}
               node={item}
               name={`[${i}]`}
+              parentStruct={parentStruct}
               {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
             />
           ))}
@@ -339,21 +361,27 @@ function DebugNodeView({
       </details>
     );
   }
-  // Leaf: build a substring that mirrors the Rust `{:#?}` Debug
-  // formatter's "<name>: <rendered>" line so the decodedContains
-  // predicate matches reliably.
-  const rendered = node.kind === "string" ? `"${node.value}"` : node.text;
+  // Leaf: build a path-aware triple `<parentStruct>.<field> = <value>`.
+  // Strings strip the surrounding quotes (the Debug-tree walker
+  // matches against the unquoted leaf text via `debugNodeText`).
+  // Primitives use their raw text (numbers, booleans, idents like
+  // `None`).
+  const displayed = node.kind === "string" ? `"${node.value}"` : node.text;
   const fieldName = name ?? "";
-  // Tuple-flattened labels like `topic_id (TopicName)` aren't valid
-  // field-line prefixes in the Debug output; strip the parenthesized
-  // wrapper for the substring (the bare field name + value still matches).
+  // Tuple-flattened labels like `topic_id (TopicName)` aren't real
+  // field names — the bare segment before the parenthesis is.
   const baseName = fieldName.replace(/\s*\([^)]*\)\s*$/, "");
-  const substring = baseName === "" ? rendered : `${baseName}: ${rendered}`;
+  const matchValue = node.kind === "string" ? node.value : node.text;
+  const triple: DecodedFieldTriple | null =
+    parentStruct !== undefined && baseName !== ""
+      ? { struct: parentStruct, field: baseName, value: matchValue }
+      : null;
   return (
     <Field
       name={fieldName}
-      value={rendered}
-      {...(onAddDecodedFilter ? { onAddDecodedFilter, filterSubstring: substring } : {})}
+      value={displayed}
+      triple={triple}
+      {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
     />
   );
 }

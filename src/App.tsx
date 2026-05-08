@@ -18,9 +18,11 @@ import { ProtoDetail } from "./components/ProtoDetail";
 import { Splitter } from "./components/Splitter";
 import {
   appendClause as appendProtoClause,
+  encodeDecodedField,
   parseExpression as parseProtoExpression,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
+  type DecodedFieldTriple,
   type ProtoFilterChip,
   type ProtoFilterMode,
 } from "./lib/protoFilter";
@@ -715,12 +717,19 @@ function App(): JSX.Element {
     [],
   );
 
-  // Hover popover from the decoded leaf appends a `decoded == "..."`
-  // (or `!=`) clause to the textbox. The chip bar will reflect it via
-  // the parser on the next render.
-  const onAddDecodedFilter = useCallback((substring: string, mode: ProtoFilterMode): void => {
-    setProtoFilterText((prev) => appendProtoClause(prev, "decodedContains", substring, mode));
-  }, []);
+  // Click on a decoded leaf appends a `field "<Struct>.<field>"
+  // == "<value>"` clause — path-aware against the parsed Rust
+  // Debug tree, so a click on `MetadataRequestTopic.name` doesn't
+  // bleed into `TopicProduceData.name` rows just because the
+  // substring happens to match.
+  const onAddDecodedFilter = useCallback(
+    (triple: DecodedFieldTriple, mode: ProtoFilterMode): void => {
+      setProtoFilterText((prev) =>
+        appendProtoClause(prev, "decodedField", encodeDecodedField(triple), mode),
+      );
+    },
+    [],
+  );
 
   // Hover-cell click: TOGGLE the (kind, value, mode) predicate.
   //  - Already present in this mode → remove it (the user is undoing).

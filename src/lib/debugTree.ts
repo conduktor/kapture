@@ -33,6 +33,60 @@ export interface DebugField {
 }
 
 /**
+ * Walk a parsed `DebugNode` tree and check whether any node of kind
+ * `struct` with `name === structName` has a direct field
+ * `name === fieldName` whose value (string or primitive) equals
+ * `value`. Returns `true` on the first match.
+ *
+ * Path-aware sibling of `String.includes()` substring matching: a
+ * frame whose Debug output happens to contain `name: "x"` *somewhere*
+ * (e.g. inside a nested array of `TopicProduceData`) does NOT match
+ * a click that targeted `MetadataRequestTopic.name` — the struct
+ * scope keeps them distinct.
+ */
+export function matchDebugField(
+  root: DebugNode,
+  structName: string,
+  fieldName: string,
+  value: string,
+): boolean {
+  if (root.kind === "struct") {
+    if (root.name === structName) {
+      for (const f of root.fields) {
+        if (f.name !== fieldName) continue;
+        if (debugNodeText(f.value) === value) return true;
+      }
+    }
+    for (const f of root.fields) {
+      if (matchDebugField(f.value, structName, fieldName, value)) return true;
+    }
+    return false;
+  }
+  if (root.kind === "tuple") {
+    for (const item of root.items) {
+      if (matchDebugField(item, structName, fieldName, value)) return true;
+    }
+    return false;
+  }
+  if (root.kind === "seq") {
+    for (const item of root.items) {
+      if (matchDebugField(item, structName, fieldName, value)) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+/** String/primitive view of a leaf node — what equality compares
+ *  against. Strings unwrap their quotes; primitives return their
+ *  raw text (numbers, booleans, idents like `None`). */
+function debugNodeText(n: DebugNode): string | null {
+  if (n.kind === "string") return n.value;
+  if (n.kind === "primitive") return n.text;
+  return null;
+}
+
+/**
  * Parse a complete Debug-formatted value. Returns `null` when the parse
  * fails so the caller can fall back to displaying the raw string.
  */
