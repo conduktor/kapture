@@ -152,7 +152,14 @@ function App(): JSX.Element {
   // bypass the predicate (over-include rather than over-exclude).
   // Bounded so the chip-based filter doesn't pin unbounded memory.
   const decodedCacheRef = useRef<Map<string, string>>(new Map());
-  const DECODED_CACHE_MAX = 50;
+  // Sized to cover the proto ring buffer (5000 frames). The earlier
+  // 50-entry cap turned the decodedContains hard-filter into a
+  // ghost: the prefetch warmed up to 500 entries, but the next
+  // detail-fetch eviction trimmed back to 50, so >99 % of frames
+  // had `decoded === undefined` and got rejected. Bumping to 5000
+  // keeps memory bounded (each `decoded` string is ~1-10 KiB → max
+  // ~50 MiB worst case, acceptable on the inspector workstation).
+  const DECODED_CACHE_MAX = 5000;
   // Pane splits, expressed as fr ratios. Messages tab is stacked
   // top-to-bottom (two vertical splits between MessageList/LayerTree and
   // LayerTree/HexDump). Protocol tab is side-by-side (one horizontal
