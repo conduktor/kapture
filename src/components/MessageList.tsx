@@ -22,6 +22,11 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
+  /** Stable key of the FilterTarget whose popover is currently
+   *  open (parent state). The matching cell pins its filter icon
+   *  visible so the popover-anchor stays obvious when the cursor
+   *  drifts off the row. `null` when no popover is open. */
+  activeMenuKey: string | null;
 }
 
 interface RowProps {
@@ -30,6 +35,7 @@ interface RowProps {
   onSelect: (id: string) => void;
   onOpenFilterMenu: OpenFilterMenu;
   freshIds: ReadonlySet<string>;
+  activeMenuKey: string | null;
 }
 
 const ROW_HEIGHT = 26;
@@ -41,6 +47,7 @@ export function MessageList({
   selectedId,
   onSelect,
   onOpenFilterMenu,
+  activeMenuKey,
 }: Props): JSX.Element {
   // Click-to-select must keep keyboard focus on the section (see
   // ProtoList for the rationale): under heavy traffic react-window
@@ -65,8 +72,9 @@ export function MessageList({
       onSelect: onSelectRow,
       onOpenFilterMenu,
       freshIds,
+      activeMenuKey,
     }),
-    [messages, selectedId, onSelectRow, onOpenFilterMenu, freshIds],
+    [messages, selectedId, onSelectRow, onOpenFilterMenu, freshIds, activeMenuKey],
   );
   // react-window manages its own scrolling container. Driving body
   // scrollTop directly (an earlier attempt) didn't work because the
@@ -161,6 +169,7 @@ function MessageRow({
   onSelect,
   onOpenFilterMenu,
   freshIds,
+  activeMenuKey,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const message = messages[index];
   if (!message) {
@@ -168,6 +177,10 @@ function MessageRow({
   }
   const isSelected = selectedId === message.id;
   const isFresh = freshIds.has(message.id);
+  // Inline duplicate of `App.tsx::filterTargetKey` — keep the row
+  // pure (no cross-module import for one-line concat) and fast.
+  const targetKey = (target: FilterTarget): string =>
+    `${target.path}|${target.literal.kind}|${target.literal.value}`;
 
   // Hover-revealed icon is the primary affordance. Right-click on the cell
   // is kept as a power-user shortcut (no UI cost). Both routes open the
@@ -196,7 +209,9 @@ function MessageRow({
     children: ReactNode,
   ): ReactNode => (
     <span
-      className={`msglist__col ${extraClass} msglist__col--filterable`}
+      className={`msglist__col ${extraClass} msglist__col--filterable${
+        activeMenuKey !== null && activeMenuKey === targetKey(target) ? " is-menu-anchor" : ""
+      }`}
       onContextMenu={ctxHandler(target)}
     >
       <span className="msglist__col-content">{children}</span>

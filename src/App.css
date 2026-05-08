@@ -1409,9 +1409,16 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   display: block;
 }
 .msglist__col--filterable:hover .msglist__filter-icon,
-.msglist__row:hover .msglist__filter-icon:focus-visible {
+.msglist__row:hover .msglist__filter-icon:focus-visible,
+.msglist__col--filterable.is-menu-anchor .msglist__filter-icon {
   opacity: 1;
   pointer-events: auto;
+}
+/* Pin the icon in the accent colour while its popover is open so
+ * the cell-row anchor is unambiguous even when the cursor drifts
+ * onto the popover. */
+.msglist__col--filterable.is-menu-anchor .msglist__filter-icon {
+  color: var(--accent);
 }
 .msglist__filter-icon:hover {
   color: var(--accent);

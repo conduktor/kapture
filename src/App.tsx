@@ -44,6 +44,17 @@ interface MenuState {
   position: { x: number; y: number };
 }
 
+/** Stable identity for a `FilterTarget` so the row whose menu is
+ *  open can keep its filter icon visible even when the cursor
+ *  drifts off the cell (the icon disappearing while the popup is
+ *  still up made it ambiguous which cell the popup belongs to).
+ *  Path + literal kind + literal value is unique enough — two cells
+ *  with the exact same predicate target would legitimately share
+ *  the highlight. */
+function filterTargetKey(t: FilterTarget): string {
+  return `${t.path}|${t.literal.kind}|${t.literal.value}`;
+}
+
 const DEFAULT_UPSTREAM = "localhost:19092";
 const UI_MAX_MESSAGES = 5_000;
 const FILTER_DEBOUNCE_MS = 250;
@@ -852,6 +863,7 @@ function App(): JSX.Element {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpenFilterMenu={openFilterMenu}
+                activeMenuKey={menu === null ? null : filterTargetKey(menu.target)}
               />
               <Splitter
                 orientation="horizontal"
