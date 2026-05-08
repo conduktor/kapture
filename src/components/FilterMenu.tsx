@@ -1,6 +1,12 @@
 import { useEffect, useRef, type JSX } from "react";
 import { createPortal } from "react-dom";
-import { composeAnd, equalityExpr, inequalityExpr, type PrimitiveLiteral } from "../lib/filterExpr";
+import {
+  composeAnd,
+  equalityExpr,
+  inequalityExpr,
+  literalToken,
+  type PrimitiveLiteral,
+} from "../lib/filterExpr";
 
 export interface FilterTarget {
   path: string;
@@ -95,7 +101,11 @@ export function FilterMenu({
       role="menu"
       aria-label="Filter actions"
     >
-      <div className="filter-menu__head">{target.path}</div>
+      <div className="filter-menu__head" title={`${target.path} ${literalToken(target.literal)}`}>
+        <span className="filter-menu__head-path">{target.path}</span>
+        <span className="filter-menu__head-eq">=</span>
+        <span className="filter-menu__head-value">{literalToken(target.literal)}</span>
+      </div>
       <button
         type="button"
         className="filter-menu__item"

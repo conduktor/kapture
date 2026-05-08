@@ -1329,12 +1329,33 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   font-size: 12px;
 }
 .filter-menu__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   padding: 4px 12px 6px 12px;
-  color: var(--text-muted);
   font-family: var(--mono);
   font-size: 11px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 4px;
+  /* Long string values overflow gracefully — the title attr carries
+   * the full predicate for hover-discovery. */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.filter-menu__head-path {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.filter-menu__head-eq {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+.filter-menu__head-value {
+  color: var(--accent);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .filter-menu__item {
   display: block;
