@@ -213,17 +213,59 @@ list. A graph is the natural shape.
 
 ### MCP-driven diagnostics [M]
 
-Pre-canned MCP tools an LLM agent can call:
+Pre-canned MCP tools an LLM agent can call instead of re-deriving
+the same analysis from raw frames every session.
 
-- `kapture_diagnose_consumer_lag(group_id)` → returns commits over
-  time, current generation, members, suspected cause
-- `kapture_explain_rebalance(group_id, time_window)` → reconstructs
-  the rebalance from frames
-- `kapture_compare_runs(stash_a, stash_b)` → diff summary
+**Tools shape (sketch):**
+
+- `kapture_diagnose_consumer_lag(group_id)` → JSON with:
+  - latest committed offset per (topic, partition) for the group
+  - latest observed HWM per partition (from `ListOffsets` /
+    Fetch responses)
+  - estimated lag per partition + total
+  - rebalance count in the last N minutes
+  - suspected cause string (`"healthy"`, `"frequent rebalances"`,
+    `"slow processing"`, `"stuck on partition X"`)
+- `kapture_explain_rebalance(group_id, since?)` → ordered list:
+  `JoinGroup → JoinGroupResponse(gen=N) → SyncGroup →
+Heartbeat × M → trigger`. Each event with `frame_id` so the
+  agent can ask for full bodies if it wants.
+- `kapture_topic_activity(topic, since?)` → produced/consumed
+  record counts, error codes seen, partition coverage.
+- `kapture_session_summary()` → the persistent `SessionStats` plus
+  derived flags (anomaly hits, traffic shape label).
+- `kapture_compare_stashes(stash_a, stash_b)` → diff result (gated
+  on the stash feature shipping first).
+
+**Implementation:**
+
+- New module `src-tauri/src/mcp_diagnostics.rs` that takes a
+  `&AppState` and returns the JSON payloads. Pure functions over
+  the existing `ProtoCorrelator` ring + `SessionStats` aggregate.
+- Each tool registered with the existing MCP server alongside the
+  raw `kapture_proto_frames` etc. tools.
+- Schemas exposed via `JsonSchema` so the agent gets typed
+  argument hints.
+
+**Phasing:**
+
+1. Ship `kapture_session_summary` first — it's a pass-through over
+   `session_stats()` and proves the wiring.
+2. `kapture_diagnose_consumer_lag` next — exercises the
+   "compose multiple frames" pattern.
+3. The rest as we discover what agents actually ask for.
+
+**Open questions:**
+
+- Should the tools include rendering hints (units, severity)? Or
+  let the agent compose the prose? Probably the latter — Kapture
+  ships data, the LLM ships words.
+- MCP token already gates access; no extra auth needed.
 
 _Why:_ The MCP server already exists. Wrapping diagnostic flows in
-named tools means the agent doesn't have to re-derive the same
-analysis from raw frames every time.
+named tools turns the agent from "reads 5000 frames and writes a
+summary" into "asks Kapture, gets a typed answer". Distinctive
+because no other Kafka tool exposes this surface.
 
 ### Watch / alert mode [S]
 
@@ -234,25 +276,99 @@ across sessions.
 _Why:_ Long debug sessions = boredom + miss the moment it happens.
 Active alerting brings the moment to you.
 
-### Traffic shape classification [M]
+### Traffic shape classification [S]
 
-Heuristics that label the client: "producer-only", "single-consumer",
-"streams app", "admin client", "transactional producer", etc. Surface
-in Session Activity client tile.
+Heuristics over the existing `SessionFold` that label the client
+in one shot. Surfaced as a chip below the existing "Client" tile
+in Session Activity (e.g. `apache-kafka-java 3.9.0` _·_
+`streams app + transactional producer`).
+
+**Decision tree (rough):**
+
+| Signal observed                                                | Label                               |
+| -------------------------------------------------------------- | ----------------------------------- |
+| `InitProducerId` seen                                          | adds `transactional producer`       |
+| `ProduceRequest` only, no group RPCs                           | `producer-only`                     |
+| `JoinGroup` seen                                               | adds `consumer`                     |
+| Topics include `*-changelog` or `*-repartition`                | adds `streams app`                  |
+| Only Admin RPCs (CreateTopics, DescribeConfigs, ListGroups, …) | `admin client`                      |
+| `ApiVersionsRequest` only, no follow-ups                       | `probe` (test_proxy_upstream-style) |
+
+Labels compose: a Streams app shows
+`consumer + transactional producer + streams app`.
+
+**Implementation:**
+
+- New `infer_traffic_shape(&SessionFold) -> Vec<TrafficLabel>`
+  in `session_stats.rs`. Pure function, no new state.
+- Result threaded into `SessionStats.shape: Vec<String>` (camelCase
+  serde) so the frontend renders without computing.
+- Re-evaluated on every `session_stats()` snapshot — cheap, no
+  caching needed.
+
+**Open questions:**
+
+- Whether to attach confidence ("looks like a streams app
+  (3 signals)" vs definitive). Probably keep it deterministic and
+  simple — the user can drill into Topics/Groups to verify.
+- Where to draw the line between "consumer" and "streams app"
+  reliably without false-positives on changelog naming
+  conventions.
 
 _Why:_ "What is this client doing?" is the first question every
-debug session asks. Today the user has to deduce it from frame
-patterns; the tool can do it for them.
+debug session asks. The data is already in the fold; we just need
+the rules.
 
 ### Time correlation with app logs [M]
 
-Paste / drop in an app log file (stdout or a structured log). Kapture
-aligns its timeline with log timestamps and overlays log lines on
-the Protocol list at matching timestamps.
+Drop a log file onto Kapture; it aligns log lines with the proto
+frame timeline and renders an interleaved view. The bug usually
+happens _between_ a log line and a Kafka RPC; aligning both
+timelines is what every engineer does mentally — let the tool do
+it.
 
-_Why:_ The bug usually happens _between_ a log line and a Kafka RPC.
-Aligning the two timelines is what most engineers do mentally; let
-the tool do it.
+**Phase 1 — file drop (smallest viable):**
+
+- New tab `Logs` (or right-pane on Protocol). Drop file → parse →
+  render.
+- Timestamp parser tries a fixed list of patterns in order:
+  - ISO 8601 / RFC 3339 (`2026-05-08T17:14:05.156Z`) — Java
+    structured logs, Go's slog, anything serious.
+  - SLF4J / Logback default (`17:14:05.156`) — assume same date as
+    capture.
+  - Python logging default (`2026-05-08 17:14:05,156`).
+  - Anything else → line discarded with a "couldn't parse N lines"
+    indicator.
+- Each line gets a `(timestamp, raw)` pair. Stored client-side, no
+  backend involvement.
+- Render: in the Protocol list, log lines appear as faint
+  inter-row separators with the log text; clicking one expands.
+
+**Phase 2 — overlay on Session Activity:**
+
+- Errors panel shows nearby log lines per error event (within ±2s
+  of `error.ts`). Direct correlation between Kafka error and what
+  the app was logging at that moment.
+
+**Phase 3 — follow stdout (later):**
+
+- "Watch a file" mode: tail a path, append new lines to the
+  timeline live. Same parser. Useful for `cargo run | tee app.log`
+  workflows.
+
+**Open questions:**
+
+- Multi-line log entries (Java stack traces): treat as one event
+  attached to the first line's timestamp.
+- Clock drift between the app and Kapture's machine is irrelevant
+  in local-dev (same host) but exists in container scenarios. Out
+  of scope for v1.
+- Privacy: log lines may contain secrets. Display-only, never
+  shipped via MCP.
+
+_Why:_ Closes the "what was the app doing when this RPC fired"
+loop without leaving Kapture. Cheap interop with the user's
+existing log discipline (no instrumentation required).
 
 ### Pcap-ng export [M]
 
