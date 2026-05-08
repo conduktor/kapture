@@ -6,6 +6,7 @@ mod error;
 mod filter;
 mod mcp;
 mod message;
+mod profile_commands;
 mod profiles;
 mod proto_decode;
 mod proto_event;
@@ -22,6 +23,7 @@ mod proxy_upstream;
 mod ring_buffer;
 mod schema_registry;
 mod schema_resolver;
+mod session_stats;
 mod state;
 
 /// Public re-exports for `cargo run --example proxy_smoke`.
@@ -103,15 +105,16 @@ pub fn run() {
             commands::snapshot,
             commands::inspect_message_by_id,
             commands::proto_frames,
+            commands::session_stats,
             commands::proto_frame_detail,
             commands::stats,
             commands::clear_buffer,
             commands::clear_capture,
             commands::set_filter,
-            commands::list_profiles,
-            commands::save_profile,
-            commands::delete_profile,
-            commands::load_profile,
+            profile_commands::list_profiles,
+            profile_commands::save_profile,
+            profile_commands::delete_profile,
+            profile_commands::load_profile,
             commands::set_mcp_connect_allowed,
             commands::mcp_connect_allowed,
             commands::set_capture_paused,

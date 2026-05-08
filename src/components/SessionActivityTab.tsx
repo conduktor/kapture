@@ -1,24 +1,29 @@
-import { useMemo, type JSX } from "react";
+import { type JSX } from "react";
 
-import { aggregateSession, type SessionState } from "../lib/sessionStats";
+import { errorName, type SessionStats } from "../lib/sessionStats";
 import type { DecodedFieldPair } from "../lib/protoFilter";
-import type { ProtoFrame } from "../types";
 
 interface Props {
   /**
-   * Same `proto_frames` snapshot the Protocol + Brokers tabs consume.
-   * Re-aggregated on every poll via `useMemo` — pure function, no
-   * incrementalisation needed at the ring sizes we care about.
+   * Persistent session aggregate polled from the Rust backend
+   * (`session_stats` Tauri command). Already sorted by name /
+   * groupId server-side, so the tab just renders.
    */
-  protoFrames: ProtoFrame[];
+  session: SessionStats;
+  /**
+   * Total frames seen in the current ring snapshot — used in the
+   * "X frames total" hint. Threaded separately because the
+   * SessionStats aggregate intentionally outlives ring contents.
+   */
+  totalFrames: number;
   /**
    * Switch to the Protocol tab and apply path-aware predicates that
-   * scope it to the clicked entity. The caller (App.tsx) appends each
-   * pair as a `decodedField` clause; multiple pairs in the same call
-   * land in the same slot and OR within the kind, so a topic click
-   * (which surfaces under `topics.name` / `topic_data.name` /
-   * `topics.topic` depending on the RPC) matches any of those paths.
-   * `frameId` pre-selects a specific row — used by the Errors list.
+   * scope it to the clicked entity. Multiple pairs in the same call
+   * land in the same `decodedField` slot and OR within the kind, so
+   * a topic click (which surfaces under `topics.name` /
+   * `topic_data.name` / `topics.topic` depending on the RPC)
+   * matches any of those paths. `frameId` pre-selects a specific
+   * row — used by the Errors list.
    */
   onJumpToProtocol: (predicates: DecodedFieldPair[], frameId?: string) => void;
 }
@@ -32,10 +37,14 @@ const TOPIC_PATHS: readonly string[] = [
   "responses.name", // ProduceResponse, FetchResponse
 ];
 
-export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JSX.Element {
-  const session: SessionState = useMemo(() => aggregateSession(protoFrames), [protoFrames]);
-
-  if (protoFrames.length === 0) {
+export function SessionActivityTab({ session, totalFrames, onJumpToProtocol }: Props): JSX.Element {
+  const isEmpty =
+    session.client === null &&
+    session.connections.length === 0 &&
+    session.topics.length === 0 &&
+    session.groups.length === 0 &&
+    session.errors.length === 0;
+  if (isEmpty) {
     return (
       <div className="session session--empty">
         <div className="session__empty">
@@ -46,8 +55,8 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
     );
   }
 
-  const topicNames = [...session.topics.keys()].sort();
-  const groupIds = [...session.groups.keys()].sort();
+  const topics = session.topics;
+  const groups = session.groups;
   const errorCount = session.errors.length;
 
   return (
@@ -65,17 +74,31 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
         <SummaryTile
           label="Connections"
           value={String(session.connections.length)}
-          hint={`${String(protoFrames.length)} frames total`}
+          hint={`${String(totalFrames)} frames in ring`}
         />
         <SummaryTile
           label="Topics"
-          value={String(topicNames.length)}
-          hint={topicNames.length > 0 ? topicNames.slice(0, 4).join(", ") : "—"}
+          value={String(topics.length)}
+          hint={
+            topics.length > 0
+              ? topics
+                  .slice(0, 4)
+                  .map((t) => t.name)
+                  .join(", ")
+              : "—"
+          }
         />
         <SummaryTile
           label="Groups"
-          value={String(groupIds.length)}
-          hint={groupIds.length > 0 ? groupIds.slice(0, 3).join(", ") : "—"}
+          value={String(groups.length)}
+          hint={
+            groups.length > 0
+              ? groups
+                  .slice(0, 3)
+                  .map((g) => g.groupId)
+                  .join(", ")
+              : "—"
+          }
         />
         <SummaryTile
           label="Errors"
@@ -87,7 +110,7 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
       <div className="session__columns">
         <section className="session__panel" aria-label="Topics">
           <h3 className="session__title">Topics</h3>
-          {topicNames.length === 0 ? (
+          {topics.length === 0 ? (
             <div className="session__placeholder">
               No topic names extracted yet — comes from MetadataResponse, ProduceRequest,
               FetchRequest.
@@ -131,41 +154,35 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                   Err
                 </div>
               </div>
-              {topicNames.map((name) => {
-                const t = session.topics.get(name);
-                if (t === undefined) {
-                  return null;
-                }
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    className="session__row session__row--clickable"
-                    role="row"
-                    title={`Filter Protocol tab on "${name}"`}
-                    onClick={() => {
-                      onJumpToProtocol(TOPIC_PATHS.map((path) => ({ path, value: name })));
-                    }}
+              {topics.map((t) => (
+                <button
+                  key={t.name}
+                  type="button"
+                  className="session__row session__row--clickable"
+                  role="row"
+                  title={`Filter Protocol tab on "${t.name}"`}
+                  onClick={() => {
+                    onJumpToProtocol(TOPIC_PATHS.map((path) => ({ path, value: t.name })));
+                  }}
+                >
+                  <div className="session__cell session__cell--name" role="cell">
+                    {t.name}
+                  </div>
+                  <Tick on={t.metadata} />
+                  <Tick on={t.produced} />
+                  <Tick on={t.consumed} />
+                  <div
+                    className={`session__cell session__cell--center${t.errorCount > 0 ? " session__cell--error" : ""}`}
+                    role="cell"
                   >
-                    <div className="session__cell session__cell--name" role="cell">
-                      {name}
-                    </div>
-                    <Tick on={t.metadata} />
-                    <Tick on={t.produced} />
-                    <Tick on={t.consumed} />
-                    <div
-                      className={`session__cell session__cell--center${t.errorCount > 0 ? " session__cell--error" : ""}`}
-                      role="cell"
-                    >
-                      {t.errorCount === 0 ? "—" : t.errorCount}
-                    </div>
-                  </button>
-                );
-              })}
+                    {t.errorCount === 0 ? "—" : t.errorCount}
+                  </div>
+                </button>
+              ))}
             </div>
           )}
 
-          {groupIds.length > 0 ? (
+          {groups.length > 0 ? (
             <>
               <h3 className="session__title session__title--secondary">Consumer groups</h3>
               <div
@@ -205,43 +222,37 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                     Commits
                   </div>
                 </div>
-                {groupIds.map((id) => {
-                  const g = session.groups.get(id);
-                  if (g === undefined) {
-                    return null;
-                  }
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className="session__row session__row--clickable"
-                      role="row"
-                      title={`Filter Protocol tab on "${id}"`}
-                      onClick={() => {
-                        onJumpToProtocol([{ path: "group_id", value: id }]);
-                      }}
-                    >
-                      <div className="session__cell session__cell--name" role="cell">
-                        {id}
-                      </div>
-                      <div className="session__cell session__cell--center" role="cell">
-                        {g.generation ?? "—"}
-                      </div>
-                      <div className="session__cell session__cell--center" role="cell">
-                        {g.members.size === 0 ? "—" : g.members.size}
-                      </div>
-                      <div className="session__cell session__cell--center" role="cell">
-                        {g.joinCount}
-                      </div>
-                      <div className="session__cell session__cell--center" role="cell">
-                        {g.heartbeatCount}
-                      </div>
-                      <div className="session__cell session__cell--center" role="cell">
-                        {g.commitCount}
-                      </div>
-                    </button>
-                  );
-                })}
+                {groups.map((g) => (
+                  <button
+                    key={g.groupId}
+                    type="button"
+                    className="session__row session__row--clickable"
+                    role="row"
+                    title={`Filter Protocol tab on "${g.groupId}"`}
+                    onClick={() => {
+                      onJumpToProtocol([{ path: "group_id", value: g.groupId }]);
+                    }}
+                  >
+                    <div className="session__cell session__cell--name" role="cell">
+                      {g.groupId}
+                    </div>
+                    <div className="session__cell session__cell--center" role="cell">
+                      {g.generation ?? "—"}
+                    </div>
+                    <div className="session__cell session__cell--center" role="cell">
+                      {g.members.length === 0 ? "—" : g.members.length}
+                    </div>
+                    <div className="session__cell session__cell--center" role="cell">
+                      {g.joinCount}
+                    </div>
+                    <div className="session__cell session__cell--center" role="cell">
+                      {g.heartbeatCount}
+                    </div>
+                    <div className="session__cell session__cell--center" role="cell">
+                      {g.commitCount}
+                    </div>
+                  </button>
+                ))}
               </div>
             </>
           ) : null}
@@ -275,7 +286,7 @@ export function SessionActivityTab({ protoFrames, onJumpToProtocol }: Props): JS
                   >
                     <span className="session__error-ts">{formatTime(e.ts)}</span>
                     <span className="session__error-api">{e.apiName}</span>
-                    <span className="session__error-name">{e.errorName}</span>
+                    <span className="session__error-name">{errorName(e.errorCode)}</span>
                     <span className="session__error-code">({e.errorCode})</span>
                   </button>
                 </li>

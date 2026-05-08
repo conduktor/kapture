@@ -11,14 +11,11 @@ use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::{CapturedMessage, MessageSummary};
-use crate::profiles::{
-    AuthMetadata, LoadedProfile, ProfileMetadata, TlsMetadata, UpstreamSaslMetadata,
-    UpstreamTlsMetadata,
-};
 use crate::proxy_upstream::{
     test_upstream, UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig,
 };
 use crate::ring_buffer::CaptureStats;
+use crate::session_stats::SessionStats;
 use crate::state::AppState;
 
 #[derive(Debug, Serialize)]
@@ -327,8 +324,8 @@ pub async fn start_proxy_impl(
     if !state.try_claim_proxy_slot() {
         return Err(KaptureError::AlreadyProxying);
     }
-    // Fresh capture: drop the live ring + the pinned snapshots from
-    // the previous `stop_proxy` so the new session starts empty.
+    // Fresh session: drop live ring + pinned snapshots from any
+    // prior stop_proxy so the new session starts empty.
     state.buffer.clear();
     state.set_pinned_messages(None);
     state.set_pinned_proto_frames(None);
@@ -663,6 +660,16 @@ pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<Proto
         .unwrap_or_default()
 }
 
+/// Persistent session aggregate (client lib, topics, groups,
+/// errors). Folded incrementally so it survives ring eviction.
+#[tauri::command]
+pub fn session_stats(state: State<'_, AppState>) -> SessionStats {
+    state
+        .correlator()
+        .map(|c| c.session_stats())
+        .unwrap_or_default()
+}
+
 /// Full frame for one id (heavy fields, fetched lazily on row
 /// selection). Consults the pinned snapshot first (set on pause or
 /// `stop_proxy`) so still-visible rows resolve after the live ring
@@ -748,126 +755,6 @@ pub fn set_filter(state: State<'_, AppState>, expression: String) -> Result<()> 
     Ok(())
 }
 
-// ─────────────────────── Connection profiles ───────────────────────
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveProfileArgs {
-    pub name: String,
-    pub bootstrap_servers: String,
-    /// Optional topic regex; `None` records the default pattern intent.
-    #[serde(default)]
-    pub topic_pattern: Option<String>,
-    pub schema_registry_url: Option<String>,
-    pub auth: Option<SaveProfileAuth>,
-    pub from_beginning: bool,
-    /// Proxy-mode upstream TLS (saved from the connection dialog).
-    /// `None` to clear / not record TLS for this profile.
-    #[serde(default)]
-    pub upstream_tls: Option<SaveProfileUpstreamTls>,
-    /// Proxy-mode upstream SASL.
-    #[serde(default)]
-    pub upstream_sasl: Option<SaveProfileUpstreamSasl>,
-}
-
-#[derive(Default, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveProfileUpstreamTls {
-    /// SNI / cert hostname; empty string means "derive from upstream".
-    #[serde(default)]
-    pub server_name: String,
-    pub ca_path: Option<String>,
-    #[serde(default)]
-    pub skip_hostname_verification: bool,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveProfileUpstreamSasl {
-    pub mechanism: String,
-    pub username: String,
-    /// `Some(secret)` to set/replace the keychain entry, `Some("")`
-    /// to clear it, `None` to leave any existing entry untouched.
-    pub password: Option<String>,
-}
-
-impl std::fmt::Debug for SaveProfileUpstreamSasl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SaveProfileUpstreamSasl")
-            .field("mechanism", &self.mechanism)
-            .field("username", &self.username)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .finish()
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveProfileAuth {
-    pub mechanism: String,
-    pub username: String,
-    pub use_tls: bool,
-    /// `Some(...)` to set or replace the SASL keychain password,
-    /// `None` to leave any existing entry untouched, `Some("")`
-    /// to clear it.
-    pub password: Option<String>,
-    /// Optional TLS metadata + key password.
-    #[serde(default)]
-    pub tls: Option<SaveProfileTls>,
-}
-
-impl std::fmt::Debug for SaveProfileAuth {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SaveProfileAuth")
-            .field("mechanism", &self.mechanism)
-            .field("username", &self.username)
-            .field("use_tls", &self.use_tls)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field("tls", &self.tls)
-            .finish()
-    }
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveProfileTls {
-    pub ca_path: Option<String>,
-    pub cert_path: Option<String>,
-    pub key_path: Option<String>,
-    /// Same `Some/None/Some("")` semantics as `password`.
-    pub key_password: Option<String>,
-}
-
-impl std::fmt::Debug for SaveProfileTls {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SaveProfileTls")
-            .field("ca_path", &self.ca_path)
-            .field("cert_path", &self.cert_path)
-            .field("key_path", &self.key_path)
-            .field(
-                "key_password",
-                &self.key_password.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
-
-#[tauri::command]
-pub fn list_profiles(state: State<'_, AppState>) -> Vec<ProfileMetadata> {
-    state.profiles.list()
-}
-
-#[tauri::command]
-pub fn load_profile(state: State<'_, AppState>, name: String) -> Result<LoadedProfile> {
-    Ok(state.profiles.load(&name)?)
-}
-
-#[tauri::command]
-pub fn delete_profile(state: State<'_, AppState>, name: String) -> Result<()> {
-    state.profiles.delete(&name)?;
-    Ok(())
-}
-
 /// Allow or revoke MCP-initiated `kafka_connect_profile`. Defaults
 /// to revoked at startup; the GUI exposes a toggle so the user must
 /// explicitly arm agent-driven captures.
@@ -902,60 +789,6 @@ pub fn set_capture_paused(state: State<'_, AppState>, paused: bool) {
 #[tauri::command]
 pub fn capture_paused(state: State<'_, AppState>) -> bool {
     state.is_paused()
-}
-
-#[tauri::command]
-pub fn save_profile(state: State<'_, AppState>, args: SaveProfileArgs) -> Result<ProfileMetadata> {
-    let auth = args.auth.as_ref().map(|a| {
-        let tls = a.tls.as_ref().map(|t| TlsMetadata {
-            ca_path: empty_to_none(t.ca_path.clone()),
-            cert_path: empty_to_none(t.cert_path.clone()),
-            key_path: empty_to_none(t.key_path.clone()),
-            // overwritten by ProfileStore::save
-            has_key_password: false,
-        });
-        AuthMetadata {
-            mechanism: a.mechanism.clone(),
-            username: a.username.clone(),
-            use_tls: a.use_tls,
-            // overwritten by ProfileStore::save
-            has_password: false,
-            tls,
-        }
-    });
-    let upstream_tls = args.upstream_tls.as_ref().map(|t| UpstreamTlsMetadata {
-        server_name: t.server_name.clone(),
-        ca_path: empty_to_none(t.ca_path.clone()),
-        skip_hostname_verification: t.skip_hostname_verification,
-    });
-    let upstream_sasl = args.upstream_sasl.as_ref().map(|s| UpstreamSaslMetadata {
-        mechanism: s.mechanism.clone(),
-        username: s.username.clone(),
-        // overwritten by ProfileStore::save
-        has_password: false,
-    });
-    let meta = ProfileMetadata {
-        name: args.name,
-        bootstrap_servers: args.bootstrap_servers,
-        topic_pattern: args.topic_pattern,
-        schema_registry_url: args.schema_registry_url,
-        auth,
-        from_beginning: args.from_beginning,
-        upstream_tls,
-        upstream_sasl,
-    };
-    let mut sasl_password: Option<String> = None;
-    let mut key_password: Option<String> = None;
-    if let Some(a) = args.auth {
-        sasl_password = a.password;
-        if let Some(t) = a.tls {
-            key_password = t.key_password;
-        }
-    }
-    let upstream_sasl_password = args.upstream_sasl.and_then(|s| s.password);
-    Ok(state
-        .profiles
-        .save(meta, sasl_password, key_password, upstream_sasl_password)?)
 }
 
 fn spawn_stats_emitter(app: &AppHandle) {

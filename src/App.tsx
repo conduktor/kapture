@@ -30,6 +30,7 @@ import {
 } from "./lib/protoFilter";
 import { BrokersTab } from "./components/BrokersTab";
 import { SessionActivityTab } from "./components/SessionActivityTab";
+import type { SessionStats } from "./lib/sessionStats";
 import type {
   CaptureStats,
   ConnectionState,
@@ -72,12 +73,9 @@ function App(): JSX.Element {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [connection, setConnection] = useState<ConnectionState>(INITIAL_CONNECTION);
   const [stats, setStats] = useState<CaptureStats>(INITIAL_STATS);
-  // Manual UI freeze. Backend keeps capturing — proxy forwards
-  // bytes, ring buffer keeps growing, MCP / inspect / snapshot all
-  // still work. We just stop appending to the visible lists so the
-  // user can investigate a row without it scrolling away.
-  // Distinct from "Stop proxy", which tears down the TCP listener
-  // and would surface as broker disconnects on the client side.
+  // Manual UI freeze. Backend keeps capturing; we just stop
+  // appending to the visible lists. Distinct from Stop, which tears
+  // down the TCP listener and surfaces as a broker disconnect.
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
   useEffect(() => {
@@ -127,6 +125,13 @@ function App(): JSX.Element {
   // first tick lands).
   const [proxyStatusSummary, setProxyStatusSummary] = useState<ProxyStatusSummary | null>(null);
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
+  const [sessionStats, setSessionStats] = useState<SessionStats>({
+    client: null,
+    connections: [],
+    topics: [],
+    groups: [],
+    errors: [],
+  });
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
   // Top-textbox-driven filter for the protocol tab. The textbox is
@@ -136,17 +141,13 @@ function App(): JSX.Element {
   // from the Wireshark-style DSL filter applied to messages — proto
   // frames don't go through the message DSL.
   const [protoFilterText, setProtoFilterText] = useState("");
-  // Opportunistic LRU of fetched decoded bodies keyed by frame id.
-  // Used by the decodedContains and decodedField predicates; frames
-  // not in the cache are REJECTED by those predicates (hard filter
-  // semantics — see `applyFilter` in protoFilter.ts). Cache stores
-  // the typed JSON value (parsed from the backend's `decodedJson`).
-  // Bounded so the chip-based filter doesn't pin unbounded memory.
+  // Opportunistic LRU of decoded bodies keyed by frame id. Feeds
+  // the decodedField hard-filter (see `applyFilter`); uncached
+  // frames are rejected, so prefetch warms it.
   const decodedCacheRef = useRef<Map<string, unknown>>(new Map());
-  // Re-render trigger for cache writes. The map lives in a ref so
-  // it won't re-render on its own; under pause `protoFrames` polling
-  // is suspended too, so without this bump the filtered list would
-  // freeze even as the prefetch warms the cache. RAF-coalesced.
+  // Re-render trigger for cache writes — the ref doesn't trigger,
+  // and under pause polling is off too, so without this bump the
+  // filtered list would freeze. RAF-coalesced.
   const [cacheVersion, setCacheVersion] = useState(0);
   const cacheBumpRafRef = useRef<number | null>(null);
   const bumpDecodedCache = useCallback(() => {
@@ -291,9 +292,13 @@ function App(): JSX.Element {
         return;
       }
       try {
-        const frames = await invoke<ProtoFrame[]>("proto_frames", { limit: 5000 });
+        const [frames, stats] = await Promise.all([
+          invoke<ProtoFrame[]>("proto_frames", { limit: 5000 }),
+          invoke<SessionStats>("session_stats"),
+        ]);
         if (!cancelled) {
           setProtoFrames(frames);
+          setSessionStats(stats);
         }
       } catch (err) {
         if (!cancelled) {
@@ -864,7 +869,8 @@ function App(): JSX.Element {
           </div>
           {tab === "session" ? (
             <SessionActivityTab
-              protoFrames={protoFrames}
+              session={sessionStats}
+              totalFrames={protoFrames.length}
               onJumpToProtocol={(predicates, frameId) => {
                 // Click = SCOPE, not REFINE: replace the existing
                 // filter, since same-slot includes OR (a second topic

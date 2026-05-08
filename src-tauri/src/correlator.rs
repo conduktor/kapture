@@ -28,6 +28,7 @@ use uuid::Uuid;
 use crate::proto_decode;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proto_summary::{self, FrameSummary};
+use crate::session_stats::{SessionFold, SessionStats};
 
 const FETCH_API_KEY: i32 = 1;
 /// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
@@ -161,6 +162,12 @@ pub struct ProtoCorrelator {
     /// Separately locked so the wire-frame ring buffer doesn't contend
     /// with the (much hotter) `FetchMetadata` correlator state.
     frames: Mutex<VecDeque<ProtoFrame>>,
+    /// Incremental session aggregate. Folded once per event so it
+    /// survives ring eviction — the user gets a stable view of "this
+    /// client is librdkafka 2.3.0; topics seen are X, Y; groups
+    /// active are A, B" even after the originating frames scrolled
+    /// out of `frames`.
+    session: Mutex<SessionFold>,
 }
 
 #[derive(Debug, Default)]
@@ -237,6 +244,10 @@ impl ProtoCorrelator {
                 decoded_json,
                 summary,
             };
+            // Fold into the persistent session aggregate before
+            // pushing — the frame may evict before the user opens
+            // the Session Activity tab, but the aggregate persists.
+            self.session.lock().absorb(&frame, frame.summary.as_ref());
             let mut frames = self.frames.lock();
             frames.push_back(frame);
             // Trim in a single batch when we exceed the cap by the
@@ -315,9 +326,18 @@ impl ProtoCorrelator {
     /// without restarting the proxy.
     pub fn clear(&self) {
         self.frames.lock().clear();
+        self.session.lock().clear();
         let mut state = self.state.write();
         state.by_connection.clear();
         state.latest = None;
+    }
+
+    /// Snapshot of the persistent session aggregate. Cheap clone of
+    /// the fold state, returned to the GUI by the `session_stats`
+    /// Tauri command.
+    #[must_use]
+    pub fn session_stats(&self) -> SessionStats {
+        self.session.lock().snapshot()
     }
 
     /// Approximation: returns the most-recent `Fetch` response across

@@ -1,16 +1,13 @@
 /**
- * Aggregate session-level state from a `ProtoFrame[]` snapshot.
+ * Wire types for the persistent session aggregate computed by the
+ * Rust backend (`src-tauri/src/session_stats.rs`).
  *
- * Pure function — same shape as `aggregateByBroker` (walks the ring,
- * folds into a typed `SessionState`). Walked from the typed
- * `frame.summary` projection emitted by the Rust backend, never from
- * the Debug-formatted `decoded` string. New protocol surface = new
- * `FrameSummary` variant + a fold arm here. No regex.
- *
- * Intended consumer: the Session Activity tab. Recomputed on each
- * 1 Hz `proto_frames` poll via `useMemo([protoFrames])`.
+ * The aggregate is folded incrementally on every captured event so
+ * it survives ring-buffer eviction — a `MetadataResponse`
+ * advertising `streams-output` keeps that topic visible in the
+ * Session Activity tab even after the originating frame scrolls
+ * out. Frontend just renders; no folding here.
  */
-import type { FrameSummary, ProtoFrame } from "../types";
 
 export interface ClientInfo {
   software: string;
@@ -24,19 +21,15 @@ export interface ConnectionInfo {
 
 export interface TopicStats {
   name: string;
-  /** Seen as the target of at least one `ProduceRequest`. */
-  produced: boolean;
-  /** Seen as the target of at least one `FetchRequest`. */
-  consumed: boolean;
-  /** Seen in at least one `MetadataResponse` topic list. */
   metadata: boolean;
+  produced: boolean;
+  consumed: boolean;
   errorCount: number;
 }
 
 export interface GroupStats {
   groupId: string;
-  members: Set<string>;
-  /** Latest generation observed (from JoinGroupResponse / commits / heartbeats). */
+  members: string[];
   generation: number | null;
   joinCount: number;
   heartbeatCount: number;
@@ -49,227 +42,32 @@ export interface ErrorEvent {
   frameId: string;
   apiName: string;
   errorCode: number;
-  errorName: string;
-  context: { topic?: string; group?: string };
+  groupId?: string;
 }
 
-export interface SessionState {
+export interface SessionStats {
   client: ClientInfo | null;
   connections: ConnectionInfo[];
-  topics: Map<string, TopicStats>;
-  groups: Map<string, GroupStats>;
+  topics: TopicStats[];
+  groups: GroupStats[];
   errors: ErrorEvent[];
 }
 
-const ERRORS_CAP = 200;
-
-export function aggregateSession(frames: ProtoFrame[]): SessionState {
-  const state: SessionState = {
-    client: null,
-    connections: [],
-    topics: new Map(),
-    groups: new Map(),
-    errors: [],
-  };
-  const connByPort = new Map<number, ConnectionInfo>();
-
-  for (const f of frames) {
-    let conn = connByPort.get(f.localPort);
-    if (conn === undefined) {
-      conn = { localPort: f.localPort, frameCount: 0 };
-      connByPort.set(f.localPort, conn);
-    }
-    conn.frameCount += 1;
-    if (f.summary !== undefined) {
-      foldSummary(state, f, f.summary);
-    }
-  }
-
-  state.connections = [...connByPort.values()].sort((a, b) => a.localPort - b.localPort);
-  // Cap errors window: keep the most recent N. The full list lives
-  // in the Protocol tab anyway; this view is a lossy summary.
-  if (state.errors.length > ERRORS_CAP) {
-    state.errors.splice(0, state.errors.length - ERRORS_CAP);
-  }
-  return state;
-}
-
-function foldSummary(state: SessionState, frame: ProtoFrame, s: FrameSummary): void {
-  switch (s.kind) {
-    case "apiVersionsRequest":
-      // Last-write-wins. In practice the client sends one per
-      // connection, so the latest reflects the active library.
-      if (s.clientSoftwareName.length > 0) {
-        state.client = {
-          software: s.clientSoftwareName,
-          version: s.clientSoftwareVersion,
-        };
-      }
-      break;
-    case "metadataResponse":
-      for (const name of s.topics) {
-        topicOf(state, name).metadata = true;
-      }
-      break;
-    case "produceRequest":
-      for (const name of s.topics) {
-        topicOf(state, name).produced = true;
-      }
-      break;
-    case "fetchRequest":
-      for (const name of s.topics) {
-        topicOf(state, name).consumed = true;
-      }
-      break;
-    case "findCoordinatorRequest":
-      for (const key of s.keys) {
-        groupOf(state, key);
-      }
-      break;
-    case "findCoordinatorResponse":
-      if (s.errorCode !== 0) {
-        pushError(state, frame, s.errorCode, {});
-      }
-      break;
-    case "joinGroupRequest":
-      groupOf(state, s.groupId).joinCount += 1;
-      break;
-    case "joinGroupResponse": {
-      // No groupId on the response — the request immediately
-      // preceding it on the same connection has it. We don't
-      // correlate here; we instead attach the assigned memberId +
-      // generation onto whichever group the frame's connection has
-      // been touching. Cheap heuristic: the most-recently-touched
-      // group on this connection. To stay pure-functional we skip
-      // the connection-aware bit and rely on subsequent
-      // Heartbeat/SyncGroup/OffsetCommit RPCs (which DO carry
-      // groupId) to register member + generation.
-      if (s.errorCode !== 0) {
-        pushError(state, frame, s.errorCode, {});
-      }
-      break;
-    }
-    case "syncGroupRequest": {
-      const g = groupOf(state, s.groupId);
-      if (s.memberId.length > 0) {
-        g.members.add(s.memberId);
-      }
-      g.generation = s.generationId;
-      break;
-    }
-    case "syncGroupResponse":
-      if (s.errorCode !== 0) {
-        pushError(state, frame, s.errorCode, {});
-      }
-      break;
-    case "heartbeatRequest": {
-      const g = groupOf(state, s.groupId);
-      g.heartbeatCount += 1;
-      if (s.memberId.length > 0) {
-        g.members.add(s.memberId);
-      }
-      g.generation = s.generationId;
-      break;
-    }
-    case "heartbeatResponse":
-      if (s.errorCode !== 0) {
-        pushError(state, frame, s.errorCode, {});
-      }
-      break;
-    case "leaveGroupRequest":
-      groupOf(state, s.groupId);
-      break;
-    case "leaveGroupResponse":
-      if (s.errorCode !== 0) {
-        pushError(state, frame, s.errorCode, {});
-      }
-      break;
-    case "offsetCommitRequest": {
-      const g = groupOf(state, s.groupId);
-      g.commitCount += 1;
-      if (s.memberId.length > 0) {
-        g.members.add(s.memberId);
-      }
-      for (const t of s.topics) {
-        topicOf(state, t);
-      }
-      break;
-    }
-    case "offsetCommitResponse":
-      if (s.maxErrorCode !== 0) {
-        pushError(state, frame, s.maxErrorCode, {});
-      }
-      break;
-  }
-}
-
-function topicOf(state: SessionState, name: string): TopicStats {
-  let t = state.topics.get(name);
-  if (t === undefined) {
-    t = {
-      name,
-      produced: false,
-      consumed: false,
-      metadata: false,
-      errorCount: 0,
-    };
-    state.topics.set(name, t);
-  }
-  return t;
-}
-
-function groupOf(state: SessionState, groupId: string): GroupStats {
-  let g = state.groups.get(groupId);
-  if (g === undefined) {
-    g = {
-      groupId,
-      members: new Set(),
-      generation: null,
-      joinCount: 0,
-      heartbeatCount: 0,
-      commitCount: 0,
-      errorCount: 0,
-    };
-    state.groups.set(groupId, g);
-  }
-  return g;
-}
-
-function pushError(
-  state: SessionState,
-  frame: ProtoFrame,
-  errorCode: number,
-  context: { topic?: string; group?: string },
-): void {
-  state.errors.push({
-    ts: frame.timestamp,
-    frameId: frame.id,
-    apiName: frame.apiName,
-    errorCode,
-    errorName: errorName(errorCode),
-    context,
-  });
-  if (context.topic !== undefined) {
-    const t = state.topics.get(context.topic);
-    if (t !== undefined) {
-      t.errorCount += 1;
-    }
-  }
-  if (context.group !== undefined) {
-    const g = state.groups.get(context.group);
-    if (g !== undefined) {
-      g.errorCount += 1;
-    }
-  }
-}
+export const EMPTY_SESSION_STATS: SessionStats = {
+  client: null,
+  connections: [],
+  topics: [],
+  groups: [],
+  errors: [],
+};
 
 /**
- * Map the Kafka error code to its canonical short name. Covers the
- * codes a local-dev session realistically encounters; falls back to
- * `ERROR_<code>` for the long tail. Source:
+ * Map a Kafka error code to its canonical short name. The backend
+ * ships the numeric code; we translate at render time so adding a
+ * code is a frontend-only change. Source:
  * https://kafka.apache.org/protocol#protocol_error_codes
  */
-function errorName(code: number): string {
+export function errorName(code: number): string {
   return ERROR_NAMES[code] ?? `ERROR_${String(code)}`;
 }
 
