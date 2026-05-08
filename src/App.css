@@ -1385,10 +1385,10 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   vertical-align: middle;
 }
 .msglist__filter-icon {
-  /* Float the icon absolutely over the cell's right edge so it
-   * never participates in layout. The cell already has
-   * `position: relative`. Hidden via opacity + pointer-events
-   * idle so it stays a real clickable target on hover/focus. */
+  /* Naked funnel — no surrounding box. The cell has
+   * `position: relative` so the icon floats over the right edge
+   * without participating in layout. Padding gives a comfortable
+   * click target without making it look like a button. */
   position: absolute;
   right: 4px;
   top: 50%;
@@ -1396,21 +1396,14 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  padding: 2px;
   color: var(--text-muted);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
   transition:
     opacity 0.12s,
-    background 0.12s,
-    color 0.12s,
-    border-color 0.12s;
-  box-shadow: var(--shadow-sm);
+    color 0.12s;
 }
 .msglist__filter-icon svg {
   display: block;
@@ -1421,9 +1414,7 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   pointer-events: auto;
 }
 .msglist__filter-icon:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
+  color: var(--accent);
 }
 .field--filterable {
   cursor: pointer;
