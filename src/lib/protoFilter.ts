@@ -9,14 +9,14 @@
  * across each other. Empty include + empty exclude on a kind = no
  * constraint from that kind.
  *
- * `decodedContains` and `decodedField` match against the frame's
- * `decodedJson` — the typed body emitted by the Kapture fork of
- * kafka-protocol (which derives `serde::Serialize` on every message
- * struct). The summary list rows don't carry `decodedJson`, so
- * callers pass an opportunistic cache mapping frame id → JSON value.
- * Frames whose detail hasn't been fetched yet are REJECTED — a
- * filter is a hard constraint, not a hint; the caller pre-warms the
- * cache when one of these predicates is active.
+ * `decodedField` matches against the frame's `decodedJson` — the
+ * typed body emitted by the Kapture fork of kafka-protocol (which
+ * derives `serde::Serialize` on every message struct). The summary
+ * list rows don't carry `decodedJson`, so callers pass an
+ * opportunistic cache mapping frame id → JSON value. Frames whose
+ * detail hasn't been fetched yet are REJECTED — a filter is a hard
+ * constraint, not a hint; the caller pre-warms the cache when a
+ * body-touching predicate is active.
  */
 import type { ProtoDirection, ProtoFrame } from "../types";
 import { matchJsonPath } from "./jsonField";
@@ -107,13 +107,13 @@ export function hasBodyTouchingPredicate(f: ProtoFilter): boolean {
  * Apply the filter to a frame.
  *
  * `decodedFor(id)` returns the cached decoded body for a frame, or
- * `undefined` when the detail hasn't been fetched yet. When the filter
- * has any `decodedContains` predicate active and the decoded body is
- * not cached, the frame is REJECTED — a filter is a hard constraint,
- * not a hint. The caller is expected to pre-warm the decoded cache
- * (see App.tsx's batched prefetch when a decodedContains predicate is
- * present) so the user doesn't see a near-empty list while details
- * trickle in.
+ * `undefined` when the detail hasn't been fetched yet. When the
+ * filter has any `decodedField` predicate active and the decoded
+ * body is not cached, the frame is REJECTED — a filter is a hard
+ * constraint, not a hint. The caller pre-warms the decoded cache
+ * (see App.tsx's batched prefetch keyed on
+ * `hasBodyTouchingPredicate`) so the user doesn't see a near-empty
+ * list while details trickle in.
  */
 export function applyFilter(
   f: ProtoFilter,
