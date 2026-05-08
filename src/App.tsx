@@ -645,14 +645,27 @@ function App(): JSX.Element {
     // the type checker treats as opaque).
     const state = { cancelled: false };
     const cache = decodedCacheRef.current;
+    // Drop orphan cache entries: ids that have been evicted from the
+    // ring buffer no longer correspond to a visible frame, so they're
+    // dead memory. Keeps the cache bounded to the ring size in the
+    // long run without an explicit cap.
+    const liveIds = new Set(protoFrames.map((f) => f.id));
+    for (const id of Array.from(cache.keys())) {
+      if (!liveIds.has(id)) cache.delete(id);
+    }
     // Cap concurrent inflight fetches so we don't flood IPC. Frames
     // are processed newest-first to prioritise what the user is most
     // likely looking at.
+    // No upper bound: a `decodedContains` predicate is a hard
+    // filter that rejects every frame without a cached decoded
+    // body. Capping the prefetch (an earlier 500-frame slice)
+    // left frames 501..5000 invisible no matter what — defeating
+    // the filter. Walk the entire ring; concurrency caps IPC
+    // pressure (~625 sequential round-trips at 8-wide → seconds).
     const queue = protoFrames
       .slice()
       .reverse()
-      .filter((f) => !cache.has(f.id))
-      .slice(0, 500);
+      .filter((f) => !cache.has(f.id));
     const concurrency = 8;
     void (async () => {
       const workers = Array.from({ length: concurrency }, async () => {
