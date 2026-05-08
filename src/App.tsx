@@ -12,18 +12,16 @@ import { McpModal } from "./components/McpModal";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
+import { activeMenuKeyFor, type MenuState } from "./lib/filterMenuState";
 import { ProtoList } from "./components/ProtoList";
 import { ProtoDetail } from "./components/ProtoDetail";
 import { Splitter } from "./components/Splitter";
 import {
-  addPredicate as addProtoPredicate,
   appendClause as appendProtoClause,
-  hasPredicate as hasProtoPredicate,
   parseExpression as parseProtoExpression,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
   type ProtoFilterChip,
-  type ProtoFilterKind,
   type ProtoFilterMode,
 } from "./lib/protoFilter";
 import { BrokersTab } from "./components/BrokersTab";
@@ -38,25 +36,6 @@ import type {
   ProxyStatusSummary,
 } from "./types";
 import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
-
-interface MenuState {
-  target: FilterTarget;
-  position: { x: number; y: number };
-  /** Optional row id of the cell whose icon was clicked. Used to
-   *  pin the icon visible on the *exact* row even when the cursor
-   *  drifts away. `null` when the menu was opened from a non-row
-   *  context (e.g. the LayerTree detail). */
-  anchorId: string | null;
-}
-
-/** Stable identity for the cell that anchored the active menu —
- *  `anchorId | path | kind | value`. The anchor id keeps the
- *  highlight scoped to a single row when many rows share the same
- *  predicate target (e.g. all rows on `topic == "streams-input"`)
- *  — without it every matching cell would light up. */
-function menuAnchorKey(anchorId: string, t: FilterTarget): string {
-  return `${anchorId}|${t.path}|${t.literal.kind}|${t.literal.value}`;
-}
 
 const DEFAULT_UPSTREAM = "localhost:19092";
 const UI_MAX_MESSAGES = 5_000;
@@ -592,7 +571,17 @@ function App(): JSX.Element {
       position: { x: number; y: number },
       anchorId: string | null = null,
     ): void => {
-      setMenu({ target, position, anchorId });
+      setMenu({ target, position, anchorId, scope: "messages" });
+    },
+    [],
+  );
+  const openProtoFilterMenu = useCallback(
+    (
+      target: FilterTarget,
+      position: { x: number; y: number },
+      anchorId: string | null = null,
+    ): void => {
+      setMenu({ target, position, anchorId, scope: "protocol" });
     },
     [],
   );
@@ -720,25 +709,6 @@ function App(): JSX.Element {
   //    in both include and exclude — that would be unsatisfiable).
   // The textbox is then re-serialised from the updated filter so the
   // top-of-page DSL stays the canonical source of truth.
-  const onAddProtoPredicate = useCallback(
-    (kind: ProtoFilterKind, value: number | string, mode: ProtoFilterMode): void => {
-      setProtoFilterText((prev) => {
-        const current = parseProtoExpression(prev).filter;
-        // The protoFilter helpers are generic over `K extends ProtoFilterKind`
-        // with `KindMap[K]` for the value type. We hold the kind+value as a
-        // dynamic pair here (the row only knows them at runtime), so we
-        // forward through `never` to satisfy each generic without an `any`.
-        const k = kind as never;
-        const v = value as never;
-        const next = hasProtoPredicate(current, k, v, mode)
-          ? removeProtoPredicate(current, k, v, mode)
-          : addProtoPredicate(current, k, v, mode);
-        return serializeProtoFilter(next);
-      });
-    },
-    [],
-  );
-
   // Chip removal: parse current text → drop the predicate → serialize
   // back. Keeps the canonical form intact and means the textbox always
   // mirrors the chips exactly. The chip carries `(kind, value)` with
@@ -870,9 +840,7 @@ function App(): JSX.Element {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpenFilterMenu={openFilterMenu}
-                activeMenuKey={
-                  menu?.anchorId == null ? null : menuAnchorKey(menu.anchorId, menu.target)
-                }
+                activeMenuKey={activeMenuKeyFor(menu, "messages")}
               />
               <Splitter
                 orientation="horizontal"
@@ -889,9 +857,7 @@ function App(): JSX.Element {
                 <LayerTree
                   message={selectedDetail}
                   onOpenFilterMenu={openFilterMenu}
-                  activeMenuKey={
-                    menu?.anchorId == null ? null : menuAnchorKey(menu.anchorId, menu.target)
-                  }
+                  activeMenuKey={activeMenuKeyFor(menu, "messages")}
                 />
                 <Splitter
                   onResize={(dy) => {
@@ -912,10 +878,11 @@ function App(): JSX.Element {
                 selectedId={selectedFrameId}
                 onSelect={setSelectedFrameId}
                 filter={protoFilter}
-                onAddPredicate={onAddProtoPredicate}
                 onRemoveChip={onRemoveProtoChip}
                 onClearFilter={onClearProtoFilter}
                 decodedFor={decodedFor}
+                onOpenFilterMenu={openProtoFilterMenu}
+                activeMenuKey={activeMenuKeyFor(menu, "protocol")}
               />
               <Splitter
                 orientation="horizontal"
@@ -969,8 +936,8 @@ function App(): JSX.Element {
         <FilterMenu
           target={menu.target}
           position={menu.position}
-          currentFilter={filter}
-          onApply={applyFilter}
+          currentFilter={menu.scope === "protocol" ? protoFilterText : filter}
+          onApply={menu.scope === "protocol" ? setProtoFilterText : applyFilter}
           onClose={() => {
             setMenu(null);
           }}

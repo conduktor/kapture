@@ -1,27 +1,24 @@
-import {
-  useCallback,
-  useMemo,
-  useRef,
-  type JSX,
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent } from "react";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
-import type { ProtoDirection, ProtoFrame } from "../types";
+import type { ProtoFrame } from "../types";
 import { formatBytes } from "../lib/formatBytes";
 import {
   applyFilter,
-  hasPredicate,
   isFilterEmpty,
   type ProtoFilter,
   type ProtoFilterChip,
-  type ProtoFilterKind,
-  type ProtoFilterMode,
 } from "../lib/protoFilter";
 import { useAutoFollow } from "../lib/useAutoFollow";
 import { useFreshRows } from "../lib/useFreshRows";
 import { formatLocalTime } from "../lib/formatTimestamp";
+import { FilterableField } from "./FilterableField";
+import type { FilterTarget } from "./FilterMenu";
+
+type OpenFilterMenu = (
+  target: FilterTarget,
+  position: { x: number; y: number },
+  anchorId?: string,
+) => void;
 
 interface Props {
   frames: ProtoFrame[];
@@ -29,14 +26,18 @@ interface Props {
   onSelect: (id: string) => void;
   /** Parsed filter (derived from the top-bar text by the parent). */
   filter: ProtoFilter;
-  /** Append a predicate clause to the parent's filter text. */
-  onAddPredicate: (kind: ProtoFilterKind, value: number | string, mode: ProtoFilterMode) => void;
   /** Remove a chip → drop the matching clause from the filter text. */
   onRemoveChip: (chip: ProtoFilterChip) => void;
   /** Clear the entire filter text. */
   onClearFilter: () => void;
   /** Cache lookup for decodedContains predicates (frame id → decoded body). */
   decodedFor?: (id: string) => string | undefined;
+  /** Opens the global FilterMenu popover scoped to the protocol DSL. */
+  onOpenFilterMenu: OpenFilterMenu;
+  /** Stable key of the FilterTarget whose popover is currently open
+   *  (parent state). Threaded into each cell so the funnel stays
+   *  visible + accent-pinned while its popover is up. */
+  activeMenuKey: string | null;
 }
 
 interface RowProps {
@@ -45,21 +46,11 @@ interface RowProps {
   /** Id of the request/response pair partner of the selected frame. */
   pairedId: string | null;
   onSelect: (id: string) => void;
-  onAddPredicate: AddPredicateFn;
-  filter: ProtoFilter;
   /** Ids whose rows should flash on render — newly arrived under live traffic. */
   freshIds: ReadonlySet<string>;
+  onOpenFilterMenu: OpenFilterMenu;
+  activeMenuKey: string | null;
 }
-
-type AddPredicateFn = <K extends ProtoFilterKind>(
-  kind: K,
-  value: K extends "direction"
-    ? ProtoDirection
-    : K extends "connectionId" | "corrId"
-      ? number
-      : string,
-  mode: ProtoFilterMode,
-) => void;
 
 const ROW_HEIGHT = 24;
 
@@ -74,10 +65,11 @@ export function ProtoList({
   selectedId,
   onSelect,
   filter,
-  onAddPredicate: onAddPredicateRaw,
   onRemoveChip: _onRemoveChip,
   onClearFilter: _onClearFilter,
   decodedFor,
+  onOpenFilterMenu,
+  activeMenuKey,
 }: Props): JSX.Element {
   // Apply the filter. Stable identity for `frames` ref keeps reconciliation
   // cheap across renders that don't change the predicates.
@@ -143,17 +135,6 @@ export function ProtoList({
     return null;
   }, [visibleFrames, selectedId]);
 
-  // The parent owns the filter text; the popover just forwards the
-  // (kind, value, mode) triple. AddPredicateFn's per-kind value type
-  // is enforced at the call site (each FilterableCell knows its kind),
-  // so the cast at this hand-off is safe.
-  const onAddPredicate = useCallback<AddPredicateFn>(
-    (kind, value, mode) => {
-      onAddPredicateRaw(kind, value, mode);
-    },
-    [onAddPredicateRaw],
-  );
-
   // Click-to-select must keep keyboard focus on the section, not on
   // the clicked row. Reason: under heavy traffic react-window
   // virtualises aggressively — a row currently holding focus can get
@@ -179,11 +160,11 @@ export function ProtoList({
       selectedId,
       pairedId,
       onSelect: onSelectRow,
-      onAddPredicate,
-      filter,
       freshIds,
+      onOpenFilterMenu,
+      activeMenuKey,
     }),
-    [visibleFrames, selectedId, pairedId, onSelectRow, onAddPredicate, filter, freshIds],
+    [visibleFrames, selectedId, pairedId, onSelectRow, freshIds, onOpenFilterMenu, activeMenuKey],
   );
   const listRef = useRef<ListImperativeAPI | null>(null);
   const { listProps: autoFollowListProps, armUserInput } = useAutoFollow(visibleFrames, listRef);
@@ -295,85 +276,6 @@ export function ProtoList({
   );
 }
 
-interface FilterableCellProps {
-  className: string;
-  title?: string;
-  children: ReactNode;
-  /** Predicate kind. */
-  kind: ProtoFilterKind;
-  /** Value to filter on; type varies with `kind` (string covers ProtoDirection). */
-  value: number | string;
-  /**
-   * Toggle callback. Adds the (kind, value, mode) predicate if absent,
-   * removes it if already present. Wiring lives in App.tsx so the
-   * top-of-page DSL textbox stays the canonical source of truth.
-   */
-  onAdd: AddPredicateFn;
-  /** Current filter — used to decide whether each button is active. */
-  filter: ProtoFilter;
-}
-
-/**
- * Cell wrapper that reveals two tiny filter buttons on hover: `=`
- * (include this value) and `≠` (exclude this value). Each button
- * toggles its own predicate — clicking an already-active button
- * removes that predicate. Active buttons are highlighted in the
- * accent / danger colors so the current state of the row is visible
- * at a glance.
- */
-function FilterableCell({
-  className,
-  title,
-  children,
-  kind,
-  value,
-  onAdd,
-  filter,
-}: FilterableCellProps): JSX.Element {
-  const includeActive = hasPredicate(filter, kind as never, value as never, "include");
-  const excludeActive = hasPredicate(filter, kind as never, value as never, "exclude");
-  const handle =
-    (mode: ProtoFilterMode) =>
-    (event: MouseEvent<HTMLButtonElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      onAdd(kind as never, value as never, mode);
-    };
-  return (
-    <span className={`${className} proto-cell--filterable`} title={title}>
-      <span className="proto-cell__content">{children}</span>
-      <span className="proto-cell__filters">
-        <button
-          type="button"
-          className={`proto-cell__filter proto-cell__filter--include${
-            includeActive ? " is-active" : ""
-          }`}
-          tabIndex={-1}
-          aria-label={includeActive ? "Remove include filter" : "Filter to this value"}
-          aria-pressed={includeActive}
-          title={includeActive ? "Click to remove this include filter" : "Filter to this value"}
-          onClick={handle("include")}
-        >
-          =
-        </button>
-        <button
-          type="button"
-          className={`proto-cell__filter proto-cell__filter--exclude${
-            excludeActive ? " is-active" : ""
-          }`}
-          tabIndex={-1}
-          aria-label={excludeActive ? "Remove exclude filter" : "Exclude this value"}
-          aria-pressed={excludeActive}
-          title={excludeActive ? "Click to remove this exclude filter" : "Exclude this value"}
-          onClick={handle("exclude")}
-        >
-          ≠
-        </button>
-      </span>
-    </span>
-  );
-}
-
 /** Parse an RFC3339 µs timestamp to milliseconds-since-epoch with
  *  sub-ms precision. `Date.parse` truncates to ms; we splice the µs
  *  trailer back in so the inter-frame deltas reflect the wire ordering
@@ -415,9 +317,9 @@ function ProtoRow({
   selectedId,
   pairedId,
   onSelect,
-  onAddPredicate,
-  filter,
   freshIds,
+  onOpenFilterMenu,
+  activeMenuKey,
 }: RowComponentProps<RowProps>): JSX.Element | null {
   const frame = frames[index];
   if (!frame) {
@@ -457,36 +359,42 @@ function ProtoRow({
         {ts}
         {delta !== null ? <span className="proto__ts-delta"> {delta}</span> : null}
       </span>
-      <FilterableCell
+      <FilterableField
         className="proto__col proto__col--api"
-        kind="apiName"
-        value={frame.apiName}
-        onAdd={onAddPredicate}
-        filter={filter}
+        target={{
+          path: "apiName",
+          literal: { kind: "string", value: frame.apiName },
+        }}
+        anchorId={frame.id}
+        activeMenuKey={activeMenuKey}
+        onOpenFilterMenu={onOpenFilterMenu}
       >
         {frame.apiName}
         <span className="proto__api-suffix">
           {frame.direction === "send" ? "Request" : "Response"}
         </span>
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
-      </FilterableCell>
+      </FilterableField>
       <span
         className="proto__col proto__col--size"
         title={`${frame.size.toLocaleString()} bytes wire size`}
       >
         {formatBytes(frame.size)}
       </span>
-      <FilterableCell
+      <FilterableField
         className="proto__col proto__col--broker"
-        kind="connectionId"
-        value={frame.connectionId}
-        onAdd={onAddPredicate}
-        filter={filter}
-        title="Click = / ≠ to filter on this connection. The number after · is the correlation id."
+        target={{
+          path: "connectionId",
+          literal: { kind: "number", value: String(frame.connectionId) },
+        }}
+        anchorId={frame.id}
+        activeMenuKey={activeMenuKey}
+        onOpenFilterMenu={onOpenFilterMenu}
+        title="Filter on this connection. The number after · is the correlation id (`corrId == N` in the DSL)."
       >
         {frame.connectionId}
         <span className="proto__corr-suffix">·{frame.corrId}</span>
-      </FilterableCell>
+      </FilterableField>
       <span className="proto__col proto__col--rtt">
         {frame.direction === "recv" ? (
           <>
