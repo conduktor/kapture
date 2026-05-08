@@ -11,11 +11,29 @@ import { describe, expect, it } from "vitest";
 
 import {
   EMPTY_PROTO_FILTER,
+  addPredicate,
   appendClause,
+  applyFilter,
+  encodeDecodedField,
   isFilterEmpty,
   parseExpression,
+  removePredicate,
   serializeFilter,
 } from "./protoFilter";
+
+const decodedFieldPredicate = encodeDecodedField({
+  struct: "MetadataRequestTopic",
+  field: "name",
+  value: "orders.avro",
+});
+
+const protoFrame = {
+  id: "frame-1",
+  apiName: "Metadata",
+  direction: "send",
+  connectionId: 42,
+  corrId: 7,
+} as Parameters<typeof applyFilter>[1];
 
 describe("parseExpression", () => {
   it("returns empty filter on empty input with no error", () => {
@@ -69,6 +87,13 @@ describe("parseExpression", () => {
     expect(r.filter.decodedContains.include).toEqual(["topic_id"]);
   });
 
+  it("parses a decoded field include", () => {
+    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(r.filter.decodedField.include).toEqual([decodedFieldPredicate]);
+    expect(r.filter.decodedField.exclude).toEqual([]);
+  });
+
   it("preserves && inside quoted strings", () => {
     const r = parseExpression('apiName == "Fetch && weird"');
     expect(r.error).toBeNull();
@@ -106,6 +131,11 @@ describe("parseExpression", () => {
     expect(r.error).toBeNull();
     expect(r.filter.corrIds.include).toEqual([-1]);
   });
+
+  it("rejects a decoded field clause without a path string", () => {
+    const r = parseExpression('field == "orders.avro"');
+    expect(r.error).toMatch(/path|field/);
+  });
 });
 
 describe("serializeFilter", () => {
@@ -142,6 +172,12 @@ describe("serializeFilter", () => {
     expect(r.filter.apiNames.include).toEqual(['weird"name']);
     expect(serializeFilter(r.filter)).toBe('apiName == "weird\\"name"');
   });
+
+  it("renders decoded field predicates as path-aware DSL", () => {
+    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(serializeFilter(r.filter)).toBe('field "MetadataRequestTopic.name" == "orders.avro"');
+  });
 });
 
 describe("round-trip parseExpression ∘ serializeFilter", () => {
@@ -154,6 +190,7 @@ describe("round-trip parseExpression ∘ serializeFilter", () => {
     "direction == send",
     "direction != recv",
     'decoded == "topic_id"',
+    'field "MetadataRequestTopic.name" == "orders.avro"',
     'apiName == "Fetch" && conn != 42 && corrId == 7',
   ];
   for (const input of cases) {
@@ -166,6 +203,16 @@ describe("round-trip parseExpression ∘ serializeFilter", () => {
       expect(serializeFilter(second.filter)).toBe(canonical);
     });
   }
+
+  it("preserves equivalent shape for apiName plus decoded field", () => {
+    const input = 'apiName == "Fetch" && field "MetadataRequestTopic.name" == "orders.avro"';
+    const first = parseExpression(input);
+    expect(first.error).toBeNull();
+    const canonical = serializeFilter(first.filter);
+    const second = parseExpression(canonical);
+    expect(second.error).toBeNull();
+    expect(second.filter).toEqual(first.filter);
+  });
 });
 
 describe("appendClause", () => {
@@ -197,5 +244,52 @@ describe("appendClause", () => {
 
   it("recovers from broken text by starting fresh", () => {
     expect(appendClause("garbage !! nope", "connectionId", 5, "include")).toBe("conn == 5");
+  });
+});
+
+describe("applyFilter decodedField", () => {
+  it("accepts a frame whose decoded body matches the field predicate", () => {
+    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(
+      applyFilter(
+        r.filter,
+        protoFrame,
+        () =>
+          'MetadataRequest { topics: [MetadataRequestTopic { topic_id: 00000000-0000-0000-0000-000000000000, name: "orders.avro" }] }',
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects when the decoded body is not cached", () => {
+    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(applyFilter(r.filter, protoFrame, () => undefined)).toBe(false);
+  });
+
+  it("rejects the same field value on a different parent struct", () => {
+    const r = parseExpression('field "MetadataRequestTopic.name" == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(
+      applyFilter(
+        r.filter,
+        protoFrame,
+        () => 'ProduceRequest { topic_data: [TopicProduceData { name: "orders.avro" }] }',
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("decodedField predicates", () => {
+  it("can be added and removed back to an empty filter", () => {
+    const added = addPredicate(
+      EMPTY_PROTO_FILTER,
+      "decodedField",
+      decodedFieldPredicate,
+      "include",
+    );
+    expect(added.decodedField.include).toEqual([decodedFieldPredicate]);
+    const removed = removePredicate(added, "decodedField", decodedFieldPredicate, "include");
+    expect(isFilterEmpty(removed)).toBe(true);
   });
 });

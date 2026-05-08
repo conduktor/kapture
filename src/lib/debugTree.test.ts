@@ -17,7 +17,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { parseDebug, type DebugField, type DebugNode } from "./debugTree";
+import { matchDebugField, parseDebug, type DebugField, type DebugNode } from "./debugTree";
 
 function expectStruct(
   node: DebugNode | null,
@@ -44,6 +44,99 @@ function fieldByName(fields: DebugField[], name: string): DebugField {
   }
   return found;
 }
+
+function expectParsed(src: string): DebugNode {
+  const node = parseDebug(src);
+  expect(node).not.toBeNull();
+  if (node === null) {
+    throw new Error("unreachable");
+  }
+  return node;
+}
+
+describe("matchDebugField", () => {
+  const cases: {
+    name: string;
+    src: string;
+    structName: string;
+    fieldName: string;
+    value: string;
+    expected: boolean;
+  }[] = [
+    {
+      name: "matches a field on the requested parent struct",
+      src: 'MetadataRequest { topics: [MetadataRequestTopic { topic_id: 00000000-0000-0000-0000-000000000000, name: "orders.avro" }] }',
+      structName: "MetadataRequestTopic",
+      fieldName: "name",
+      value: "orders.avro",
+      expected: true,
+    },
+    {
+      name: "rejects the same field and value on a different parent struct",
+      src: 'ProduceRequest { acks: 1, topic_data: [TopicProduceData { name: "orders.avro" }] }',
+      structName: "MetadataRequestTopic",
+      fieldName: "name",
+      value: "orders.avro",
+      expected: false,
+    },
+    {
+      name: "walks through tuple wrappers",
+      src: 'Some(MetadataRequestTopic { name: "orders.avro" })',
+      structName: "MetadataRequestTopic",
+      fieldName: "name",
+      value: "orders.avro",
+      expected: true,
+    },
+    {
+      name: "walks through a root sequence",
+      src: '[MetadataRequestTopic { name: "x" }, MetadataRequestTopic { name: "y" }]',
+      structName: "MetadataRequestTopic",
+      fieldName: "name",
+      value: "y",
+      expected: true,
+    },
+    {
+      name: "matches primitive leaf text",
+      src: "ProduceRequest { acks: 1 }",
+      structName: "ProduceRequest",
+      fieldName: "acks",
+      value: "1",
+      expected: true,
+    },
+    {
+      name: "rejects the wrong field name",
+      src: 'MetadataRequestTopic { name: "orders.avro" }',
+      structName: "MetadataRequestTopic",
+      fieldName: "topic",
+      value: "orders.avro",
+      expected: false,
+    },
+    {
+      name: "rejects the wrong value",
+      src: 'MetadataRequestTopic { name: "orders.avro" }',
+      structName: "MetadataRequestTopic",
+      fieldName: "name",
+      value: "payments.avro",
+      expected: false,
+    },
+    {
+      name: "rejects the wrong struct name",
+      src: 'MetadataRequestTopic { name: "orders.avro" }',
+      structName: "TopicProduceData",
+      fieldName: "name",
+      value: "orders.avro",
+      expected: false,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      expect(matchDebugField(expectParsed(c.src), c.structName, c.fieldName, c.value)).toBe(
+        c.expected,
+      );
+    });
+  }
+});
 
 describe("parseDebug — MetadataRequest v12", () => {
   // Real shape from a `kcat -L` Metadata v12 request: compact strings,

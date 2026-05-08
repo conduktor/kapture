@@ -27,6 +27,7 @@ import {
   type ProtoFilterMode,
 } from "./lib/protoFilter";
 import { BrokersTab } from "./components/BrokersTab";
+import { SessionActivityTab } from "./components/SessionActivityTab";
 import type {
   CaptureStats,
   ConnectionState,
@@ -38,6 +39,7 @@ import type {
   ProxyStatusSummary,
 } from "./types";
 import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
+import { readSplit } from "./lib/readSplit";
 
 const DEFAULT_UPSTREAM = "localhost:19092";
 const UI_MAX_MESSAGES = 5_000;
@@ -60,23 +62,6 @@ const INITIAL_CONNECTION: ConnectionState = {
   error: null,
   proxyStatus: null,
 };
-
-/** Read a clamped split ratio from localStorage, falling back to default. */
-function readSplit(key: string, fallback: number): number {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (raw === null) {
-      return fallback;
-    }
-    const n = Number.parseFloat(raw);
-    if (Number.isFinite(n) && n >= 0.05 && n <= 0.95) {
-      return n;
-    }
-  } catch {
-    /* localStorage may be unavailable (private mode, file://) — fall through */
-  }
-  return fallback;
-}
 
 function App(): JSX.Element {
   const [filter, setFilter] = useState("");
@@ -134,7 +119,7 @@ function App(): JSX.Element {
   // the disconnected workspace; the user re-opens via the cluster pill.
   const [editing, setEditing] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [tab, setTab] = useState<"messages" | "protocol" | "brokers">("messages");
+  const [tab, setTab] = useState<"messages" | "protocol" | "brokers" | "session">("messages");
   // Lifted from StatusBar so the Brokers tab can read the same snapshot
   // without a second 1Hz poll. Null when no proxy is up (or before the
   // first tick lands).
@@ -855,8 +840,33 @@ function App(): JSX.Element {
                 </span>
               </button>
             ) : null}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "session"}
+              className={`tabs__tab${tab === "session" ? " is-active" : ""}`}
+              onClick={() => {
+                setTab("session");
+              }}
+              title="Aggregated session activity — topics, groups, errors"
+            >
+              Session
+            </button>
           </div>
-          {tab === "brokers" ? (
+          {tab === "session" ? (
+            <SessionActivityTab
+              protoFrames={protoFrames}
+              onJumpToProtocol={(value, frameId) => {
+                setProtoFilterText((prev) =>
+                  appendProtoClause(prev, "decodedContains", value, "include"),
+                );
+                if (frameId !== undefined) {
+                  setSelectedFrameId(frameId);
+                }
+                setTab("protocol");
+              }}
+            />
+          ) : tab === "brokers" ? (
             <BrokersTab proxyStatus={proxyStatusSummary} protoFrames={protoFrames} />
           ) : tab === "messages" ? (
             <div

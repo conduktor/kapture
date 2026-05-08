@@ -272,6 +272,7 @@ mod tests {
             rtt_ms: 0.0,
             payload_hex: String::new(),
             decoded: None,
+            summary: None,
         }
     }
 

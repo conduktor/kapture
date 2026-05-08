@@ -71,7 +71,67 @@ export interface ProtoFrame {
   captured: number;
   /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
   rttMs: number;
+  /**
+   * Typed projection of the decoded body for APIs the Session
+   * Activity tab aggregates. `undefined` for non-projected APIs or
+   * when decoding failed. The discriminator is `kind` — see
+   * `FrameSummary` below.
+   */
+  summary?: FrameSummary;
 }
+
+/**
+ * Structured projection of a decoded protocol body. Eagerly extracted
+ * at frame ingestion (alongside the existing `decoded` Debug string)
+ * so the Session Activity tab can fold each frame into session-level
+ * aggregates without re-parsing the Debug representation.
+ *
+ * Coverage is intentionally narrow: control-plane RPCs, plus
+ * Produce/Fetch *requests* (topic names only — record batches stay
+ * opaque). Per-partition errors nested in Produce/Fetch responses
+ * are out of scope.
+ */
+export type FrameSummary =
+  | {
+      kind: "apiVersionsRequest";
+      clientSoftwareName: string;
+      clientSoftwareVersion: string;
+    }
+  | { kind: "metadataResponse"; topics: string[]; brokers: number }
+  | { kind: "produceRequest"; topics: string[] }
+  | { kind: "fetchRequest"; topics: string[] }
+  | { kind: "findCoordinatorRequest"; keys: string[] }
+  | { kind: "findCoordinatorResponse"; errorCode: number; nodeId: number }
+  | { kind: "joinGroupRequest"; groupId: string; memberId: string }
+  | {
+      kind: "joinGroupResponse";
+      errorCode: number;
+      generationId: number;
+      memberId: string;
+    }
+  | {
+      kind: "syncGroupRequest";
+      groupId: string;
+      memberId: string;
+      generationId: number;
+    }
+  | { kind: "syncGroupResponse"; errorCode: number }
+  | {
+      kind: "heartbeatRequest";
+      groupId: string;
+      memberId: string;
+      generationId: number;
+    }
+  | { kind: "heartbeatResponse"; errorCode: number }
+  | { kind: "leaveGroupRequest"; groupId: string }
+  | { kind: "leaveGroupResponse"; errorCode: number }
+  | {
+      kind: "offsetCommitRequest";
+      groupId: string;
+      memberId: string;
+      topics: string[];
+    }
+  | { kind: "offsetCommitResponse"; maxErrorCode: number };
 
 /**
  * Full frame including the captured bytes (lowercase hex) and the

@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::proto_decode;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
+use crate::proto_summary::{self, FrameSummary};
 
 const FETCH_API_KEY: i32 = 1;
 /// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
@@ -52,10 +53,14 @@ pub struct FetchMetadata {
 
 /// Lightweight projection of `ProtoFrame`.
 ///
-/// Everything needed to draw the Protocol list row. Excludes
-/// `payload_hex` and `decoded` so the 1 Hz poll doesn't ship MB of data
-/// to the renderer when the ring buffer is full of large Fetch
-/// responses.
+/// Everything needed to draw the Protocol list row, plus the typed
+/// `summary` projection used by the Session Activity tab. Excludes
+/// `payload_hex` and `decoded` so the 1 Hz poll doesn't ship MB of
+/// data to the renderer when the ring buffer is full of large Fetch
+/// responses. The summary is bounded (a few hundred bytes worst case
+/// — list of topic names) and well worth shipping eagerly: it's what
+/// lets the frontend aggregate session-level stats without a second
+/// round-trip per frame.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtoFrameSummary {
@@ -73,6 +78,12 @@ pub struct ProtoFrameSummary {
     pub size: usize,
     pub captured: usize,
     pub rtt_ms: f64,
+    /// Typed structured projection of the decoded body for the APIs
+    /// the Session Activity tab cares about. `None` when the api isn't
+    /// projected, when the bytes were truncated past the body, or when
+    /// the body decode failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<FrameSummary>,
 }
 
 impl From<&ProtoFrame> for ProtoFrameSummary {
@@ -90,6 +101,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             size: f.size,
             captured: f.captured,
             rtt_ms: f.rtt_ms,
+            summary: f.summary.clone(),
         }
     }
 }
@@ -130,6 +142,10 @@ pub struct ProtoFrame {
     /// have a `kafka-protocol` decode arm for, when the bytes are
     /// truncated past the body, or when the header parse fails.
     pub decoded: Option<String>,
+    /// Typed projection of the decoded body (subset of fields). `None`
+    /// for APIs that aren't projected. See [`crate::proto_summary`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<FrameSummary>,
 }
 
 #[derive(Debug, Default)]
@@ -169,16 +185,32 @@ impl ProtoCorrelator {
             // responses stay sub-ms. Anything we don't have a decoder
             // arm for returns None and the UI falls back to the hex
             // view.
-            let decoded = if event.payload.is_empty() {
-                None
+            let (decoded, summary) = if event.payload.is_empty() {
+                (None, None)
             } else {
                 let api_version = i16::try_from(event.api_version).unwrap_or(0);
-                proto_decode::decode_frame(
+                // Two passes over the same captured prefix: the
+                // existing Debug-string formatter (for the inspector
+                // pane) and the typed projection (for Session
+                // Activity aggregates). Both are bounded by the
+                // ≤ 64 KiB capture cap and decode in microseconds for
+                // the small control-plane bodies; for big Fetch
+                // responses only the Debug-string pass actually walks
+                // the body — `extract_summary` returns `None` early
+                // for non-projected APIs.
+                let decoded = proto_decode::decode_frame(
                     event.api_key,
                     api_version,
                     event.direction,
                     &event.payload,
-                )
+                );
+                let summary = proto_summary::extract_summary(
+                    event.api_key,
+                    api_version,
+                    event.direction,
+                    &event.payload,
+                );
+                (decoded, summary)
             };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
@@ -195,6 +227,7 @@ impl ProtoCorrelator {
                 rtt_ms: event.rtt_ms,
                 payload_hex: hex::encode(&event.payload),
                 decoded,
+                summary,
             };
             let mut frames = self.frames.lock();
             frames.push_back(frame);

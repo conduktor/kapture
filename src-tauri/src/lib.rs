@@ -9,6 +9,7 @@ mod message;
 mod profiles;
 mod proto_decode;
 mod proto_event;
+mod proto_summary;
 mod proxy;
 mod proxy_broker_map;
 mod proxy_handle;
