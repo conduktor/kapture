@@ -2,7 +2,7 @@
 //! connections, forwards every byte to a real upstream broker, and
 //! taps each frame to the `ProtoCorrelator` so the Protocol tab shows
 //! the wire-level traffic of the *client*, not of Kapture itself.
-//! See `docs/specs/proxy-mode.md`. The listener fleet grows on demand
+//! The listener fleet grows on demand
 //! — the response rewriter calls `BrokerProvisioner::ensure` whenever
 //! it sees a new broker in `Metadata` / `FindCoordinator` /
 //! `DescribeCluster` responses, binding a local listener and spawning

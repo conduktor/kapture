@@ -11,8 +11,6 @@ repository = "https://github.com/sderosiaux/kapture"
 name = "kapture_lib"
 # Tauri's runtime needs `cdylib` on iOS/Android and `rlib` for the
 # desktop integration that links the same crate from `src/main.rs`.
-# The previous `staticlib` slot existed only for the librdkafka FFI
-# patches and is no longer needed.
 crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
@@ -79,9 +77,6 @@ tempfile = "3"
 rcgen = "0.13"
 
 [lints.rust]
-# Proxy mode has no FFI surface; deny unsafe outright. (The previous
-# `proto_hook` module wrapped a C FFI from the patched librdkafka and
-# locally allowed `unsafe`; that module is gone with client mode.)
 unsafe_code = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 

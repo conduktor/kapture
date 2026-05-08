@@ -22,7 +22,6 @@
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml --all-features",
     "rust:proxy-smoke": "cargo run --manifest-path src-tauri/Cargo.toml --example proxy_smoke",
     "test": "vitest run",
-    "tauri:release": "pnpm tauri build && tools/relocate-macos-dylibs.sh",
     "check": "pnpm typecheck && pnpm lint && pnpm format:check && pnpm test && pnpm rust:fmt && pnpm rust:lint && pnpm rust:test",
     "stack:up": "docker compose up -d",
     "stack:up:redpanda": "docker compose --profile redpanda up -d",

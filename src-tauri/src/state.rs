@@ -176,10 +176,6 @@ impl AppState {
 
     /// Read the current Schema Registry client. Returns `None` when
     /// the session was started without a registry URL.
-    ///
-    /// Wired by milestone 2 of `docs/specs/schema-registry.md` when
-    /// the resolver task is added; the milestone-1 plumbing surfaces
-    /// the field but doesn't yet read it.
     #[must_use]
     #[allow(dead_code)]
     pub fn schema_registry(&self) -> Option<Arc<SchemaRegistryClient>> {

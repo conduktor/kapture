@@ -1,7 +1,6 @@
 name: Release
 
-# Triggered by pushing a tag like `v0.2.0`. Builds the Tauri app, relocates
-# Homebrew + vendored dylibs into the .app/Frameworks bundle, signs the
+# Triggered by pushing a tag like `v0.2.0`. Builds the Tauri app, signs the
 # updater artifact, and publishes everything to a GitHub Release alongside
 # `latest.json` (the manifest the in-app updater fetches).
 #
@@ -105,39 +104,16 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
-      - name: Install Homebrew deps
-        # The runner ships current openssl@3 / zstd / cmake. We don't pin
-        # versions because the relocation step bundles whichever the runner
-        # gives us; the resulting .app links them at @rpath. Variability is
-        # acceptable as long as the bundled dylib is what the user runs.
-        # If reproducibility ever matters, switch to a Brewfile.lock.
-        run: brew install openssl@3 zstd cmake
-
       - name: pnpm install
         run: pnpm install --frozen-lockfile
 
-      - name: Build forked librdkafka
-        run: pnpm librdkafka:build
-
       - name: Tauri build (release, no updater artifact yet)
         env:
-          # We sign manually after relocation; don't let Tauri sign the
-          # un-relocated .app.
+          # We sign manually after the bundle step; the workflow signs
+          # the produced .app.tar.gz with the updater key further down.
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: pnpm tauri build --bundles app
-
-      - name: Relocate dylibs into .app/Frameworks
-        # The script itself fails (set -e) if codesign or install_name_tool
-        # fails. It also rejects any leftover non-system absolute path.
-        env:
-          # Real Developer ID Application identity if configured. Otherwise
-          # the script falls back to ad-hoc and emits a WARN. Production
-          # releases must set this secret.
-          CODESIGN_ID: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION || '-' }}
-        run: |
-          chmod +x tools/relocate-macos-dylibs.sh
-          tools/relocate-macos-dylibs.sh
 
       - name: Check Apple notarization secrets
         id: notarize_check

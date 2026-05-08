@@ -1,7 +1,3 @@
-[submodule "vendor/librdkafka"]
-	path = vendor/librdkafka
-	url = https://github.com/sderosiaux/librdkafka.git
-	branch = kapture-proto-hook
 [submodule "vendor/kafka-protocol-rs"]
 	path = vendor/kafka-protocol-rs
 	url = git@github.com:sderosiaux/kafka-protocol-rs.git
