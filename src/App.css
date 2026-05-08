@@ -1379,13 +1379,19 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   vertical-align: middle;
 }
 .msglist__filter-icon {
-  /* display:none idle so the icon reserves no flow width and the
-   * cell content centers/right-aligns purely on its own value.
-   * inline-flex on hover (or keyboard focus) reveals it. */
-  display: none;
+  /* Float the icon absolutely over the cell's right edge so it
+   * never participates in layout — `display: none` idle still
+   * left a flex/inline gap on the chrome side, which shifted
+   * cell content sideways on hover. The cell already has
+   * `position: relative`. Hidden via opacity + pointer-events
+   * so it stays a real clickable target on hover/focus. */
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
   align-items: center;
   justify-content: center;
-  margin-left: 4px;
+  display: inline-flex;
   width: 14px;
   height: 14px;
   border-radius: 3px;
@@ -1395,11 +1401,14 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   font-size: 10px;
   line-height: 1;
   cursor: pointer;
-  vertical-align: middle;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
 }
 .msglist__col--filterable:hover .msglist__filter-icon,
 .msglist__row:hover .msglist__filter-icon:focus-visible {
-  display: inline-flex;
+  opacity: 1;
+  pointer-events: auto;
 }
 .msglist__filter-icon:hover {
   background: var(--accent);
