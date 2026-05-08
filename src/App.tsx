@@ -886,7 +886,13 @@ function App(): JSX.Element {
                   gridTemplateRows: `${msgDetailSplit}fr 6px ${1 - msgDetailSplit}fr`,
                 }}
               >
-                <LayerTree message={selectedDetail} onOpenFilterMenu={openFilterMenu} />
+                <LayerTree
+                  message={selectedDetail}
+                  onOpenFilterMenu={openFilterMenu}
+                  activeMenuKey={
+                    menu?.anchorId == null ? null : menuAnchorKey(menu.anchorId, menu.target)
+                  }
+                />
                 <Splitter
                   onResize={(dy) => {
                     adjustSplit(setMsgDetailSplit, dy);

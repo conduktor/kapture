@@ -1384,6 +1384,64 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   margin: 4px 0;
 }
 
+/* ---------- FilterableField (shared) ---------- *
+ * One canonical chrome for "this value can become a DSL predicate":
+ * naked funnel icon at the cell's right edge, hover-revealed,
+ * accent-pinned while the popover is open. Used everywhere we want
+ * to pivot a value to a filter (Messages list, LayerTree fields,
+ * etc.). The wrapper is `position: relative` so the absolute icon
+ * floats without participating in layout. */
+.filterable-field {
+  position: relative;
+}
+.filterable-field--filterable {
+  cursor: pointer;
+}
+.filterable-field--filterable:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.filterable-field__content {
+  /* No display: inline-block here — keep the cell content's natural
+   * inline behaviour so the surrounding grid column controls
+   * alignment via `text-align`. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filterable-field__icon {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+.filterable-field__icon svg {
+  display: block;
+}
+.filterable-field--filterable:hover .filterable-field__icon,
+.filterable-field--filterable:focus-within .filterable-field__icon,
+.filterable-field.is-menu-anchor .filterable-field__icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+.filterable-field__icon:hover {
+  color: var(--accent);
+}
+.filterable-field.is-menu-anchor .filterable-field__icon {
+  color: var(--accent);
+}
+
 /* Cells with a filter affordance: the chevron icon appears on hover and
    is the primary "click for filter options" affordance. Right-click on
    the cell still opens the menu — same target, no UI cost. */

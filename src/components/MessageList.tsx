@@ -1,15 +1,8 @@
-import {
-  useCallback,
-  useMemo,
-  useRef,
-  type JSX,
-  type KeyboardEvent,
-  type MouseEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent, type ReactNode } from "react";
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { KafkaMessage } from "../types";
 import type { FilterTarget } from "./FilterMenu";
+import { FilterableField } from "./FilterableField";
 import { formatBytes } from "../lib/formatBytes";
 import { formatLocalTime } from "../lib/formatTimestamp";
 import { useAutoFollow } from "../lib/useAutoFollow";
@@ -181,77 +174,23 @@ function MessageRow({
   }
   const isSelected = selectedId === message.id;
   const isFresh = freshIds.has(message.id);
-  // Inline duplicate of `App.tsx::menuAnchorKey` — keep the row
-  // pure (no cross-module import) and fast. Anchor id is the
-  // message id, so two cells with the same predicate target on
-  // different rows don't share the highlight.
-  const cellKey = (target: FilterTarget): string =>
-    `${message.id}|${target.path}|${target.literal.kind}|${target.literal.value}`;
 
-  // Hover-revealed icon is the primary affordance. Right-click on the cell
-  // is kept as a power-user shortcut (no UI cost). Both routes open the
-  // same menu at the cursor position.
-  const ctxHandler =
-    (target: FilterTarget) =>
-    (event: MouseEvent<HTMLSpanElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY }, message.id);
-    };
-  const iconHandler =
-    (target: FilterTarget) =>
-    (event: MouseEvent<HTMLSpanElement>): void => {
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = event.currentTarget.getBoundingClientRect();
-      onOpenFilterMenu(target, { x: rect.right, y: rect.bottom }, message.id);
-    };
-
-  // Cell + hover-revealed filter icon. Inline so we don't have to thread
-  // every cell through a wrapper component just for the affordance.
+  // Wrap the shared `<FilterableField>` in a thin closure so each
+  // grid cell only needs to pass extraClass + target + children.
   const filterableCell = (
     extraClass: string,
     target: FilterTarget,
     children: ReactNode,
   ): ReactNode => (
-    <span
-      className={`msglist__col ${extraClass} msglist__col--filterable${
-        activeMenuKey !== null && activeMenuKey === cellKey(target) ? " is-menu-anchor" : ""
-      }`}
-      onContextMenu={ctxHandler(target)}
+    <FilterableField
+      target={target}
+      anchorId={message.id}
+      activeMenuKey={activeMenuKey}
+      onOpenFilterMenu={onOpenFilterMenu}
+      className={`msglist__col ${extraClass}`}
     >
-      <span className="msglist__col-content">{children}</span>
-      <span
-        className="msglist__filter-icon"
-        role="button"
-        aria-label="Filter actions"
-        title="Filter actions"
-        tabIndex={-1}
-        onClick={iconHandler(target)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            event.stopPropagation();
-            const rect = event.currentTarget.getBoundingClientRect();
-            onOpenFilterMenu(target, { x: rect.right, y: rect.bottom }, message.id);
-          }
-        }}
-      >
-        {/* Funnel glyph — three lines tapering — reads as "filter
-         *  actions" at small sizes far better than the bare chevron
-         *  we used to ship. `currentColor` so the hover-accent rule
-         *  paints stroke + fill in one go. */}
-        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
-          <path
-            d="M2.5 3h11l-4 5v4l-3 1.2V8l-4-5z"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </span>
-    </span>
+      {children}
+    </FilterableField>
   );
 
   return (

@@ -1,10 +1,15 @@
-import type { JSX, MouseEvent, ReactNode } from "react";
+import type { JSX, ReactNode } from "react";
 import type { DecodedValue, KafkaMessageDetail } from "../types";
 import { isValidPath, isValidPathSegment, type PrimitiveLiteral } from "../lib/filterExpr";
 import { formatBytes } from "../lib/formatBytes";
 import type { FilterTarget } from "./FilterMenu";
+import { FilterableField } from "./FilterableField";
 
-type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
+type OpenFilterMenu = (
+  target: FilterTarget,
+  position: { x: number; y: number },
+  anchorId?: string,
+) => void;
 
 // Below 1 KiB `formatBytes` already prints the exact byte count
 // ("25 B"), so a `(25 B)` parenthetical is just noise. Above the
@@ -52,9 +57,13 @@ interface Props {
    *  loading or when no row is selected. */
   message: KafkaMessageDetail | null;
   onOpenFilterMenu: OpenFilterMenu;
+  /** Stable key of the FilterTarget whose popover is currently open
+   *  (parent state). Threaded into each Field so the funnel stays
+   *  visible + accent-pinned while its popover is up. */
+  activeMenuKey: string | null;
 }
 
-export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
+export function LayerTree({ message, onOpenFilterMenu, activeMenuKey }: Props): JSX.Element {
   if (!message) {
     return (
       <section className="layers layers--empty" aria-label="Decoded layers">
@@ -70,6 +79,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           value={message.topic}
           target={{ path: "topic", literal: { kind: "string", value: message.topic } }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         {message.topicId !== null ? (
           <Field
@@ -90,6 +100,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "number", value: String(message.partition) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="offset"
@@ -99,6 +110,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "number", value: String(message.offset) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="timestamp"
@@ -108,6 +120,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "string", value: message.timestamp },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="key"
@@ -122,6 +135,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
                 }
           }
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="size"
@@ -131,6 +145,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "number", value: String(message.sizeBytes) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="key size"
@@ -140,6 +155,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "number", value: String(message.keySize) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
         <Field
           name="value size"
@@ -149,6 +165,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
             literal: { kind: "number", value: String(message.valueSize) },
           }}
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
       </Layer>
       <Layer title={`headers (${message.headers.length})`}>
@@ -239,6 +256,7 @@ export function LayerTree({ message, onOpenFilterMenu }: Props): JSX.Element {
           value={message.payload}
           basePath="payload"
           onOpenFilterMenu={onOpenFilterMenu}
+          activeMenuKey={activeMenuKey}
         />
       </Layer>
     </section>
@@ -259,61 +277,35 @@ function Field({
   value,
   target,
   onOpenFilterMenu,
+  activeMenuKey,
 }: {
   name: string;
   value: string;
   target?: FilterTarget | null;
   onOpenFilterMenu?: OpenFilterMenu;
+  activeMenuKey?: string | null;
 }): JSX.Element {
-  // The whole field row is right-clickable when filterable. Saves the user
-  // from having to aim at the small ⛶ button — Wireshark-style.
-  const ctxHandler =
-    target && onOpenFilterMenu
-      ? (event: MouseEvent<HTMLDivElement>): void => {
-          event.preventDefault();
-          event.stopPropagation();
-          onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
-        }
-      : undefined;
-
-  // Filter chevron lives only on the value cell — the name carries no
-  // independent semantic ("topic" alone isn't a predicate). Right-click
-  // on the whole row still opens the menu (handled via ctxHandler).
-  const openAt = (event: MouseEvent<HTMLButtonElement>): void => {
-    if (target && onOpenFilterMenu) {
-      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
-    }
-  };
-
   return (
-    <div
-      className={`field${ctxHandler ? " field--filterable" : ""}`}
-      {...(ctxHandler ? { onContextMenu: ctxHandler } : {})}
-    >
+    <div className="field">
       <span className="field__name">{name}</span>
-      <span className="field__value field__value--with-icon">
-        {value}
-        {target && onOpenFilterMenu ? <FilterButton onClick={openAt} /> : null}
-      </span>
+      {target && onOpenFilterMenu ? (
+        <FilterableField
+          target={target}
+          // Path is unique per Field within a single LayerTree
+          // render (only one selected detail at a time), so it's a
+          // safe stable anchor id without threading message.id
+          // through every Field call site.
+          anchorId={target.path}
+          activeMenuKey={activeMenuKey ?? null}
+          onOpenFilterMenu={onOpenFilterMenu}
+          className="field__value"
+        >
+          {value}
+        </FilterableField>
+      ) : (
+        <span className="field__value">{value}</span>
+      )}
     </div>
-  );
-}
-
-function FilterButton({
-  onClick,
-}: {
-  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
-}): JSX.Element {
-  return (
-    <button
-      type="button"
-      className="field__filter"
-      onClick={onClick}
-      title="Filter actions (== / != / AND)"
-      aria-label="Filter actions"
-    >
-      ⌄
-    </button>
   );
 }
 
@@ -321,10 +313,12 @@ function DecodedNode({
   value,
   basePath,
   onOpenFilterMenu,
+  activeMenuKey,
 }: {
   value: DecodedValue;
   basePath: string;
   onOpenFilterMenu: OpenFilterMenu;
+  activeMenuKey: string | null;
 }): JSX.Element {
   switch (value.kind) {
     case "primitive": {
@@ -333,24 +327,19 @@ function DecodedNode({
       // the filter affordance.
       const target: FilterTarget | null =
         value.type === "null" || !isValidPath(basePath) ? null : { path: basePath, literal };
-      const ctxHandler = target
-        ? (event: MouseEvent<HTMLSpanElement>): void => {
-            event.preventDefault();
-            event.stopPropagation();
-            onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
-          }
-        : undefined;
       return (
-        <span className="token-row" {...(ctxHandler ? { onContextMenu: ctxHandler } : {})}>
+        <FilterableField
+          target={target}
+          // basePath is unique within a single LayerTree render
+          // (each leaf has a distinct dotted path), so it doubles
+          // as the anchor id without threading message.id down.
+          anchorId={basePath}
+          activeMenuKey={activeMenuKey}
+          onOpenFilterMenu={onOpenFilterMenu}
+          className="token-row"
+        >
           <span className={`token token--${value.type}`}>{value.value}</span>
-          {target ? (
-            <FilterButton
-              onClick={(event) => {
-                onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
-              }}
-            />
-          ) : null}
-        </span>
+        </FilterableField>
       );
     }
     case "bytes":
@@ -374,6 +363,7 @@ function DecodedNode({
                     value={field.value}
                     basePath={childPath}
                     onOpenFilterMenu={onOpenFilterMenu}
+                    activeMenuKey={activeMenuKey}
                   />
                 )}
               </div>
@@ -391,6 +381,7 @@ function DecodedNode({
                 value={item}
                 basePath={`${basePath}.${index}`}
                 onOpenFilterMenu={onOpenFilterMenu}
+                activeMenuKey={activeMenuKey}
               />
             </div>
           ))}
