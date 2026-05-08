@@ -43,7 +43,7 @@ const PROTO_FRAMES_TRIM_HEADROOM: usize = 256;
 pub struct FetchMetadata {
     /// API key — always `1` (Fetch) today, kept for forward-compat.
     pub api_key: i32,
-    pub api_name: &'static str,
+    pub api_name: String,
     pub api_version: i32,
     pub connection_id: i32,
     pub corr_id: i32,
@@ -68,7 +68,7 @@ pub struct ProtoFrameSummary {
     pub timestamp: String,
     pub direction: ProtoDirection,
     pub api_key: i32,
-    pub api_name: &'static str,
+    pub api_name: String,
     pub api_version: i32,
     pub connection_id: i32,
     /// Local listener port that owned the pump emitting this frame.
@@ -93,7 +93,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             timestamp: f.timestamp.clone(),
             direction: f.direction,
             api_key: f.api_key,
-            api_name: f.api_name,
+            api_name: f.api_name.clone(),
             api_version: f.api_version,
             connection_id: f.connection_id,
             local_port: f.local_port,
@@ -118,7 +118,7 @@ pub struct ProtoFrame {
     pub timestamp: String,
     pub direction: ProtoDirection,
     pub api_key: i32,
-    pub api_name: &'static str,
+    pub api_name: String,
     pub api_version: i32,
     pub connection_id: i32,
     /// Local TCP listener port that owned the pump that recorded this
@@ -225,7 +225,7 @@ impl ProtoCorrelator {
                 timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 direction: event.direction,
                 api_key: event.api_key,
-                api_name: ProtoEvent::api_name(event.api_key),
+                api_name: ProtoEvent::api_name_with_direction(event.api_key, event.direction),
                 api_version: event.api_version,
                 connection_id: event.connection_id,
                 local_port: event.local_port,
@@ -256,7 +256,7 @@ impl ProtoCorrelator {
         }
         let meta = FetchMetadata {
             api_key: event.api_key,
-            api_name: ProtoEvent::api_name(event.api_key),
+            api_name: ProtoEvent::api_name_with_direction(event.api_key, event.direction),
             api_version: event.api_version,
             connection_id: event.connection_id,
             corr_id: event.corr_id,

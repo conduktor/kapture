@@ -262,7 +262,7 @@ mod tests {
             timestamp: "2026-05-05T12:00:00Z".to_owned(),
             direction: ProtoDirection::Send,
             api_key: 1,
-            api_name: "Fetch",
+            api_name: "FetchRequest".to_owned(),
             api_version: 11,
             connection_id: 0,
             local_port: 0,

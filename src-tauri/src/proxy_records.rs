@@ -27,7 +27,7 @@ use uuid::Uuid;
 use crate::correlator::FetchMetadata;
 use crate::decode::{decode_payload, render_hex};
 use crate::message::{CapturedMessage, KafkaHeader};
-use crate::proto_event::ProtoEvent;
+use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proxy_topic_ids::TopicIdMap;
 use crate::schema_registry::ConfluentEnvelope;
 
@@ -465,7 +465,9 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
     ) {
         (Some(api_version), Some(corr_id), Some(fetch_conn_id)) => Some(FetchMetadata {
             api_key: 1,
-            api_name: ProtoEvent::api_name(1),
+            // FetchMetadata is only ever stamped from Fetch *responses* —
+            // the correlator skips Send frames in `record_event`.
+            api_name: ProtoEvent::api_name_with_direction(1, ProtoDirection::Recv),
             api_version: i32::from(api_version),
             connection_id: fetch_conn_id,
             corr_id,
@@ -826,7 +828,7 @@ mod tests {
         let captured = extracted_to_captured(rec, 42);
         let fetch = captured.fetch.unwrap();
         assert_eq!(fetch.api_key, 1);
-        assert_eq!(fetch.api_name, "Fetch");
+        assert_eq!(fetch.api_name, "FetchResponse");
         assert_eq!(fetch.api_version, 16);
         assert_eq!(fetch.corr_id, 123);
         assert_eq!(fetch.connection_id, 42);

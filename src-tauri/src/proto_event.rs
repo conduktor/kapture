@@ -43,9 +43,29 @@ pub struct ProtoEvent {
 }
 
 impl ProtoEvent {
-    /// Human-readable name of the API key. Covers everything currently
-    /// in the apache/kafka 4.x protocol. Unknown keys (future KIPs) fall
-    /// through to "Unknown".
+    /// Human-readable name of the API key + direction —
+    /// `ProduceRequest` / `ProduceResponse`, `MetadataRequest` /
+    /// `MetadataResponse`, etc. Mirrors the
+    /// `kafka_protocol::messages` type names so the filter language
+    /// (`apiName == "ProduceResponse"`) reads the same way the user
+    /// sees the row in the list. Unknown keys fall through to
+    /// `UnknownRequest` / `UnknownResponse`.
+    #[must_use]
+    pub fn api_name_with_direction(api_key: i32, direction: ProtoDirection) -> String {
+        let suffix = match direction {
+            ProtoDirection::Send => "Request",
+            ProtoDirection::Recv => "Response",
+        };
+        let mut s = String::with_capacity(Self::api_name(api_key).len() + suffix.len());
+        s.push_str(Self::api_name(api_key));
+        s.push_str(suffix);
+        s
+    }
+
+    /// Base API-key name, no direction suffix. Kept around for the
+    /// schema cross-check test against the `kafka-protocol` enum and
+    /// for callers that already know the direction context (e.g. the
+    /// `FetchMetadata` correlator only ever stamps Fetch responses).
     #[must_use]
     pub const fn api_name(api_key: i32) -> &'static str {
         match api_key {

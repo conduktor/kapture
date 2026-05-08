@@ -241,7 +241,7 @@ fn print_decoder_stats(
                 kapture_lib::example_api::ProtoDirection::Send => "send",
                 kapture_lib::example_api::ProtoDirection::Recv => "recv",
             };
-            let key = (frame.api_name.to_owned(), frame.api_version, dir);
+            let key = (frame.api_name.clone(), frame.api_version, dir);
             let entry = stats.entry(key).or_insert((0, 0));
             if frame.decoded_json.is_some() {
                 entry.0 += 1;

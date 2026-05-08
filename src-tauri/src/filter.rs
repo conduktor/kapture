@@ -459,7 +459,7 @@ fn resolve_fetch<'a>(rest: &[String], message: &'a CapturedMessage) -> Value<'a>
     match field.as_str() {
         "api_key" => Value::Number(f64::from(fetch.api_key)),
         "api_version" => Value::Number(f64::from(fetch.api_version)),
-        "api_name" => Value::String(fetch.api_name),
+        "api_name" => Value::String(&fetch.api_name),
         "connection_id" => Value::Number(f64::from(fetch.connection_id)),
         "corr_id" => Value::Number(f64::from(fetch.corr_id)),
         "response_size" => Value::Number(fetch.response_size as f64),
@@ -659,7 +659,7 @@ mod tests {
             raw_hex: String::new(),
             fetch: Some(crate::correlator::FetchMetadata {
                 api_key: 1,
-                api_name: "Fetch",
+                api_name: "FetchResponse".to_owned(),
                 api_version: 11,
                 connection_id: 0,
                 corr_id: 0x12,
@@ -835,8 +835,10 @@ mod tests {
 
     #[test]
     fn fetch_string_paths() {
-        assert!(matches("fetch.api_name == \"Fetch\""));
-        assert!(!matches("fetch.api_name == \"Produce\""));
+        // FetchMetadata is only stamped on Fetch *responses*, so the
+        // api_name string carries the full request/response form.
+        assert!(matches("fetch.api_name == \"FetchResponse\""));
+        assert!(!matches("fetch.api_name == \"ProduceResponse\""));
     }
 
     #[test]
