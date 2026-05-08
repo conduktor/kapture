@@ -1,12 +1,6 @@
 import { useEffect, useRef, type JSX } from "react";
 import { createPortal } from "react-dom";
-import {
-  composeAnd,
-  equalityExpr,
-  inequalityExpr,
-  literalToken,
-  type PrimitiveLiteral,
-} from "../lib/filterExpr";
+import { composeAnd, equalityExpr, inequalityExpr, type PrimitiveLiteral } from "../lib/filterExpr";
 
 export interface FilterTarget {
   path: string;
@@ -101,19 +95,20 @@ export function FilterMenu({
       role="menu"
       aria-label="Filter actions"
     >
-      <div className="filter-menu__head" title={`${target.path} ${literalToken(target.literal)}`}>
-        <span className="filter-menu__head-path">{target.path}</span>
-        <span className="filter-menu__head-eq">=</span>
-        <span className="filter-menu__head-value">{literalToken(target.literal)}</span>
-      </div>
+      {/* Each item renders the actual DSL predicate that will land in
+       *  the top filter bar — no abstract "Filter ==" labels — so the
+       *  user reads exactly what they're applying. The first group
+       *  REPLACES the current filter; the AND group composes on top
+       *  of it. */}
       <button
         type="button"
         className="filter-menu__item"
         onClick={() => {
           applySet(eq);
         }}
+        title="Replace the current filter with this predicate"
       >
-        Filter <code>==</code>
+        <code>{eq}</code>
       </button>
       <button
         type="button"
@@ -121,8 +116,9 @@ export function FilterMenu({
         onClick={() => {
           applySet(ne);
         }}
+        title="Replace the current filter with this predicate"
       >
-        Filter <code>!=</code>
+        <code>{ne}</code>
       </button>
       {target.supportsPresence ? (
         <>
@@ -134,7 +130,7 @@ export function FilterMenu({
             }}
             title="Match messages where this field is present (any value)"
           >
-            Has value
+            <code>{target.path}</code>
           </button>
           <button
             type="button"
@@ -144,7 +140,7 @@ export function FilterMenu({
             }}
             title="Match messages where this field is absent"
           >
-            No value
+            <code>!{target.path}</code>
           </button>
         </>
       ) : null}
@@ -155,8 +151,9 @@ export function FilterMenu({
         onClick={() => {
           applyAnd(eq);
         }}
+        title="Compose: existing filter && this predicate"
       >
-        AND <code>==</code>
+        <span className="filter-menu__item-prefix">AND</span> <code>{eq}</code>
       </button>
       <button
         type="button"
@@ -164,8 +161,9 @@ export function FilterMenu({
         onClick={() => {
           applyAnd(ne);
         }}
+        title="Compose: existing filter && this predicate"
       >
-        AND <code>!=</code>
+        <span className="filter-menu__item-prefix">AND</span> <code>{ne}</code>
       </button>
       {target.supportsPresence ? (
         <>
@@ -176,7 +174,7 @@ export function FilterMenu({
               applyAnd(target.path);
             }}
           >
-            AND has value
+            <span className="filter-menu__item-prefix">AND</span> <code>{target.path}</code>
           </button>
           <button
             type="button"
@@ -185,7 +183,7 @@ export function FilterMenu({
               applyAnd(`!${target.path}`);
             }}
           >
-            AND no value
+            <span className="filter-menu__item-prefix">AND</span> <code>!{target.path}</code>
           </button>
         </>
       ) : null}

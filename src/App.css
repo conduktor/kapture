@@ -1328,34 +1328,16 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   padding: 4px 0;
   font-size: 12px;
 }
-.filter-menu__head {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 12px 6px 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 4px;
-  /* Long string values overflow gracefully — the title attr carries
-   * the full predicate for hover-discovery. */
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.filter-menu__head-path {
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-.filter-menu__head-eq {
+/* Mono `<code>` inside menu items renders the literal DSL the
+ * predicate would add — e.g. `topic == "streams-input"`. The
+ * "AND" prefix is muted so the predicate itself is the visual
+ * anchor; long string values overflow with ellipsis (title attr
+ * has the full text). */
+.filter-menu__item-prefix {
   color: var(--text-faint);
-  flex-shrink: 0;
-}
-.filter-menu__head-value {
-  color: var(--accent);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  font-family: var(--sans);
+  font-size: 11px;
+  margin-right: 2px;
 }
 .filter-menu__item {
   display: block;
@@ -1374,14 +1356,9 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 }
 .filter-menu__item code {
   font-family: var(--mono);
-  background: var(--bg-subtle);
-  padding: 0 4px;
-  border-radius: 3px;
-  margin-left: 4px;
   font-size: 11px;
-}
-.filter-menu__item:hover code {
-  background: var(--accent-soft);
+  /* No surrounding pill — the item IS the predicate now, so the
+   * earlier chip background read as visual noise. */
 }
 .filter-menu__sep {
   height: 1px;
