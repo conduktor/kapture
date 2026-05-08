@@ -327,8 +327,11 @@ pub async fn start_proxy_impl(
     if !state.try_claim_proxy_slot() {
         return Err(KaptureError::AlreadyProxying);
     }
+    // Fresh capture: drop the live ring + the pinned snapshots from
+    // the previous `stop_proxy` so the new session starts empty.
     state.buffer.clear();
-
+    state.set_pinned_messages(None);
+    state.set_pinned_proto_frames(None);
     // Schema Registry client lives for the proxy session — installed
     // here, cleared in `stop_proxy`. Per-session lifetime so a
     // profile change re-instantiates with a fresh LRU cache (schema
@@ -574,6 +577,9 @@ fn split_host_port(addr: &str) -> std::result::Result<(String, u16), String> {
 
 #[tauri::command]
 pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
+    // Pin BEFORE `take_proxy` drops the correlator — detail clicks
+    // on still-visible rows then resolve via the pinned maps.
+    pin_capture_snapshot(&state);
     let Some(handle) = state.take_proxy() else {
         return Err(KaptureError::NotProxying);
     };
@@ -581,6 +587,29 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
     state.set_schema_registry(None);
     info!("proxy stopped");
     Ok(())
+}
+
+/// Snapshot both rings into the `AppState` pinned maps. Shared by
+/// pause and `stop_proxy` so detail lookups keep resolving after
+/// the live rings either evict the row or vanish entirely.
+fn pin_capture_snapshot(state: &AppState) {
+    let messages: std::collections::HashMap<String, CapturedMessage> = state
+        .buffer
+        .snapshot()
+        .into_iter()
+        .map(|m| (m.id.clone(), m))
+        .collect();
+    state.set_pinned_messages(Some(messages));
+    let frames: std::collections::HashMap<String, ProtoFrame> = state
+        .correlator()
+        .map(|c| {
+            c.frames_snapshot()
+                .into_iter()
+                .map(|f| (f.id.clone(), f))
+                .collect()
+        })
+        .unwrap_or_default();
+    state.set_pinned_proto_frames(Some(frames));
 }
 
 #[derive(Debug, Serialize)]
@@ -634,21 +663,15 @@ pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<Proto
         .unwrap_or_default()
 }
 
-/// Full frame (summary + captured bytes + decoded body) for one id.
-/// Used by the UI when the user selects a row in the Protocol list —
-/// avoids paying for the heavy fields on every poll.
-///
-/// When the UI is paused, the pinned-frames map (snapshotted at pause
-/// time) is consulted first so a row the user can still see in the
-/// frozen list resolves even after the live ring evicts it.
+/// Full frame for one id (heavy fields, fetched lazily on row
+/// selection). Consults the pinned snapshot first (set on pause or
+/// `stop_proxy`) so still-visible rows resolve after the live ring
+/// evicts them or the correlator is dropped.
 #[tauri::command]
 pub fn proto_frame_detail(state: State<'_, AppState>, id: String) -> Option<ProtoFrame> {
-    if state.is_paused() {
-        if let Some(frame) = state.pinned_proto_frame(&id) {
-            return Some(frame);
-        }
-    }
-    state.correlator().and_then(|c| c.frame_detail(&id))
+    state
+        .pinned_proto_frame(&id)
+        .or_else(|| state.correlator().and_then(|c| c.frame_detail(&id)))
 }
 
 #[tauri::command]
@@ -667,21 +690,17 @@ pub fn snapshot(state: State<'_, AppState>) -> Vec<MessageSummary> {
 /// the user selects a row, so `LayerTree` / `HexDump` can render the
 /// heavy fields lazily.
 ///
-/// When the UI is paused, the pinned-messages map (snapshotted at
-/// pause time) is consulted first so a row the user can still see in
-/// the frozen list resolves even after the live ring evicts it.
+/// The pinned-messages map (populated on pause or `stop_proxy`) is
+/// consulted first so rows the user can still see resolve even after
+/// the live ring evicts them or the proxy was stopped.
 #[tauri::command]
 pub async fn inspect_message_by_id(
     state: State<'_, AppState>,
     id: String,
 ) -> std::result::Result<Option<CapturedMessage>, String> {
-    let message = if state.is_paused() {
-        state
-            .pinned_message(&id)
-            .or_else(|| state.buffer.find_by_id(&id))
-    } else {
-        state.buffer.find_by_id(&id)
-    };
+    let message = state
+        .pinned_message(&id)
+        .or_else(|| state.buffer.find_by_id(&id));
     Ok(crate::schema_resolver::decode_on_inspect(state.inner(), message).await)
 }
 
@@ -870,24 +889,7 @@ pub fn mcp_connect_allowed(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 pub fn set_capture_paused(state: State<'_, AppState>, paused: bool) {
     if paused {
-        let messages: std::collections::HashMap<String, CapturedMessage> = state
-            .buffer
-            .snapshot()
-            .into_iter()
-            .map(|m| (m.id.clone(), m))
-            .collect();
-        state.set_pinned_messages(Some(messages));
-
-        let frames: std::collections::HashMap<String, ProtoFrame> = state
-            .correlator()
-            .map(|c| {
-                c.frames_snapshot()
-                    .into_iter()
-                    .map(|f| (f.id.clone(), f))
-                    .collect()
-            })
-            .unwrap_or_default();
-        state.set_pinned_proto_frames(Some(frames));
+        pin_capture_snapshot(&state);
     } else {
         state.set_pinned_messages(None);
         state.set_pinned_proto_frames(None);
