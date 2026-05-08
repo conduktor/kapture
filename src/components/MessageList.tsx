@@ -216,7 +216,19 @@ function MessageRow({
           }
         }}
       >
-        ⌄
+        {/* Funnel glyph — three lines tapering — reads as "filter
+         *  actions" at small sizes far better than the bare chevron
+         *  we used to ship. `currentColor` so the hover-accent rule
+         *  paints stroke + fill in one go. */}
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true" focusable="false">
+          <path
+            d="M2.5 3h11l-4 5v4l-3 1.2V8l-4-5z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
       </span>
     </span>
   );
