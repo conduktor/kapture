@@ -120,7 +120,16 @@ impl BrokerProvisioner for ProxyInner {
     /// a `JoinHandle` in the listeners table.
     async fn ensure(&self, host: &str, port: u16) -> io::Result<u16> {
         let _guard = self.provision_lock.lock().await;
-        let broker_listener = self.broker_map.ensure_bound_listener(host, port).await?;
+        let broker_listener = self.broker_map.ensure_bound_listener(host, port).await
+            .inspect_err(|err| {
+                // Bind failures are the silent-bypass culprit: if a
+                // MetadataResponse advertises a broker we can't bind a
+                // listener for, the rewriter forwards the original
+                // (upstream) host:port to the client, which then
+                // connects directly — bypassing Kapture for that
+                // broker. Surface loudly.
+                warn!(host, port, %err, "broker listener bind FAILED — clients will bypass proxy for this broker");
+            })?;
         let local_port = broker_listener.local_port();
         let arc_self = self.weak_self.lock().upgrade().ok_or_else(|| {
             io::Error::other("ProxyInner self-reference dropped (proxy stopped?)")
@@ -129,6 +138,7 @@ impl BrokerProvisioner for ProxyInner {
             BrokerListener::Existing(_) => arc_self.spawn_listener(local_port)?,
             BrokerListener::Created { listener, .. } => {
                 arc_self.spawn_bound_listener(local_port, listener)?;
+                info!(host, port, local_port, "broker listener bound (lazy)");
             }
         }
         Ok(local_port)

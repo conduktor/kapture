@@ -42,6 +42,7 @@ import type {
   ProxyStatusSummary,
 } from "./types";
 import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
+import { useDecodedCache } from "./lib/useDecodedCache";
 import { readSplit } from "./lib/readSplit";
 
 const DEFAULT_UPSTREAM = "localhost:19092";
@@ -141,24 +142,20 @@ function App(): JSX.Element {
   // from the Wireshark-style DSL filter applied to messages — proto
   // frames don't go through the message DSL.
   const [protoFilterText, setProtoFilterText] = useState("");
-  // Opportunistic LRU of decoded bodies keyed by frame id. Feeds
-  // the decodedField hard-filter (see `applyFilter`); uncached
-  // frames are rejected, so prefetch warms it.
-  const decodedCacheRef = useRef<Map<string, unknown>>(new Map());
-  // Re-render trigger for cache writes — the ref doesn't trigger,
-  // and under pause polling is off too, so without this bump the
-  // filtered list would freeze. RAF-coalesced.
-  const [cacheVersion, setCacheVersion] = useState(0);
-  const cacheBumpRafRef = useRef<number | null>(null);
-  const bumpDecodedCache = useCallback(() => {
-    if (cacheBumpRafRef.current !== null) return;
-    cacheBumpRafRef.current = requestAnimationFrame(() => {
-      cacheBumpRafRef.current = null;
-      setCacheVersion((v) => v + 1);
-    });
-  }, []);
-  // 5000 entries ≈ proto ring cap. ~0.5-5 KiB per body → ~25 MiB max.
-  const DECODED_CACHE_MAX = 5000;
+  // Parse the protocol-tab text on every keystroke. Pure client-side,
+  // cheap (≤ a few clauses), so no debounce. On parse error we
+  // surface EMPTY_PROTO_FILTER (= no filtering, all rows visible).
+  const protoParsed = useMemo(() => parseProtoExpression(protoFilterText), [protoFilterText]);
+  const protoFilter = protoParsed.filter;
+  const protoFilterError = protoParsed.error;
+  // Decoded-body LRU + prefetch loop — fed on selection (the detail
+  // fetch below) and warmed in bulk while a body-touching predicate
+  // is active so `applyFilter`'s hard-reject doesn't keep uncached
+  // rows invisible. See `useDecodedCache` for the prefetch policy.
+  const { decodedFor, put: putDecodedCache } = useDecodedCache(
+    protoFrames,
+    hasBodyTouchingPredicate(protoFilter),
+  );
   // Pane splits, expressed as fr ratios. Messages tab is stacked
   // top-to-bottom (two vertical splits between MessageList/LayerTree and
   // LayerTree/HexDump). Protocol tab is side-by-side (one horizontal
@@ -363,21 +360,8 @@ function App(): JSX.Element {
         const detail = await invoke<ProtoFrameDetail | null>("proto_frame_detail", { id });
         if (!detailCancelRef.current) {
           setSelectedFrameDetail(detail);
-          // Seed the decoded LRU. Map iteration order is insertion
-          // order, so re-inserting (delete + set) bumps the entry to
-          // the most-recent slot; oldest is the first key.
           if (detail?.decodedJson !== undefined && detail.decodedJson !== null) {
-            const cache = decodedCacheRef.current;
-            cache.delete(detail.id);
-            cache.set(detail.id, detail.decodedJson);
-            while (cache.size > DECODED_CACHE_MAX) {
-              const oldest = cache.keys().next();
-              if (oldest.done === true) {
-                break;
-              }
-              cache.delete(oldest.value);
-            }
-            bumpDecodedCache();
+            putDecodedCache(detail.id, detail.decodedJson);
           }
         }
       } catch (err) {
@@ -390,7 +374,7 @@ function App(): JSX.Element {
     return () => {
       detailCancelRef.current = true;
     };
-  }, [selectedFrameId]);
+  }, [selectedFrameId, putDecodedCache]);
 
   // Debounced filter sync to backend, with a generation guard so concurrent
   // filter edits cannot let a stale snapshot overwrite a fresher view.
@@ -623,81 +607,6 @@ function App(): JSX.Element {
     ? { upstream: connection.upstream ?? DEFAULT_UPSTREAM }
     : undefined;
 
-  // Parse the protocol-tab text on every keystroke. Pure client-side,
-  // cheap (≤ a few clauses), so no debounce. On parse error we surface
-  // EMPTY_PROTO_FILTER (= no filtering, all rows visible) — the least
-  // surprising outcome for a typo mid-edit. The error message renders
-  // inline near the textbox.
-  const protoParsed = useMemo(() => parseProtoExpression(protoFilterText), [protoFilterText]);
-  const protoFilter = protoParsed.filter;
-  const protoFilterError = protoParsed.error;
-
-  // Hard-filter pre-fetch: when ANY body-touching predicate is active
-  // (`decodedContains` OR a path-aware `decodedField`), walk the
-  // visible frames and fetch any whose decoded body isn't cached yet.
-  // Without this the list would near-empty as the predicate rejects
-  // every uncached row — particularly visible while paused, since the
-  // user freezes a 5000-frame snapshot they couldn't possibly have
-  // clicked through individually.
-  const decodedFiltersActive = hasBodyTouchingPredicate(protoFilter);
-  useEffect(() => {
-    if (!decodedFiltersActive || protoFrames.length === 0) {
-      return;
-    }
-    // Holder so TS doesn't narrow `cancelled` to `false` at the
-    // closure capture site (cleanup mutates it via the holder, which
-    // the type checker treats as opaque).
-    const state = { cancelled: false };
-    const cache = decodedCacheRef.current;
-    // Drop orphan cache entries: ids that have been evicted from the
-    // ring buffer no longer correspond to a visible frame, so they're
-    // dead memory. Keeps the cache bounded to the ring size in the
-    // long run without an explicit cap.
-    const liveIds = new Set(protoFrames.map((f) => f.id));
-    for (const id of Array.from(cache.keys())) {
-      if (!liveIds.has(id)) cache.delete(id);
-    }
-    // Cap concurrent inflight fetches so we don't flood IPC. Frames
-    // are processed newest-first to prioritise what the user is most
-    // likely looking at.
-    // No upper bound: a `decodedContains` predicate is a hard
-    // filter that rejects every frame without a cached decoded
-    // body. Capping the prefetch (an earlier 500-frame slice)
-    // left frames 501..5000 invisible no matter what — defeating
-    // the filter. Walk the entire ring; concurrency caps IPC
-    // pressure (~625 sequential round-trips at 8-wide → seconds).
-    const queue = protoFrames
-      .slice()
-      .reverse()
-      .filter((f) => !cache.has(f.id));
-    const concurrency = 8;
-    void (async () => {
-      const workers = Array.from({ length: concurrency }, async () => {
-        while (!state.cancelled) {
-          const next = queue.shift();
-          if (!next) return;
-          try {
-            const detail = await invoke<ProtoFrameDetail | null>("proto_frame_detail", {
-              id: next.id,
-            });
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- mutated by cleanup return
-            if (state.cancelled) return;
-            if (detail?.decodedJson !== undefined && detail.decodedJson !== null) {
-              cache.set(detail.id, detail.decodedJson);
-              bumpDecodedCache();
-            }
-          } catch {
-            /* best effort — skip on transient errors */
-          }
-        }
-      });
-      await Promise.all(workers);
-    })();
-    return () => {
-      state.cancelled = true;
-    };
-  }, [decodedFiltersActive, protoFrames]);
-
   // Filter bar wiring — Messages tab uses the Wireshark-style DSL
   // (validated server-side); Protocol tab uses the local DSL parsed
   // from the same input box.
@@ -714,11 +623,6 @@ function App(): JSX.Element {
     }
   };
   const topFilterError = tab === "messages" ? filterError : protoFilterError;
-
-  const decodedFor = useCallback(
-    (id: string): unknown => decodedCacheRef.current.get(id),
-    [cacheVersion],
-  );
 
   // Click on a decoded leaf appends a `<name> == "<value>"` clause
   // (bareword field name, no `field` keyword). The matcher walks the

@@ -2,11 +2,19 @@
 //! so a client routing on those addresses comes back through Kapture
 //! instead of bypassing us.
 //!
-//! Three verbs need rewriting (see `docs/specs/proxy-mode.md` and
-//! the plan for Phase 2):
+//! Five verbs need rewriting:
 //!   - `MetadataResponse`        (api key 3)
 //!   - `FindCoordinatorResponse` (api key 10)
 //!   - `DescribeClusterResponse` (api key 60)
+//!   - `ProduceResponse` v10+    (api key 0,  KIP-951 `node_endpoints[]`)
+//!   - `FetchResponse`   v16+    (api key 1,  KIP-951 `node_endpoints[]`)
+//!
+//! Produce/Fetch in v10+/v16+ embed an optional `node_endpoints[]`
+//! array carrying redirect targets (follower fetch, tiered storage,
+//! leader moves). Without rewriting those, modern Java clients —
+//! Kafka Streams in particular — reconnect DIRECTLY to the upstream
+//! broker advertised in the redirect, silently bypassing the proxy
+//! for that partition's traffic.
 //!
 //! All other responses are forwarded verbatim — they reference
 //! brokers by `node_id` only and the client resolves the address
@@ -19,7 +27,8 @@
 
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::{
-    ApiKey, DescribeClusterResponse, FindCoordinatorResponse, MetadataResponse, ResponseHeader,
+    ApiKey, DescribeClusterResponse, FetchResponse, FindCoordinatorResponse, MetadataResponse,
+    ProduceResponse, ResponseHeader,
 };
 use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
 
@@ -54,6 +63,19 @@ pub async fn rewrite_response(
         ApiKey::Metadata => rewrite_metadata(api_version, frame, provisioner, topic_ids).await,
         ApiKey::FindCoordinator => rewrite_find_coordinator(api_version, frame, provisioner).await,
         ApiKey::DescribeCluster => rewrite_describe_cluster(api_version, frame, provisioner).await,
+        // KIP-951 (Apache Kafka 3.6+): ProduceResponse v10+ and
+        // FetchResponse v16+ carry `node_endpoints[]` so the broker
+        // can redirect the client to a different node for that
+        // partition (follower fetch, tiered storage, leader
+        // moves). If we don't rewrite these to local listener
+        // ports, the client reconnects DIRECTLY to the upstream and
+        // bypasses Kapture for that partition — silently. Kafka
+        // Streams hits this whenever its internal consumer follows
+        // a redirect for streams-output / changelog topics.
+        ApiKey::Produce if api_version >= 10 => {
+            rewrite_produce(api_version, frame, provisioner).await
+        }
+        ApiKey::Fetch if api_version >= 16 => rewrite_fetch(api_version, frame, provisioner).await,
         _ => Ok(None),
     }
 }
@@ -171,6 +193,87 @@ async fn rewrite_find_coordinator(
     }
 
     encode_response(version, &resp, ApiKey::FindCoordinator, &header)
+}
+
+/// Rewrite KIP-951 `node_endpoints[]` redirects in a
+/// `ProduceResponse` (v10+). The `records` payload itself is left
+/// untouched — only the small endpoints array is decoded /
+/// re-encoded. Returns `Ok(None)` when the response carries no
+/// endpoints, so the caller forwards the original bytes verbatim
+/// (no decode round-trip cost).
+async fn rewrite_produce(
+    version: i16,
+    frame: &[u8],
+    provisioner: &dyn BrokerProvisioner,
+) -> Result<Option<Bytes>, RewriteError> {
+    let mut buf = Bytes::copy_from_slice(frame);
+    let header_version = ApiKey::Produce.response_header_version(version);
+    let header = ResponseHeader::decode(&mut buf, header_version)
+        .map_err(|e| RewriteError::Decode(format!("produce header: {e}")))?;
+    let mut resp = ProduceResponse::decode(&mut buf, version)
+        .map_err(|e| RewriteError::Decode(format!("produce body: {e}")))?;
+    if resp.node_endpoints.is_empty() {
+        return Ok(None);
+    }
+    for n in &mut resp.node_endpoints {
+        let host = n.host.to_string();
+        let Ok(port) = u16::try_from(n.port) else {
+            continue;
+        };
+        if port == 0 {
+            continue;
+        }
+        let local = provisioner
+            .ensure(&host, port)
+            .await
+            .map_err(|err| RewriteError::Bind {
+                host: host.clone(),
+                port,
+                err,
+            })?;
+        n.host = StrBytes::from_string("127.0.0.1".to_owned());
+        n.port = i32::from(local);
+    }
+    encode_response(version, &resp, ApiKey::Produce, &header)
+}
+
+/// Same shape as [`rewrite_produce`] but for `FetchResponse` v16+.
+/// The records-bearing fields are kept as opaque `Bytes` by the
+/// `kafka-protocol` crate, so re-encoding is cheap.
+async fn rewrite_fetch(
+    version: i16,
+    frame: &[u8],
+    provisioner: &dyn BrokerProvisioner,
+) -> Result<Option<Bytes>, RewriteError> {
+    let mut buf = Bytes::copy_from_slice(frame);
+    let header_version = ApiKey::Fetch.response_header_version(version);
+    let header = ResponseHeader::decode(&mut buf, header_version)
+        .map_err(|e| RewriteError::Decode(format!("fetch header: {e}")))?;
+    let mut resp = FetchResponse::decode(&mut buf, version)
+        .map_err(|e| RewriteError::Decode(format!("fetch body: {e}")))?;
+    if resp.node_endpoints.is_empty() {
+        return Ok(None);
+    }
+    for n in &mut resp.node_endpoints {
+        let host = n.host.to_string();
+        let Ok(port) = u16::try_from(n.port) else {
+            continue;
+        };
+        if port == 0 {
+            continue;
+        }
+        let local = provisioner
+            .ensure(&host, port)
+            .await
+            .map_err(|err| RewriteError::Bind {
+                host: host.clone(),
+                port,
+                err,
+            })?;
+        n.host = StrBytes::from_string("127.0.0.1".to_owned());
+        n.port = i32::from(local);
+    }
+    encode_response(version, &resp, ApiKey::Fetch, &header)
 }
 
 async fn rewrite_describe_cluster(
