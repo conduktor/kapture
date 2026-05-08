@@ -1392,17 +1392,17 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
  * etc.). The wrapper is `position: relative` so the absolute icon
  * floats without participating in layout. */
 .filterable-field {
-  /* Inline-flex so the funnel icon sits right next to the value
-   * instead of being absolute-pinned to the cell's far right edge
-   * (which read as "15 km away" in wide cells with short values).
-   * The icon reserves its width permanently — opacity 0 idle —
-   * so revealing it on hover doesn't shift content. */
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  /* Don't stretch beyond the grid column's allocation; the
-   * surrounding `.msglist__col` (or equivalent) handles layout. */
+  /* Position-relative wrapper that does NOT reserve space for the
+   * icon — the icon is absolutely positioned outside the wrapper's
+   * inline box at `left: 100%`, so it sits right after the
+   * content without consuming cell width. Tight cells (80 px
+   * conn·corr) keep their full width for the value; wide cells
+   * with short values still show the icon next to the value, not
+   * pinned to the column's far edge. */
+  position: relative;
+  display: inline-block;
   max-width: 100%;
+  vertical-align: middle;
 }
 .filterable-field--filterable {
   cursor: pointer;
@@ -1417,10 +1417,14 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   white-space: nowrap;
 }
 .filterable-field__icon {
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
   color: var(--text-muted);
   cursor: pointer;
   opacity: 0;
