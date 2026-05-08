@@ -19,6 +19,7 @@ import { Splitter } from "./components/Splitter";
 import {
   appendClause as appendProtoClause,
   encodeDecodedField,
+  hasBodyTouchingPredicate,
   parseExpression as parseProtoExpression,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
@@ -617,14 +618,14 @@ function App(): JSX.Element {
   const protoFilter = protoParsed.filter;
   const protoFilterError = protoParsed.error;
 
-  // Hard-filter pre-fetch: when a `decodedContains` predicate is active,
-  // walk the visible frames and fetch any whose decoded body isn't
-  // cached yet. Without this the list would near-empty as the predicate
-  // rejects every uncached row. Bump the LRU cap so the warm set covers
-  // the whole window we just walked.
-  const decodedFiltersActive =
-    protoFilter.decodedContains.include.length > 0 ||
-    protoFilter.decodedContains.exclude.length > 0;
+  // Hard-filter pre-fetch: when ANY body-touching predicate is active
+  // (`decodedContains` OR a path-aware `decodedField`), walk the
+  // visible frames and fetch any whose decoded body isn't cached yet.
+  // Without this the list would near-empty as the predicate rejects
+  // every uncached row — particularly visible while paused, since the
+  // user freezes a 5000-frame snapshot they couldn't possibly have
+  // clicked through individually.
+  const decodedFiltersActive = hasBodyTouchingPredicate(protoFilter);
   useEffect(() => {
     if (!decodedFiltersActive || protoFrames.length === 0) {
       return;

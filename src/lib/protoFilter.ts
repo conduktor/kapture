@@ -94,10 +94,26 @@ export function isFilterEmpty(f: ProtoFilter): boolean {
     f.connectionIds.exclude.length === 0 &&
     f.corrIds.include.length === 0 &&
     f.corrIds.exclude.length === 0 &&
-    f.decodedContains.include.length === 0 &&
-    f.decodedContains.exclude.length === 0 &&
-    f.decodedField.include.length === 0 &&
-    f.decodedField.exclude.length === 0
+    !hasBodyTouchingPredicate(f)
+  );
+}
+
+/**
+ * Does the filter need the decoded body to evaluate?
+ *
+ * Both `decodedContains` and `decodedField` are hard-filter
+ * predicates that REJECT a frame whose `decodedJson` isn't cached
+ * yet (`applyFilter` semantics). The App-level prefetch loop reads
+ * this to decide whether to walk the ring and warm the cache for
+ * every visible frame — without that, a filter on a not-yet-clicked
+ * frame would silently drop it from the list.
+ */
+export function hasBodyTouchingPredicate(f: ProtoFilter): boolean {
+  return (
+    f.decodedContains.include.length > 0 ||
+    f.decodedContains.exclude.length > 0 ||
+    f.decodedField.include.length > 0 ||
+    f.decodedField.exclude.length > 0
   );
 }
 
