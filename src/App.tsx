@@ -21,6 +21,7 @@ import {
   encodeDecodedField,
   hasBodyTouchingPredicate,
   parseExpression as parseProtoExpression,
+  predicatesToFilterText,
   removePredicate as removeProtoPredicate,
   serializeFilter as serializeProtoFilter,
   type DecodedFieldPair,
@@ -142,13 +143,20 @@ function App(): JSX.Element {
   // the typed JSON value (parsed from the backend's `decodedJson`).
   // Bounded so the chip-based filter doesn't pin unbounded memory.
   const decodedCacheRef = useRef<Map<string, unknown>>(new Map());
-  // Sized to cover the proto ring buffer (5000 frames). The earlier
-  // 50-entry cap turned the decodedContains hard-filter into a
-  // ghost: the prefetch warmed up to 500 entries, but the next
-  // detail-fetch eviction trimmed back to 50, so >99 % of frames
-  // had `decoded === undefined` and got rejected. Bumping to 5000
-  // keeps memory bounded (each typed JSON body is ~0.5-5 KiB → max
-  // ~25 MiB worst case, acceptable on the inspector workstation).
+  // Re-render trigger for cache writes. The map lives in a ref so
+  // it won't re-render on its own; under pause `protoFrames` polling
+  // is suspended too, so without this bump the filtered list would
+  // freeze even as the prefetch warms the cache. RAF-coalesced.
+  const [cacheVersion, setCacheVersion] = useState(0);
+  const cacheBumpRafRef = useRef<number | null>(null);
+  const bumpDecodedCache = useCallback(() => {
+    if (cacheBumpRafRef.current !== null) return;
+    cacheBumpRafRef.current = requestAnimationFrame(() => {
+      cacheBumpRafRef.current = null;
+      setCacheVersion((v) => v + 1);
+    });
+  }, []);
+  // 5000 entries ≈ proto ring cap. ~0.5-5 KiB per body → ~25 MiB max.
   const DECODED_CACHE_MAX = 5000;
   // Pane splits, expressed as fr ratios. Messages tab is stacked
   // top-to-bottom (two vertical splits between MessageList/LayerTree and
@@ -364,6 +372,7 @@ function App(): JSX.Element {
               }
               cache.delete(oldest.value);
             }
+            bumpDecodedCache();
           }
         }
       } catch (err) {
@@ -670,6 +679,7 @@ function App(): JSX.Element {
             if (state.cancelled) return;
             if (detail?.decodedJson !== undefined && detail.decodedJson !== null) {
               cache.set(detail.id, detail.decodedJson);
+              bumpDecodedCache();
             }
           } catch {
             /* best effort — skip on transient errors */
@@ -700,7 +710,10 @@ function App(): JSX.Element {
   };
   const topFilterError = tab === "messages" ? filterError : protoFilterError;
 
-  const decodedFor = useCallback((id: string): unknown => decodedCacheRef.current.get(id), []);
+  const decodedFor = useCallback(
+    (id: string): unknown => decodedCacheRef.current.get(id),
+    [cacheVersion],
+  );
 
   // Click on a decoded leaf appends a `<name> == "<value>"` clause
   // (bareword field name, no `field` keyword). The matcher walks the
@@ -853,20 +866,10 @@ function App(): JSX.Element {
             <SessionActivityTab
               protoFrames={protoFrames}
               onJumpToProtocol={(predicates, frameId) => {
-                if (predicates.length > 0) {
-                  setProtoFilterText((prev) => {
-                    let next = prev;
-                    for (const p of predicates) {
-                      next = appendProtoClause(
-                        next,
-                        "decodedField",
-                        encodeDecodedField(p),
-                        "include",
-                      );
-                    }
-                    return next;
-                  });
-                }
+                // Click = SCOPE, not REFINE: replace the existing
+                // filter, since same-slot includes OR (a second topic
+                // click would otherwise broaden, not narrow).
+                setProtoFilterText(predicatesToFilterText(predicates));
                 if (frameId !== undefined) {
                   setSelectedFrameId(frameId);
                 }

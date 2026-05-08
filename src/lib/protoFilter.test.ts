@@ -268,8 +268,25 @@ describe("applyFilter decodedField", () => {
     ).toBe(true);
   });
 
-  it("rejects when the decoded body is not cached", () => {
+  it("rejects an include predicate when the decoded body is not cached", () => {
     const r = parseExpression('topics.name == "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(applyFilter(r.filter, protoFrame, () => undefined)).toBe(false);
+  });
+
+  it("keeps frames under an exclude-only predicate when the body is uncached", () => {
+    // `field != x` is a negative constraint — we can't confirm the
+    // frame matches the predicate to be excluded, so we have to
+    // include it. Otherwise an exclude on a body-touching predicate
+    // would silently drop every uncached row, defeating the purpose
+    // of "exclude only the few I don't want".
+    const r = parseExpression('topics.name != "orders.avro"');
+    expect(r.error).toBeNull();
+    expect(applyFilter(r.filter, protoFrame, () => undefined)).toBe(true);
+  });
+
+  it("still excludes uncached frames once an include sits alongside the exclude", () => {
+    const r = parseExpression('topics.name == "events" && topics.name != "orders.avro"');
     expect(r.error).toBeNull();
     expect(applyFilter(r.filter, protoFrame, () => undefined)).toBe(false);
   });

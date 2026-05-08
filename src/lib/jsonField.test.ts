@@ -65,6 +65,28 @@ describe("matchJsonPath", () => {
     expect(matchJsonPath(body, "topics.name", "events")).toBe(false);
   });
 
+  it("walks into arrays of scalars at the leaf segment", () => {
+    // FindCoordinatorRequest v4+: `coordinator_keys: Vec<StrBytes>`
+    // serialises as a flat string array. Matching `coordinator_keys`
+    // against one of those strings has to descend into the array —
+    // otherwise it lands on the array itself and returns false.
+    const body = { coordinator_keys: ["worker-1", "worker-2"] };
+    expect(matchJsonPath(body, "coordinator_keys", "worker-1")).toBe(true);
+    expect(matchJsonPath(body, "coordinator_keys", "worker-2")).toBe(true);
+    expect(matchJsonPath(body, "coordinator_keys", "missing")).toBe(false);
+  });
+
+  it("walks scalar arrays nested inside object arrays", () => {
+    const body = {
+      members: [
+        { member_id: "m1", group_instance_ids: ["i-a", "i-b"] },
+        { member_id: "m2", group_instance_ids: [] },
+      ],
+    };
+    expect(matchJsonPath(body, "members.group_instance_ids", "i-a")).toBe(true);
+    expect(matchJsonPath(body, "members.group_instance_ids", "i-z")).toBe(false);
+  });
+
   it("returns false for non-object inputs and empty paths", () => {
     expect(matchJsonPath(null, "a", "b")).toBe(false);
     expect(matchJsonPath("string", "a", "b")).toBe(false);

@@ -67,6 +67,25 @@ export function decodeDecodedField(s: string): DecodedFieldPair | null {
   return { path, value };
 }
 
+/**
+ * Build a canonical filter expression that matches *any* of the
+ * given path/value pairs (within-slot includes OR by design).
+ *
+ * Used by Session Activity click → Protocol nav: a topic click hands
+ * us several plausible JSON paths (`topics.name`, `topic_data.name`,
+ * `responses.name`) all set to the same topic value, and the user
+ * lands on a Protocol tab scoped to "any frame surfacing this topic
+ * under any of the schema-known parents". Returns the empty string
+ * for an empty list (= no filter).
+ */
+export function predicatesToFilterText(predicates: DecodedFieldPair[]): string {
+  let text = "";
+  for (const p of predicates) {
+    text = appendClause(text, "decodedField", encodeDecodedField(p), "include");
+  }
+  return text;
+}
+
 export const EMPTY_PROTO_FILTER: ProtoFilter = {
   apiNames: { include: [], exclude: [] },
   directions: { include: [], exclude: [] },
@@ -138,9 +157,15 @@ export function applyFilter(
   }
   const json = decodedFor?.(frame.id);
   if (json === undefined) {
-    // Hard filter semantics: no cached decoded body means we can't
-    // confirm a match — reject rather than over-include.
-    return false;
+    // Asymmetric uncached semantics:
+    //  * Includes are a positive constraint — we can't confirm the
+    //    body matches → REJECT (over-exclude is safer than
+    //    over-include for "show me only frames where X").
+    //  * Excludes-only are a negative constraint — we can't confirm
+    //    the body matches the predicate to be excluded → KEEP. An
+    //    `field != x` filter without a cached body should never
+    //    silently drop frames just because we haven't fetched them.
+    return df.include.length === 0;
   }
   const pairs = (slot: string[]): DecodedFieldPair[] =>
     slot.map(decodeDecodedField).filter((p): p is DecodedFieldPair => p !== null);

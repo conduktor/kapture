@@ -30,12 +30,22 @@ export function matchJsonPath(json: unknown, path: string, value: string): boole
 
 function walk(node: unknown, segments: string[], value: string): boolean {
   if (segments.length === 0) {
+    // Terminal segment landed on this node: it's either the leaf
+    // we're comparing, OR an array of scalars / nested arrays whose
+    // elements are the leaves. The latter shape happens for
+    // newtype-flattened scalar arrays — `coordinator_keys: ["g1"]`
+    // (FindCoordinatorRequest v4+), `member_ids: [...]`
+    // (LeaveGroupRequest), record header keys, etc. Without this
+    // recursion the walker would silently miss those.
+    if (Array.isArray(node)) {
+      return (node as unknown[]).some((item) => walk(item, segments, value));
+    }
     return leafMatches(node, value);
   }
   if (Array.isArray(node)) {
-    // Path segment refers to the array's *contents* — descend per
-    // element with the segment list unchanged. (The user types
-    // `topic_data.name`, not `topic_data.0.name`.)
+    // Mid-path array: descend per element with the segment list
+    // unchanged. The user types `topic_data.name`, not
+    // `topic_data.0.name`.
     return (node as unknown[]).some((item) => walk(item, segments, value));
   }
   if (node === null || typeof node !== "object") {
