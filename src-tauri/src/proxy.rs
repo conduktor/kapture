@@ -301,7 +301,11 @@ where
 /// # Errors
 /// Bubbles up `io::Error` from the underlying TCP read/write.
 #[allow(dead_code)] // wired into ProxyHandle::start in Task 16
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::cognitive_complexity
+)]
 pub async fn run_pump_with_rewrite<U>(
     conn_id: ConnectionId,
     local_port: u16,

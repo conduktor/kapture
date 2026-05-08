@@ -4,7 +4,6 @@
 //! `tls.rs` can drive the same fake-broker SASL exchange that the
 //! plain-TCP tests use, without duplicating the encoder logic.
 
-#![cfg(test)]
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::expect_used)]
 #![allow(clippy::panic)]
