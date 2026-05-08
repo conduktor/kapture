@@ -1392,14 +1392,20 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
  * etc.). The wrapper is `position: relative` so the absolute icon
  * floats without participating in layout. */
 .filterable-field {
-  /* Wrapper IS the cell (or fills its grid track) — `position:
-   * relative` so the absolute-positioned icon anchors to the cell
-   * box. `display: block` (not inline-block, not inline-flex) so
-   * grid items stretch as expected and the icon's `right: 4px`
-   * lands at the cell's visible right edge. */
-  position: relative;
-  display: block;
+  /* Inline-flex so the funnel rides right next to the value, with
+   * a 4 px gap, never at the cell's far edge. Both the value and
+   * the icon reserve width so revealing the icon doesn't shift
+   * content. `justify-self: start` is critical when the wrapper
+   * is itself a grid item (LayerTree's `.field` rows): without it
+   * the wrapper stretches to fill the 1fr track and the icon ends
+   * up at the panel's right edge. No-op in non-grid contexts
+   * (msglist cells where the wrapper sits inside the column). */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: 100%;
+  justify-self: start;
+  vertical-align: middle;
 }
 .filterable-field--filterable {
   cursor: pointer;
@@ -1414,29 +1420,17 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   white-space: nowrap;
 }
 .filterable-field__icon {
-  position: absolute;
-  right: 4px;
-  top: 50%;
-  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   color: var(--text-muted);
-  background: var(--bg-elevated);
   cursor: pointer;
   opacity: 0;
   pointer-events: none;
   transition:
     opacity 0.12s,
     color 0.12s;
-}
-/* Match the row's hover bg so the icon's opaque backdrop doesn't
- * stand out as a white box on the hovered row. */
-.msglist__row:hover .filterable-field__icon {
-  background: var(--bg-hover);
-}
-.msglist__row.is-selected .filterable-field__icon {
-  background: var(--bg-selected);
 }
 .filterable-field__icon svg {
   display: block;
