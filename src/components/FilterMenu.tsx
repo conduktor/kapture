@@ -95,7 +95,7 @@ export function FilterMenu({
       role="menu"
       aria-label="Filter actions"
     >
-      <div className="filter-menu__head">Set your filter</div>
+      <div className="filter-menu__head">Filter</div>
       {/* Two sections: the first REPLACES the current filter, the
        *  second composes on top of it (AND). Each item renders the
        *  actual DSL predicate that will land in the top filter bar
@@ -144,7 +144,7 @@ export function FilterMenu({
           </button>
         </>
       ) : null}
-      <div className="filter-menu__head filter-menu__head--secondary">Add a filter</div>
+      <div className="filter-menu__head filter-menu__head--secondary">Refine</div>
       <button
         type="button"
         className="filter-menu__item"
