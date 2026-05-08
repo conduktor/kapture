@@ -201,14 +201,33 @@ pub async fn decode_on_inspect(
     // Header path takes precedence: it's the newer Confluent
     // format (CP 8.1.1+). Both paths cannot coexist in a single
     // record per the producer contract.
+    //
+    // On lookup or decode failure we fall back to `Some(message)`
+    // with the original `Bytes` payload — DROPPING the message
+    // (returning None) would have the UI render the empty-detail
+    // placeholder, which is wrong: the record exists, we just
+    // can't enrich its body. This bites particularly hard with
+    // Streams-internal repartition / changelog records whose raw
+    // bytes can resemble a Confluent envelope (magic 0x00 + four
+    // bytes) but aren't real schema references — every such
+    // misclassification would otherwise become a black hole in
+    // the Messages tab.
     let (resolved, has_envelope) = if let Some(guid) = message.schema_guid.as_deref() {
-        (client.fetch_by_guid(guid).await.ok()?, false)
+        match client.fetch_by_guid(guid).await {
+            Ok(r) => (r, false),
+            Err(_) => return Some(message),
+        }
     } else if let Some(id) = message.schema_id {
-        (client.fetch(id).await.ok()?, true)
+        match client.fetch(id).await {
+            Ok(r) => (r, true),
+            Err(_) => return Some(message),
+        }
     } else {
         return Some(message);
     };
-    let decoded = decode_with_schema(&resolved, &message.raw_hex, has_envelope)?;
+    let Some(decoded) = decode_with_schema(&resolved, &message.raw_hex, has_envelope) else {
+        return Some(message);
+    };
     state.buffer.update_message_with(&message.id, |stored| {
         stored.payload = decoded.clone();
     });
