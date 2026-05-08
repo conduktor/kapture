@@ -77,6 +77,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
