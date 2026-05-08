@@ -530,22 +530,30 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
     border-color 0.12s,
     opacity 0.12s;
 }
-/* Filter buttons render inline RIGHT AFTER the cell content (so they
- * read as belonging to the value, not floating at the cell edge), but
- * `display: none` when neither hovered nor anchoring an active
- * predicate — that way they reserve no horizontal space until needed.
- * `display: none` (vs visibility/opacity) is the only knob that fully
- * removes the layout box so the cell text uses 100% of the column on
- * idle rows. */
+/* Float the filter button cluster absolutely against the cell's
+ * right edge so it never participates in the wrapper's inline-flex
+ * sizing — earlier `display: none ↔ inline-flex` toggling still
+ * shifted the cell content sideways on hover. The cell wrapper has
+ * `position: relative`. Hidden via opacity + pointer-events idle
+ * so it stays a real clickable target on hover/focus or when a
+ * predicate is active (the `:has()` chain pins it visible so the
+ * user sees which cell is currently filtered). */
 .proto-cell__filters {
-  display: none;
-  margin-left: 6px;
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
   gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
 }
 .proto-cell--filterable:hover .proto-cell__filters,
 .proto-cell--filterable:focus-within .proto-cell__filters,
 .proto-cell--filterable:has(.proto-cell__filter.is-active) .proto-cell__filters {
-  display: inline-flex;
+  opacity: 1;
+  pointer-events: auto;
 }
 /* Active include filter — accent (indigo) highlight to mirror the
  * "filter chip" colour used in the top filter bar. */
