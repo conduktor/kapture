@@ -132,18 +132,38 @@ function FilterableValue({
     onAdd(substring, event.altKey ? "exclude" : "include");
   };
   return (
-    <span className="field__value field__value--filterable">
-      <span className="field__value-text">{value}</span>
-      <button
-        type="button"
-        className="proto-cell__filter"
+    // Reuse the canonical funnel chrome from `<FilterableField>` —
+    // naked SVG, hover-revealed, accent on hover. Behaviour is
+    // distinct from the popover-based path (substring decoded
+    // filter, alt/option-click = exclude) so we can't share the
+    // component itself yet, but the visual stays unified.
+    <span className="filterable-field filterable-field--filterable field__value">
+      <span className="filterable-field__content">{value}</span>
+      <span
+        className="filterable-field__icon"
+        role="button"
         tabIndex={-1}
         aria-label="Filter on this field value"
-        title={`Filter ⊕ on "${substring}" • Alt/Option-click to exclude ⊖`}
+        title={`Filter on "${substring}" • Alt/Option-click to exclude`}
         onClick={onClick}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            event.stopPropagation();
+            onAdd(substring, event.altKey ? "exclude" : "include");
+          }
+        }}
       >
-        ⊕
-      </button>
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+          <path
+            d="M2.5 3h11l-4 5v4l-3 1.2V8l-4-5z"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
     </span>
   );
 }
