@@ -95,6 +95,7 @@ export function FilterMenu({
       role="menu"
       aria-label="Filter actions"
     >
+      <div className="filter-menu__head">Add a filter</div>
       {/* Each item renders the actual DSL predicate that will land in
        *  the top filter bar — no abstract "Filter ==" labels — so the
        *  user reads exactly what they're applying. The first group

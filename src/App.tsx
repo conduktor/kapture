@@ -42,17 +42,20 @@ import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
 interface MenuState {
   target: FilterTarget;
   position: { x: number; y: number };
+  /** Optional row id of the cell whose icon was clicked. Used to
+   *  pin the icon visible on the *exact* row even when the cursor
+   *  drifts away. `null` when the menu was opened from a non-row
+   *  context (e.g. the LayerTree detail). */
+  anchorId: string | null;
 }
 
-/** Stable identity for a `FilterTarget` so the row whose menu is
- *  open can keep its filter icon visible even when the cursor
- *  drifts off the cell (the icon disappearing while the popup is
- *  still up made it ambiguous which cell the popup belongs to).
- *  Path + literal kind + literal value is unique enough — two cells
- *  with the exact same predicate target would legitimately share
- *  the highlight. */
-function filterTargetKey(t: FilterTarget): string {
-  return `${t.path}|${t.literal.kind}|${t.literal.value}`;
+/** Stable identity for the cell that anchored the active menu —
+ *  `anchorId | path | kind | value`. The anchor id keeps the
+ *  highlight scoped to a single row when many rows share the same
+ *  predicate target (e.g. all rows on `topic == "streams-input"`)
+ *  — without it every matching cell would light up. */
+function menuAnchorKey(anchorId: string, t: FilterTarget): string {
+  return `${anchorId}|${t.path}|${t.literal.kind}|${t.literal.value}`;
 }
 
 const DEFAULT_UPSTREAM = "localhost:19092";
@@ -584,8 +587,12 @@ function App(): JSX.Element {
   }, []);
 
   const openFilterMenu = useCallback(
-    (target: FilterTarget, position: { x: number; y: number }): void => {
-      setMenu({ target, position });
+    (
+      target: FilterTarget,
+      position: { x: number; y: number },
+      anchorId: string | null = null,
+    ): void => {
+      setMenu({ target, position, anchorId });
     },
     [],
   );
@@ -863,7 +870,9 @@ function App(): JSX.Element {
                 selectedId={selectedId}
                 onSelect={setSelectedId}
                 onOpenFilterMenu={openFilterMenu}
-                activeMenuKey={menu === null ? null : filterTargetKey(menu.target)}
+                activeMenuKey={
+                  menu?.anchorId == null ? null : menuAnchorKey(menu.anchorId, menu.target)
+                }
               />
               <Splitter
                 orientation="horizontal"

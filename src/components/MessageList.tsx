@@ -15,7 +15,11 @@ import { formatLocalTime } from "../lib/formatTimestamp";
 import { useAutoFollow } from "../lib/useAutoFollow";
 import { useFreshRows } from "../lib/useFreshRows";
 
-type OpenFilterMenu = (target: FilterTarget, position: { x: number; y: number }) => void;
+type OpenFilterMenu = (
+  target: FilterTarget,
+  position: { x: number; y: number },
+  anchorId?: string,
+) => void;
 
 interface Props {
   messages: KafkaMessage[];
@@ -177,10 +181,12 @@ function MessageRow({
   }
   const isSelected = selectedId === message.id;
   const isFresh = freshIds.has(message.id);
-  // Inline duplicate of `App.tsx::filterTargetKey` — keep the row
-  // pure (no cross-module import for one-line concat) and fast.
-  const targetKey = (target: FilterTarget): string =>
-    `${target.path}|${target.literal.kind}|${target.literal.value}`;
+  // Inline duplicate of `App.tsx::menuAnchorKey` — keep the row
+  // pure (no cross-module import) and fast. Anchor id is the
+  // message id, so two cells with the same predicate target on
+  // different rows don't share the highlight.
+  const cellKey = (target: FilterTarget): string =>
+    `${message.id}|${target.path}|${target.literal.kind}|${target.literal.value}`;
 
   // Hover-revealed icon is the primary affordance. Right-click on the cell
   // is kept as a power-user shortcut (no UI cost). Both routes open the
@@ -190,7 +196,7 @@ function MessageRow({
     (event: MouseEvent<HTMLSpanElement>): void => {
       event.preventDefault();
       event.stopPropagation();
-      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY });
+      onOpenFilterMenu(target, { x: event.clientX, y: event.clientY }, message.id);
     };
   const iconHandler =
     (target: FilterTarget) =>
@@ -198,7 +204,7 @@ function MessageRow({
       event.preventDefault();
       event.stopPropagation();
       const rect = event.currentTarget.getBoundingClientRect();
-      onOpenFilterMenu(target, { x: rect.right, y: rect.bottom });
+      onOpenFilterMenu(target, { x: rect.right, y: rect.bottom }, message.id);
     };
 
   // Cell + hover-revealed filter icon. Inline so we don't have to thread
@@ -210,7 +216,7 @@ function MessageRow({
   ): ReactNode => (
     <span
       className={`msglist__col ${extraClass} msglist__col--filterable${
-        activeMenuKey !== null && activeMenuKey === targetKey(target) ? " is-menu-anchor" : ""
+        activeMenuKey !== null && activeMenuKey === cellKey(target) ? " is-menu-anchor" : ""
       }`}
       onContextMenu={ctxHandler(target)}
     >
@@ -227,7 +233,7 @@ function MessageRow({
             event.preventDefault();
             event.stopPropagation();
             const rect = event.currentTarget.getBoundingClientRect();
-            onOpenFilterMenu(target, { x: rect.right, y: rect.bottom });
+            onOpenFilterMenu(target, { x: rect.right, y: rect.bottom }, message.id);
           }
         }}
       >
