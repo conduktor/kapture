@@ -6,12 +6,12 @@
 
 ## Why
 
-Most engineers building apps on Kafka have no good way to see what their clients actually do. Logs and dashboards lie about latency and frequency, and topic browsers (Conduktor Console, Redpanda Console, AKHQ, Kafdrop) show data at rest, not the protocol exchange.
+Most engineers building apps on Kafka have no good way to see what their clients actually do. Logs and dashboards don't show protocol exchanges, and topic browsers (Conduktor Console, Redpanda Console, AKHQ, Kafdrop) show data at rest, not the wire.
 
 That's where the bad patterns hide:
 
-- `OffsetCommit` after every single record. Yes, it happens.
-- A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record. Yes, it happens.
+- `OffsetCommit` after every single record.
+- A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record.
 - A `Metadata` storm because someone disabled the cache.
 - Tiny Produce batches behind a high message rate (`linger.ms=0` + tiny `batch.size`).
 - A consumer group rebalancing every few seconds because the heartbeat config is wrong.
@@ -35,16 +35,17 @@ No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's 
 
 ## What you get
 
-- **Live wire view.** Every Kafka API request/response with `corr_id`, RTT, payload size, decoded body. Apache Kafka 4.x covered, including KIP-516 (topic IDs in Produce/Fetch v13+) and KIP-932 (Share Groups: `ShareFetch`, `ShareGroupHeartbeat`, `ShareAcknowledge`).
-- **Messages tab.** Decoded records flattened from Produce requests and Fetch responses. Backlinks every record to the originating frame so you can jump from the message to the wire.
+- **Live wire view.** Every Kafka API request/response decoded — `corr_id`, RTT, payload size, full body tree. Apache Kafka 4.x compatible (including KIP-516 topic IDs and KIP-932 Share Groups).
+- **Messages tab.** Decoded records flattened from Produce requests and Fetch responses. Each record back-links to the frame it rode on so you jump from the message to the wire in one click.
 - **Filter DSL.** Wireshark-style: `topic == "orders" && envelope.size > 1024 && headers.tenant == "acme"`. Compose, autocomplete, save.
-- **MCP server.** `http://127.0.0.1:7878/mcp` exposes 13 tools so an agentic IDE (Claude Code, Cursor, Windsurf, etc.) can drive captures, set filters, and inspect frames. Bearer-authenticated; SASL frames are redacted before crossing the boundary. Open the MCP modal in the app for one-click setup snippets.
-- **Drop-aware ring buffer.** 100k messages or 256 MiB, whichever fills first. `drops/sec` surfaced in the status bar so you can tell hemorrhage from a single spike. Optional auto-pause when the rate is unsustainable.
 - **Connection profiles.** Bootstrap, TLS, SASL — saved locally; passwords in the OS keychain. Last-used profile is pre-selected on launch.
+- **Bonus: agent-driven.** A local MCP server (`http://127.0.0.1:7878/mcp`) exposes capture / filter / inspect tools so an IDE agent (Claude Code, Cursor, Windsurf) can drive Kapture for you. SASL frames redacted before they cross the boundary.
 
 ## Install
 
-Download the latest macOS bundle from [Releases](https://github.com/sderosiaux/kapture/releases/latest), unzip, and drag `Kapture.app` to `/Applications`. The app self-updates on each launch.
+Download the latest bundle from [Releases](https://github.com/sderosiaux/kapture/releases/latest), unzip, and drag `Kapture.app` to `/Applications`. The app self-updates on each launch.
+
+> macOS only at the moment. Linux / Windows planned.
 
 In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at your upstream broker (Confluent Cloud, MSK, your local docker, …). Configure SASL/TLS if needed. Hit Start. Then point any Kafka client at `127.0.0.1:9092` and watch.
 
