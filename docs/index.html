@@ -1,1260 +1,2649 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Kapture — Wireshark for Kafka</title>
-<meta name="description" content="A desktop app that speaks the Kafka protocol natively, intercepts traffic between your client and the broker, and shows you what's really going through the wire.">
-<link rel="canonical" href="https://kapturekafka.dev/">
-<meta property="og:title" content="Kapture — Wireshark for Kafka">
-<meta property="og:description" content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does.">
-<meta property="og:url" content="https://kapturekafka.dev/">
-<meta property="og:image" content="https://kapturekafka.dev/images/protocol-tab.png">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Kapture — Wireshark for Kafka">
-<meta name="twitter:description" content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does.">
-<meta name="twitter:image" content="https://kapturekafka.dev/images/protocol-tab.png">
-<link rel="icon" type="image/png" href="favicon.png">
-<link rel="apple-touch-icon" href="apple-touch-icon.png">
-<style>
-  :root {
-    --bg: #ffffff;
-    --bg-soft: #fafafa;
-    --bg-code: #0b1020;
-    --text: #0f172a;
-    --muted: #64748b;
-    --border: #e5e7eb;
-    --border-strong: #d1d5db;
-    --accent: #2563eb;
-    --accent-hover: #1d4ed8;
-    --accent-soft: #eff6ff;
-    --success: #059669;
-    --warn: #d97706;
-    --shadow-sm: 0 1px 2px rgba(15, 23, 42, .04), 0 1px 1px rgba(15, 23, 42, .03);
-    --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, .12), 0 2px 6px rgba(15, 23, 42, .04);
-    --shadow-lg: 0 24px 60px -20px rgba(15, 23, 42, .25), 0 8px 20px -10px rgba(15, 23, 42, .12);
-    --radius: 10px;
-    --radius-lg: 16px;
-    --maxw: 1120px;
-    --font: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-    --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body {
-    font-family: var(--font);
-    color: var(--text);
-    background: var(--bg);
-    line-height: 1.55;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { color: var(--accent-hover); }
-  h1, h2, h3 { letter-spacing: -0.02em; line-height: 1.15; margin: 0; }
-  h1 { font-size: clamp(40px, 6vw, 64px); font-weight: 700; }
-  h2 { font-size: clamp(28px, 3.6vw, 40px); font-weight: 650; }
-  h3 { font-size: 18px; font-weight: 600; }
-  p  { margin: 0; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Kapture — Wireshark for Kafka</title>
+    <meta
+      name="description"
+      content="A desktop app that speaks the Kafka protocol natively, intercepts traffic between your client and the broker, and shows you what's really going through the wire."
+    />
+    <link rel="canonical" href="https://kapturekafka.dev/" />
+    <meta property="og:title" content="Kapture — Wireshark for Kafka" />
+    <meta
+      property="og:description"
+      content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does."
+    />
+    <meta property="og:url" content="https://kapturekafka.dev/" />
+    <meta property="og:image" content="https://kapturekafka.dev/images/protocol-tab.png" />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Kapture — Wireshark for Kafka" />
+    <meta
+      name="twitter:description"
+      content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/protocol-tab.png" />
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --success: #059669;
+        --warn: #d97706;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --shadow-lg:
+          0 24px 60px -20px rgba(15, 23, 42, 0.25), 0 8px 20px -10px rgba(15, 23, 42, 0.12);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 1120px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      h1,
+      h2,
+      h3 {
+        letter-spacing: -0.02em;
+        line-height: 1.15;
+        margin: 0;
+      }
+      h1 {
+        font-size: clamp(40px, 6vw, 64px);
+        font-weight: 700;
+      }
+      h2 {
+        font-size: clamp(28px, 3.6vw, 40px);
+        font-weight: 650;
+      }
+      h3 {
+        font-size: 18px;
+        font-weight: 600;
+      }
+      p {
+        margin: 0;
+      }
 
-  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
 
-  /* Nav */
-  header.nav {
-    position: sticky; top: 0; z-index: 50;
-    background: rgba(255,255,255,.78);
-    backdrop-filter: saturate(160%) blur(10px);
-    border-bottom: 1px solid transparent;
-    transition: border-color .2s, background .2s;
-  }
-  header.nav.scrolled { border-color: var(--border); }
-  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 64px; }
-  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; color: var(--text); }
-  .brand-dot {
-    width: 22px; height: 22px; border-radius: 6px;
-    background: linear-gradient(135deg, #2563eb, #06b6d4);
-    box-shadow: var(--shadow-sm);
-  }
-  .nav-links { display: flex; align-items: center; gap: 24px; }
-  .nav-links a { color: var(--muted); font-size: 14px; font-weight: 500; }
-  .nav-links a:hover { color: var(--text); }
-  @media (max-width: 640px) { .nav-links a:not(.btn) { display: none; } }
+      /* Nav */
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .brand-text .by a {
+        color: var(--muted);
+      }
+      .brand-text .by a:hover {
+        color: var(--text);
+      }
 
-  /* Buttons */
-  .btn {
-    display: inline-flex; align-items: center; gap: 8px;
-    height: 40px; padding: 0 16px;
-    border-radius: var(--radius);
-    font-size: 14px; font-weight: 550;
-    border: 1px solid transparent; cursor: pointer;
-    transition: background .15s, border-color .15s, transform .15s, box-shadow .15s;
-  }
-  .btn-primary { background: var(--text); color: #fff; }
-  .btn-primary:hover { background: #000; color: #fff; transform: translateY(-1px); box-shadow: var(--shadow-md); }
-  .btn-ghost { background: #fff; color: var(--text); border-color: var(--border-strong); }
-  .btn-ghost:hover { background: var(--bg-soft); color: var(--text); }
-  .btn-lg { height: 48px; padding: 0 22px; font-size: 15px; border-radius: 12px; }
+      /* Star button */
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 24px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      @media (max-width: 640px) {
+        .nav-links a:not(.btn) {
+          display: none;
+        }
+      }
 
-  /* Hero */
-  .hero { padding: 64px 0 48px; position: relative; overflow: hidden; }
-  .hero::before {
-    content: ""; position: absolute; inset: -200px 0 auto 0; height: 600px; z-index: -1;
-    background:
-      radial-gradient(60% 60% at 50% 0%, rgba(37, 99, 235, .08), transparent 70%),
-      radial-gradient(40% 40% at 80% 10%, rgba(6, 182, 212, .07), transparent 70%);
-  }
-  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
-  .badge {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 999px;
-    font-size: 12px; font-weight: 500; color: var(--muted);
-    background: var(--bg-soft); border: 1px solid var(--border);
-  }
-  .hero h1 { max-width: 880px; }
-  .hero h1 .accent {
-    background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
-    -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .hero .lede { margin-top: 20px; font-size: 19px; color: var(--muted); max-width: 720px; }
-  .hero .ctas { margin-top: 32px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .hero .meta { margin-top: 14px; font-size: 13px; color: var(--muted); }
+      /* Buttons */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      .btn-ghost {
+        background: #fff;
+        color: var(--text);
+        border-color: var(--border-strong);
+      }
+      .btn-ghost:hover {
+        background: var(--bg-soft);
+        color: var(--text);
+      }
+      .btn-lg {
+        height: 48px;
+        padding: 0 22px;
+        font-size: 15px;
+        border-radius: 12px;
+      }
 
-  /* Screenshot — break out of wrap to give the product more room */
-  .screenshot {
-    margin: 64px auto 0;
-    width: 100%;
-    max-width: 1400px;
-    padding: 0 24px;
-    box-sizing: border-box;
-  }
-  .screenshot img {
-    display: block; width: 100%; height: auto;
-    filter: drop-shadow(0 30px 60px rgba(15, 23, 42, .22)) drop-shadow(0 10px 20px rgba(15, 23, 42, .08));
-  }
+      /* Hero */
+      .hero {
+        padding: 64px 0 48px;
+        position: relative;
+        overflow: hidden;
+      }
+      .hero::before {
+        content: "";
+        position: absolute;
+        inset: -200px 0 auto 0;
+        height: 600px;
+        z-index: -1;
+        background:
+          radial-gradient(60% 60% at 50% 0%, rgba(37, 99, 235, 0.08), transparent 70%),
+          radial-gradient(40% 40% at 80% 10%, rgba(6, 182, 212, 0.07), transparent 70%);
+      }
+      .badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+      }
+      .hero h1 {
+        max-width: 880px;
+      }
+      .hero h1 .accent {
+        background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .hero .lede {
+        margin-top: 20px;
+        font-size: 19px;
+        color: var(--muted);
+        max-width: 720px;
+      }
+      .hero .ctas {
+        margin-top: 32px;
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .hero .meta {
+        margin-top: 14px;
+        font-size: 13px;
+        color: var(--muted);
+      }
 
-  /* Sections */
-  section { padding: 96px 0; }
-  section .eyebrow {
-    display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .08em;
-    text-transform: uppercase; color: var(--accent); margin-bottom: 14px;
-  }
-  section .lede { font-size: 18px; color: var(--muted); max-width: 720px; margin-top: 16px; }
+      /* Screenshot — break out of wrap to give the product more room */
+      .screenshot {
+        margin: 64px auto 0;
+        width: 100%;
+        max-width: 1400px;
+        padding: 0 24px;
+        box-sizing: border-box;
+      }
+      .screenshot img {
+        display: block;
+        width: 100%;
+        height: auto;
+        filter: drop-shadow(0 30px 60px rgba(15, 23, 42, 0.22))
+          drop-shadow(0 10px 20px rgba(15, 23, 42, 0.08));
+      }
 
-  /* Why — mosaic */
-  .why { background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .why-head {
-    display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end;
-  }
-  @media (max-width: 760px) { .why-head { grid-template-columns: 1fr; } }
-  .why-stats {
-    display: grid; grid-template-columns: auto auto;
-    gap: 4px 16px; font-family: var(--mono); font-size: 12px;
-    color: var(--muted); justify-content: end;
-  }
-  .why-stats .num { font-weight: 700; text-align: right; color: var(--text); }
-  .why-stats .num.crit, .why-stats .lab.crit { color: #dc2626; }
-  .why-stats .num.warn, .why-stats .lab.warn { color: var(--warn); }
-  .why-stats .num.info, .why-stats .lab.info { color: var(--accent); }
+      /* Sections */
+      section {
+        padding: 96px 0;
+      }
+      section .eyebrow {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin-bottom: 14px;
+      }
+      section .lede {
+        font-size: 18px;
+        color: var(--muted);
+        max-width: 720px;
+        margin-top: 16px;
+      }
 
-  .why-mosaic {
-    margin-top: 56px;
-    display: grid; grid-template-columns: repeat(6, 1fr); gap: 20px;
-  }
-  @media (max-width: 880px) { .why-mosaic { grid-template-columns: 1fr; } }
+      /* Why — mosaic */
+      .why {
+        background: var(--bg-soft);
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .why-head {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 32px;
+        align-items: end;
+      }
+      @media (max-width: 760px) {
+        .why-head {
+          grid-template-columns: 1fr;
+        }
+      }
+      .why-stats {
+        display: grid;
+        grid-template-columns: auto auto;
+        gap: 4px 16px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+        justify-content: end;
+      }
+      .why-stats .num {
+        font-weight: 700;
+        text-align: right;
+        color: var(--text);
+      }
+      .why-stats .num.crit,
+      .why-stats .lab.crit {
+        color: #dc2626;
+      }
+      .why-stats .num.warn,
+      .why-stats .lab.warn {
+        color: var(--warn);
+      }
+      .why-stats .num.info,
+      .why-stats .lab.info {
+        color: var(--accent);
+      }
 
-  .anti {
-    position: relative;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 24px;
-    overflow: hidden;
-    display: flex; flex-direction: column;
-    transition: border-color .2s, transform .2s, box-shadow .2s;
-  }
-  .anti.span-3 { grid-column: span 3; }
-  .anti.span-2 { grid-column: span 2; }
-  @media (max-width: 880px) {
-    .anti.span-3, .anti.span-2 { grid-column: span 1; }
-  }
-  .anti:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 0 0 1px rgba(15, 23, 42, .15), 0 24px 40px -22px rgba(15, 23, 42, .22);
-    border-color: transparent;
-  }
+      .why-mosaic {
+        margin-top: 56px;
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 20px;
+      }
+      @media (max-width: 880px) {
+        .why-mosaic {
+          grid-template-columns: 1fr;
+        }
+      }
 
-  .anti-head {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 14px;
-  }
-  .anti-tag {
-    display: inline-flex; align-items: center; gap: 8px;
-    font-family: var(--mono); font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .08em;
-    color: var(--muted);
-  }
-  .anti-tag .pulse {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: var(--accent);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
-  }
-  .anti.warn .anti-tag, .anti.warn .anti-tag .num { color: var(--warn); }
-  .anti.warn .anti-tag .pulse { background: var(--warn); box-shadow: 0 0 0 3px rgba(217, 119, 6, .15); }
-  .anti.crit .anti-tag, .anti.crit .anti-tag .num { color: #dc2626; }
-  .anti.crit .anti-tag .pulse { background: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, .15); }
-  .anti.info .anti-tag, .anti.info .anti-tag .num { color: var(--accent); }
-  .anti-code {
-    font-family: var(--mono); font-size: 11px; color: #94a3b8;
-    letter-spacing: .04em;
-  }
-  .anti h3 { font-size: 22px; line-height: 1.25; letter-spacing: -0.01em; }
-  .anti.span-2 h3 { font-size: 18px; }
-  .anti h3 code {
-    background: var(--bg-soft); color: var(--text); border: 1px solid var(--border);
-    padding: 1px 7px; border-radius: 5px; font-size: .85em;
-    font-family: var(--mono); font-weight: 500;
-  }
+      .anti {
+        position: relative;
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 24px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transition:
+          border-color 0.2s,
+          transform 0.2s,
+          box-shadow 0.2s;
+      }
+      .anti.span-3 {
+        grid-column: span 3;
+      }
+      .anti.span-2 {
+        grid-column: span 2;
+      }
+      @media (max-width: 880px) {
+        .anti.span-3,
+        .anti.span-2 {
+          grid-column: span 1;
+        }
+      }
+      .anti:hover {
+        transform: translateY(-3px);
+        box-shadow:
+          0 0 0 1px rgba(15, 23, 42, 0.15),
+          0 24px 40px -22px rgba(15, 23, 42, 0.22);
+        border-color: transparent;
+      }
 
-  .anti-chart {
-    margin: 18px 0 16px;
-    background: linear-gradient(180deg, var(--bg-soft), #fff);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 18px;
-    height: 120px;
-    display: flex; align-items: center; justify-content: center;
-    position: relative;
-  }
-  .anti.span-2 .anti-chart { height: 96px; padding: 14px; }
-  .anti-chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
-  .anti-chart .chart-label {
-    position: absolute;
-    font-family: var(--mono); font-size: 10px;
-    color: var(--muted); letter-spacing: .04em;
-  }
+      .anti-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+      .anti-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .anti-tag .pulse {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
+      }
+      .anti.warn .anti-tag,
+      .anti.warn .anti-tag .num {
+        color: var(--warn);
+      }
+      .anti.warn .anti-tag .pulse {
+        background: var(--warn);
+        box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+      }
+      .anti.crit .anti-tag,
+      .anti.crit .anti-tag .num {
+        color: #dc2626;
+      }
+      .anti.crit .anti-tag .pulse {
+        background: #dc2626;
+        box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
+      }
+      .anti.info .anti-tag,
+      .anti.info .anti-tag .num {
+        color: var(--accent);
+      }
+      .anti-code {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: #94a3b8;
+        letter-spacing: 0.04em;
+      }
+      .anti h3 {
+        font-size: 22px;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+      }
+      .anti.span-2 h3 {
+        font-size: 18px;
+      }
+      .anti h3 code {
+        background: var(--bg-soft);
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 1px 7px;
+        border-radius: 5px;
+        font-size: 0.85em;
+        font-family: var(--mono);
+        font-weight: 500;
+      }
 
-  .anti p {
-    color: var(--muted); font-size: 14px; line-height: 1.55;
-    margin-top: auto;
-  }
-  .anti p code {
-    background: var(--bg-soft); color: var(--text); border: 1px solid var(--border);
-    padding: 1px 5px; border-radius: 4px; font-size: 12.5px; font-family: var(--mono);
-  }
+      .anti-chart {
+        margin: 18px 0 16px;
+        background: linear-gradient(180deg, var(--bg-soft), #fff);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 18px;
+        height: 120px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: relative;
+      }
+      .anti.span-2 .anti-chart {
+        height: 96px;
+        padding: 14px;
+      }
+      .anti-chart svg {
+        width: 100%;
+        height: 100%;
+        display: block;
+        overflow: visible;
+      }
+      .anti-chart .chart-label {
+        position: absolute;
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+      }
 
-  .anti-foot {
-    display: flex; align-items: flex-end; justify-content: space-between;
-    gap: 16px; margin-top: 18px;
-    padding-top: 14px;
-    border-top: 1px dashed var(--border);
-  }
-  .anti-metric { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-  .anti-metric .num {
-    font-family: var(--mono); font-size: 26px; font-weight: 700;
-    line-height: 1; letter-spacing: -0.02em;
-  }
-  .anti.crit .anti-metric .num { color: #dc2626; }
-  .anti.warn .anti-metric .num { color: var(--warn); }
-  .anti.info .anti-metric .num { color: var(--accent); }
-  .anti-metric .unit {
-    font-family: var(--mono); font-size: 10px; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .08em;
-  }
-  .anti-metric .baseline { font-family: var(--mono); font-size: 11px; color: #94a3b8; }
-  .anti a.example {
-    display: inline-flex; align-items: center; gap: 4px;
-    font-size: 12px; font-weight: 500; color: var(--accent);
-    text-decoration: underline; text-decoration-color: rgba(37,99,235,.3);
-    text-underline-offset: 3px; flex-shrink: 0;
-    transition: gap .2s, text-decoration-color .2s;
-  }
-  .anti a.example:hover { gap: 8px; text-decoration-color: var(--accent); }
+      .anti p {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+        margin-top: auto;
+      }
+      .anti p code {
+        background: var(--bg-soft);
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 1px 5px;
+        border-radius: 4px;
+        font-size: 12.5px;
+        font-family: var(--mono);
+      }
 
-  /* How it works */
-  .how-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; margin-top: 48px; align-items: center; }
-  @media (max-width: 880px) { .how-grid { grid-template-columns: 1fr; } }
-  .diagram {
-    background: var(--bg-code); color: #cbd5e1;
-    border-radius: 12px; padding: 28px;
-    font-family: var(--mono); font-size: 14px; line-height: 1.7;
-    box-shadow: var(--shadow-md);
-    overflow-x: auto;
-  }
-  .diagram .arrow { color: #06b6d4; }
-  .diagram .label { color: #94a3b8; }
-  .diagram .hi { color: #f8fafc; font-weight: 600; }
-  .how-points li {
-    list-style: none; padding: 14px 0;
-    border-bottom: 1px solid var(--border);
-    display: flex; gap: 14px; align-items: flex-start;
-  }
-  .how-points li:last-child { border-bottom: none; }
-  .how-points .check {
-    flex: 0 0 auto; width: 22px; height: 22px; border-radius: 50%;
-    background: #ecfdf5; color: var(--success);
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 13px; margin-top: 2px;
-  }
-  .how-points strong { display: block; margin-bottom: 2px; }
-  .how-points span { color: var(--muted); font-size: 14px; }
+      .anti-foot {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 18px;
+        padding-top: 14px;
+        border-top: 1px dashed var(--border);
+      }
+      .anti-metric {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .anti-metric .num {
+        font-family: var(--mono);
+        font-size: 26px;
+        font-weight: 700;
+        line-height: 1;
+        letter-spacing: -0.02em;
+      }
+      .anti.crit .anti-metric .num {
+        color: #dc2626;
+      }
+      .anti.warn .anti-metric .num {
+        color: var(--warn);
+      }
+      .anti.info .anti-metric .num {
+        color: var(--accent);
+      }
+      .anti-metric .unit {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .anti-metric .baseline {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: #94a3b8;
+      }
+      .anti a.example {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        color: var(--accent);
+        text-decoration: underline;
+        text-decoration-color: rgba(37, 99, 235, 0.3);
+        text-underline-offset: 3px;
+        flex-shrink: 0;
+        transition:
+          gap 0.2s,
+          text-decoration-color 0.2s;
+      }
+      .anti a.example:hover {
+        gap: 8px;
+        text-decoration-color: var(--accent);
+      }
 
-  /* Features */
-  .features-grid {
-    margin-top: 48px;
-    display: grid; gap: 20px;
-    grid-template-columns: repeat(2, 1fr);
-  }
-  @media (max-width: 720px) { .features-grid { grid-template-columns: 1fr; } }
-  .feat {
-    position: relative;
-    padding: 28px;
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: #fff;
-    overflow: hidden;
-    display: flex; flex-direction: column;
-    transition: border-color .2s, transform .2s, box-shadow .2s;
-  }
-  .feat::before {
-    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0; transition: opacity .3s;
-  }
-  .feat:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 0 0 1px rgba(37, 99, 235, .18), 0 26px 50px -25px rgba(15, 23, 42, .25);
-    border-color: transparent;
-  }
-  .feat:hover::before { opacity: 1; }
-  .feat-head {
-    display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 14px;
-  }
-  .feat-tag {
-    font-family: var(--mono); font-size: 10px; font-weight: 700;
-    text-transform: uppercase; letter-spacing: .1em;
-    color: var(--accent);
-    padding: 3px 9px; border-radius: 999px;
-    background: var(--accent-soft); border: 1px solid rgba(37,99,235,.12);
-  }
-  .feat-id {
-    font-family: var(--mono); font-size: 10px; color: #94a3b8; letter-spacing: .04em;
-  }
-  .feat h3 { font-size: 20px; line-height: 1.25; letter-spacing: -0.01em; }
-  .feat p { color: var(--muted); font-size: 14px; margin-top: auto; padding-top: 16px; line-height: 1.55; }
-  .feat code {
-    background: var(--bg-soft); border: 1px solid var(--border); padding: 1px 6px;
-    border-radius: 4px; font-size: 12.5px; font-family: var(--mono);
-  }
+      /* How it works */
+      .how-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 56px;
+        margin-top: 48px;
+        align-items: center;
+      }
+      @media (max-width: 880px) {
+        .how-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .diagram {
+        background: var(--bg-code);
+        color: #cbd5e1;
+        border-radius: 12px;
+        padding: 28px;
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 1.7;
+        box-shadow: var(--shadow-md);
+        overflow-x: auto;
+      }
+      .diagram .arrow {
+        color: #06b6d4;
+      }
+      .diagram .label {
+        color: #94a3b8;
+      }
+      .diagram .hi {
+        color: #f8fafc;
+        font-weight: 600;
+      }
+      .how-points li {
+        list-style: none;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        gap: 14px;
+        align-items: flex-start;
+      }
+      .how-points li:last-child {
+        border-bottom: none;
+      }
+      .how-points .check {
+        flex: 0 0 auto;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #ecfdf5;
+        color: var(--success);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        margin-top: 2px;
+      }
+      .how-points strong {
+        display: block;
+        margin-bottom: 2px;
+      }
+      .how-points span {
+        color: var(--muted);
+        font-size: 14px;
+      }
 
-  .feat-preview {
-    margin: 18px 0 4px;
-    background: linear-gradient(180deg, #fcfcfd, var(--bg-soft));
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 14px 16px;
-    font-family: var(--mono); font-size: 11px;
-    line-height: 1.85;
-    height: 138px;
-    overflow: hidden;
-    position: relative;
-  }
-  .feat-preview::after {
-    content: ""; position: absolute; bottom: 0; left: 0; right: 0; height: 28px;
-    background: linear-gradient(180deg, transparent, var(--bg-soft));
-    pointer-events: none;
-  }
+      /* Features */
+      .features-grid {
+        margin-top: 48px;
+        display: grid;
+        gap: 20px;
+        grid-template-columns: repeat(2, 1fr);
+      }
+      @media (max-width: 720px) {
+        .features-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      .feat {
+        position: relative;
+        padding: 28px;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        background: #fff;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        transition:
+          border-color 0.2s,
+          transform 0.2s,
+          box-shadow 0.2s;
+      }
+      .feat::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+      .feat:hover {
+        transform: translateY(-3px);
+        box-shadow:
+          0 0 0 1px rgba(37, 99, 235, 0.18),
+          0 26px 50px -25px rgba(15, 23, 42, 0.25);
+        border-color: transparent;
+      }
+      .feat:hover::before {
+        opacity: 1;
+      }
+      .feat-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 14px;
+      }
+      .feat-tag {
+        font-family: var(--mono);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--accent);
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        border: 1px solid rgba(37, 99, 235, 0.12);
+      }
+      .feat-id {
+        font-family: var(--mono);
+        font-size: 10px;
+        color: #94a3b8;
+        letter-spacing: 0.04em;
+      }
+      .feat h3 {
+        font-size: 20px;
+        line-height: 1.25;
+        letter-spacing: -0.01em;
+      }
+      .feat p {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: auto;
+        padding-top: 16px;
+        line-height: 1.55;
+      }
+      .feat code {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 12.5px;
+        font-family: var(--mono);
+      }
 
-  /* Live wire preview */
-  .fp-wire .row { display: flex; gap: 8px; align-items: baseline; white-space: nowrap; }
-  .fp-wire .dir.out { color: var(--accent); }
-  .fp-wire .dir.in  { color: #059669; }
-  .fp-wire .api { color: var(--text); flex: 1; }
-  .fp-wire .api .v { color: var(--muted); font-weight: 400; }
-  .fp-wire .meta { color: #94a3b8; font-size: 10px; }
-  .fp-wire .rtt { color: var(--accent); }
-  .fp-wire .size { color: var(--warn); }
+      .feat-preview {
+        margin: 18px 0 4px;
+        background: linear-gradient(180deg, #fcfcfd, var(--bg-soft));
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 14px 16px;
+        font-family: var(--mono);
+        font-size: 11px;
+        line-height: 1.85;
+        height: 138px;
+        overflow: hidden;
+        position: relative;
+      }
+      .feat-preview::after {
+        content: "";
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 28px;
+        background: linear-gradient(180deg, transparent, var(--bg-soft));
+        pointer-events: none;
+      }
 
-  /* Messages preview */
-  .fp-msg .row { display: flex; gap: 10px; align-items: baseline; white-space: nowrap; overflow: hidden; }
-  .fp-msg .topic { color: var(--accent); flex-shrink: 0; }
-  .fp-msg .k { color: #94a3b8; }
-  .fp-msg .str { color: #059669; }
-  .fp-msg .body { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+      /* Live wire preview */
+      .fp-wire .row {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        white-space: nowrap;
+      }
+      .fp-wire .dir.out {
+        color: var(--accent);
+      }
+      .fp-wire .dir.in {
+        color: #059669;
+      }
+      .fp-wire .api {
+        color: var(--text);
+        flex: 1;
+      }
+      .fp-wire .api .v {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .fp-wire .meta {
+        color: #94a3b8;
+        font-size: 10px;
+      }
+      .fp-wire .rtt {
+        color: var(--accent);
+      }
+      .fp-wire .size {
+        color: var(--warn);
+      }
 
-  /* Filter preview */
-  .fp-filter { padding-top: 8px; }
-  .fp-filter .input {
-    display: flex; align-items: center; gap: 4px;
-    padding: 8px 10px;
-    background: #fff; border: 1px solid var(--border); border-radius: 6px;
-    box-shadow: 0 0 0 3px rgba(37,99,235,.08);
-    margin-bottom: 8px; flex-wrap: wrap;
-    font-size: 11.5px;
-  }
-  .fp-filter .key { color: var(--text); }
-  .fp-filter .op { color: var(--accent); }
-  .fp-filter .str { color: #059669; }
-  .fp-filter .num { color: var(--warn); }
-  .fp-filter .and { color: #94a3b8; }
-  .fp-filter .caret {
-    display: inline-block; width: 1px; height: 12px;
-    background: var(--accent); margin-left: 2px;
-    animation: blink 1s steps(2) infinite;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-  .fp-filter .suggest {
-    background: #fff; border: 1px solid var(--border); border-radius: 6px;
-    padding: 4px;
-    box-shadow: 0 6px 14px -8px rgba(15,23,42,.18);
-  }
-  .fp-filter .sug { padding: 3px 8px; border-radius: 4px; color: var(--muted); }
-  .fp-filter .sug.active { background: var(--accent-soft); color: var(--accent); }
+      /* Messages preview */
+      .fp-msg .row {
+        display: flex;
+        gap: 10px;
+        align-items: baseline;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .fp-msg .topic {
+        color: var(--accent);
+        flex-shrink: 0;
+      }
+      .fp-msg .k {
+        color: #94a3b8;
+      }
+      .fp-msg .str {
+        color: #059669;
+      }
+      .fp-msg .body {
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
-  /* Profiles preview */
-  .fp-prof .row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 6px 8px; border-radius: 6px;
-    border: 1px solid transparent;
-  }
-  .fp-prof .row.active {
-    background: var(--accent-soft);
-    border-color: rgba(37,99,235,.18);
-  }
-  .fp-prof .dot {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: #cbd5e1; flex-shrink: 0;
-  }
-  .fp-prof .dot.on { background: #10b981; box-shadow: 0 0 0 3px rgba(16,185,129,.18); }
-  .fp-prof .name { color: var(--text); flex: 1; }
-  .fp-prof .auth {
-    font-size: 10px; color: var(--muted);
-    padding: 1px 6px; border-radius: 4px;
-    background: var(--bg-soft); border: 1px solid var(--border);
-  }
+      /* Filter preview */
+      .fp-filter {
+        padding-top: 8px;
+      }
+      .fp-filter .input {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 10px;
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+        font-size: 11.5px;
+      }
+      .fp-filter .key {
+        color: var(--text);
+      }
+      .fp-filter .op {
+        color: var(--accent);
+      }
+      .fp-filter .str {
+        color: #059669;
+      }
+      .fp-filter .num {
+        color: var(--warn);
+      }
+      .fp-filter .and {
+        color: #94a3b8;
+      }
+      .fp-filter .caret {
+        display: inline-block;
+        width: 1px;
+        height: 12px;
+        background: var(--accent);
+        margin-left: 2px;
+        animation: blink 1s steps(2) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      .fp-filter .suggest {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px;
+        box-shadow: 0 6px 14px -8px rgba(15, 23, 42, 0.18);
+      }
+      .fp-filter .sug {
+        padding: 3px 8px;
+        border-radius: 4px;
+        color: var(--muted);
+      }
+      .fp-filter .sug.active {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
 
-  /* Bonus MCP card — split layout */
-  .feat-bonus {
-    grid-column: 1 / -1;
-    display: grid;
-    grid-template-columns: 1.05fr 1fr;
-    gap: 48px;
-    align-items: center;
-    background: linear-gradient(135deg, #0b1220 0%, #1e293b 100%);
-    color: #f1f5f9;
-    border: 1px solid rgba(255,255,255,.06);
-    padding: 44px;
-    overflow: hidden;
-    position: relative;
-  }
-  .feat-bonus::before {
-    content: ""; position: absolute; inset: 0;
-    background: radial-gradient(60% 70% at 100% 0%, rgba(96, 165, 250, .12), transparent 60%);
-    pointer-events: none;
-  }
-  .feat-bonus::after { display: none; }
-  .feat-bonus:hover { transform: none; box-shadow: var(--shadow-lg); border-color: rgba(255,255,255,.1); }
-  .feat-bonus > * { position: relative; z-index: 1; }
-  @media (max-width: 880px) { .feat-bonus { grid-template-columns: 1fr; padding: 32px; gap: 32px; } }
-  .feat-bonus .icon {
-    width: 44px; height: 44px; border-radius: 11px;
-    display: inline-flex; align-items: center; justify-content: center;
-    margin-bottom: 22px;
-    font-family: var(--mono); font-weight: 700; font-size: 18px;
-    background: rgba(96, 165, 250, .12);
-    color: #60a5fa;
-    border: 1px solid rgba(96, 165, 250, .25);
-    box-shadow: 0 4px 10px -4px rgba(96, 165, 250, .25);
-  }
-  .feat-bonus h3 { color: #fff; font-size: 22px; }
-  .feat-bonus p { color: #94a3b8; font-size: 15px; }
-  .feat-bonus code {
-    background: rgba(255,255,255,.06);
-    border: 1px solid rgba(255,255,255,.1);
-    color: #e2e8f0;
-  }
+      /* Profiles preview */
+      .fp-prof .row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid transparent;
+      }
+      .fp-prof .row.active {
+        background: var(--accent-soft);
+        border-color: rgba(37, 99, 235, 0.18);
+      }
+      .fp-prof .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #cbd5e1;
+        flex-shrink: 0;
+      }
+      .fp-prof .dot.on {
+        background: #10b981;
+        box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
+      }
+      .fp-prof .name {
+        color: var(--text);
+        flex: 1;
+      }
+      .fp-prof .auth {
+        font-size: 10px;
+        color: var(--muted);
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+      }
 
-  .mcp-demo {
-    background: #0a0f1c;
-    border: 1px solid rgba(255,255,255,.07);
-    border-radius: 12px;
-    padding: 20px 22px;
-    font-family: var(--mono);
-    font-size: 12px;
-    line-height: 1.6;
-    box-shadow: 0 12px 30px -12px rgba(0,0,0,.5);
-  }
-  .mcp-bar {
-    display: flex; align-items: center; justify-content: space-between;
-    padding-bottom: 14px; margin-bottom: 14px;
-    border-bottom: 1px solid rgba(255,255,255,.06);
-    font-size: 11px; color: #64748b;
-  }
-  .mcp-bar .endpoint { color: #94a3b8; }
-  .mcp-bar .live { display: inline-flex; align-items: center; gap: 6px; color: #34d399; }
-  .mcp-bar .live .led {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: #34d399;
-    box-shadow: 0 0 0 3px rgba(52, 211, 153, .2);
-    animation: pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(52, 211, 153, .05); } }
+      /* Bonus MCP card — split layout */
+      .feat-bonus {
+        grid-column: 1 / -1;
+        display: grid;
+        grid-template-columns: 1.05fr 1fr;
+        gap: 48px;
+        align-items: center;
+        background: linear-gradient(135deg, #0b1220 0%, #1e293b 100%);
+        color: #f1f5f9;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        padding: 44px;
+        overflow: hidden;
+        position: relative;
+      }
+      .feat-bonus::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(60% 70% at 100% 0%, rgba(96, 165, 250, 0.12), transparent 60%);
+        pointer-events: none;
+      }
+      .feat-bonus::after {
+        display: none;
+      }
+      .feat-bonus:hover {
+        transform: none;
+        box-shadow: var(--shadow-lg);
+        border-color: rgba(255, 255, 255, 0.1);
+      }
+      .feat-bonus > * {
+        position: relative;
+        z-index: 1;
+      }
+      @media (max-width: 880px) {
+        .feat-bonus {
+          grid-template-columns: 1fr;
+          padding: 32px;
+          gap: 32px;
+        }
+      }
+      .feat-bonus .icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 11px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 22px;
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 18px;
+        background: rgba(96, 165, 250, 0.12);
+        color: #60a5fa;
+        border: 1px solid rgba(96, 165, 250, 0.25);
+        box-shadow: 0 4px 10px -4px rgba(96, 165, 250, 0.25);
+      }
+      .feat-bonus h3 {
+        color: #fff;
+        font-size: 22px;
+      }
+      .feat-bonus p {
+        color: #94a3b8;
+        font-size: 15px;
+      }
+      .feat-bonus code {
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #e2e8f0;
+      }
 
-  .mcp-block { padding: 4px 0; }
-  .mcp-block + .mcp-block { margin-top: 10px; }
-  .mcp-prompt { color: #f1f5f9; }
-  .mcp-prompt::before { content: "$ "; color: #60a5fa; font-weight: 700; }
-  .mcp-tool-head { color: #a78bfa; }
-  .mcp-tool-head::before { content: "● "; color: #a78bfa; }
-  .mcp-tool-head .name { color: #f1f5f9; font-weight: 600; }
-  .mcp-args {
-    margin: 4px 0 0 16px;
-    color: #94a3b8;
-  }
-  .mcp-args .k { color: #94a3b8; }
-  .mcp-args .v { color: #cbd5e1; }
-  .mcp-args .str { color: #86efac; }
-  .mcp-args .num { color: #fbbf24; }
-  .mcp-out {
-    margin: 6px 0 0 16px;
-    color: #cbd5e1;
-  }
-  .mcp-out::before { content: "↳ "; color: #475569; }
-  .mcp-out .num { color: #fbbf24; }
-  .mcp-out .warn { color: #fb923c; font-weight: 600; }
-  .mcp-out .v { color: #93c5fd; }
+      .mcp-demo {
+        background: #0a0f1c;
+        border: 1px solid rgba(255, 255, 255, 0.07);
+        border-radius: 12px;
+        padding: 20px 22px;
+        font-family: var(--mono);
+        font-size: 12px;
+        line-height: 1.6;
+        box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.5);
+      }
+      .mcp-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-bottom: 14px;
+        margin-bottom: 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        font-size: 11px;
+        color: #64748b;
+      }
+      .mcp-bar .endpoint {
+        color: #94a3b8;
+      }
+      .mcp-bar .live {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #34d399;
+      }
+      .mcp-bar .live .led {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: #34d399;
+        box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
+        animation: pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        50% {
+          box-shadow: 0 0 0 5px rgba(52, 211, 153, 0.05);
+        }
+      }
 
-  .mcp-final {
-    margin-top: 14px;
-    padding-top: 14px;
-    border-top: 1px solid rgba(255,255,255,.06);
-    font-family: var(--font);
-    font-size: 13px;
-    line-height: 1.65;
-    color: #e2e8f0;
-  }
-  .mcp-final .v { color: #93c5fd; font-family: var(--mono); font-size: 12px; }
-  .mcp-final .num { color: #fbbf24; font-family: var(--mono); font-size: 12px; }
-  .mcp-final .verdict { display: block; margin-top: 8px; color: #fb923c; font-weight: 600; }
+      .mcp-block {
+        padding: 4px 0;
+      }
+      .mcp-block + .mcp-block {
+        margin-top: 10px;
+      }
+      .mcp-prompt {
+        color: #f1f5f9;
+      }
+      .mcp-prompt::before {
+        content: "$ ";
+        color: #60a5fa;
+        font-weight: 700;
+      }
+      .mcp-tool-head {
+        color: #a78bfa;
+      }
+      .mcp-tool-head::before {
+        content: "● ";
+        color: #a78bfa;
+      }
+      .mcp-tool-head .name {
+        color: #f1f5f9;
+        font-weight: 600;
+      }
+      .mcp-args {
+        margin: 4px 0 0 16px;
+        color: #94a3b8;
+      }
+      .mcp-args .k {
+        color: #94a3b8;
+      }
+      .mcp-args .v {
+        color: #cbd5e1;
+      }
+      .mcp-args .str {
+        color: #86efac;
+      }
+      .mcp-args .num {
+        color: #fbbf24;
+      }
+      .mcp-out {
+        margin: 6px 0 0 16px;
+        color: #cbd5e1;
+      }
+      .mcp-out::before {
+        content: "↳ ";
+        color: #475569;
+      }
+      .mcp-out .num {
+        color: #fbbf24;
+      }
+      .mcp-out .warn {
+        color: #fb923c;
+        font-weight: 600;
+      }
+      .mcp-out .v {
+        color: #93c5fd;
+      }
 
-  /* Install — vertical timeline */
-  .install { background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-  .timeline {
-    margin-top: 48px; max-width: 720px;
-    position: relative;
-  }
-  .timeline::before {
-    content: ""; position: absolute; left: 19px; top: 28px; bottom: 28px;
-    width: 2px;
-    background: linear-gradient(180deg, var(--accent) 0%, var(--accent) 50%, var(--border-strong) 100%);
-  }
-  .tline-item {
-    display: grid; grid-template-columns: 40px 1fr; gap: 24px;
-    padding: 14px 0;
-    position: relative;
-  }
-  .tline-item .marker {
-    width: 40px; height: 40px; border-radius: 50%;
-    background: #fff;
-    border: 2px solid var(--accent);
-    color: var(--accent);
-    display: inline-flex; align-items: center; justify-content: center;
-    font-family: var(--mono); font-weight: 700; font-size: 14px;
-    z-index: 1;
-    box-shadow: 0 0 0 6px var(--bg-soft);
-  }
-  .tline-item h3 { font-size: 19px; }
-  .tline-item p { color: var(--muted); margin-top: 8px; font-size: 15px; line-height: 1.6; }
-  .tline-item code {
-    background: #fff; border: 1px solid var(--border);
-    padding: 3px 8px; border-radius: 6px;
-    font-family: var(--mono); font-size: 13px;
-    color: var(--accent);
-  }
+      .mcp-final {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+        font-family: var(--font);
+        font-size: 13px;
+        line-height: 1.65;
+        color: #e2e8f0;
+      }
+      .mcp-final .v {
+        color: #93c5fd;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .mcp-final .num {
+        color: #fbbf24;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+      .mcp-final .verdict {
+        display: block;
+        margin-top: 8px;
+        color: #fb923c;
+        font-weight: 600;
+      }
 
-  /* Dark section override (Why) */
-  .section-dark {
-    background: #07091a;
-    border-top-color: rgba(255,255,255,.06) !important;
-    border-bottom-color: rgba(255,255,255,.06) !important;
-    position: relative;
-    overflow: hidden;
-  }
-  .section-dark::before {
-    content: ""; position: absolute; inset: 0; pointer-events: none;
-    background:
-      radial-gradient(50% 60% at 0% 0%, rgba(220, 38, 38, .10), transparent 65%),
-      radial-gradient(45% 55% at 100% 100%, rgba(37, 99, 235, .08), transparent 65%);
-  }
-  .section-dark > .wrap { position: relative; z-index: 1; }
-  .section-dark .eyebrow { color: #60a5fa; }
-  .section-dark h2 { color: #f8fafc; }
-  .section-dark .lede { color: #94a3b8; }
-  .section-dark .why-stats { color: #64748b; }
-  .section-dark .why-stats .num { color: #f1f5f9; }
-  .section-dark .why-stats .num.crit, .section-dark .why-stats .lab.crit { color: #f87171; }
-  .section-dark .why-stats .num.warn, .section-dark .why-stats .lab.warn { color: #fbbf24; }
-  .section-dark .why-stats .num.info, .section-dark .why-stats .lab.info { color: #60a5fa; }
+      /* Install — vertical timeline */
+      .install {
+        background: var(--bg-soft);
+        border-top: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .timeline {
+        margin-top: 48px;
+        max-width: 720px;
+        position: relative;
+      }
+      .timeline::before {
+        content: "";
+        position: absolute;
+        left: 19px;
+        top: 28px;
+        bottom: 28px;
+        width: 2px;
+        background: linear-gradient(
+          180deg,
+          var(--accent) 0%,
+          var(--accent) 50%,
+          var(--border-strong) 100%
+        );
+      }
+      .tline-item {
+        display: grid;
+        grid-template-columns: 40px 1fr;
+        gap: 24px;
+        padding: 14px 0;
+        position: relative;
+      }
+      .tline-item .marker {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: #fff;
+        border: 2px solid var(--accent);
+        color: var(--accent);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-family: var(--mono);
+        font-weight: 700;
+        font-size: 14px;
+        z-index: 1;
+        box-shadow: 0 0 0 6px var(--bg-soft);
+      }
+      .tline-item h3 {
+        font-size: 19px;
+      }
+      .tline-item p {
+        color: var(--muted);
+        margin-top: 8px;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+      .tline-item code {
+        background: #fff;
+        border: 1px solid var(--border);
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: var(--accent);
+      }
 
-  .section-dark .anti {
-    background: linear-gradient(180deg, #0d1226 0%, #0a0f1f 100%);
-    border-color: rgba(255,255,255,.06);
-  }
-  .section-dark .anti:hover {
-    border-color: transparent;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.12), 0 28px 60px -22px rgba(0,0,0,.7);
-  }
-  .section-dark .anti h3 { color: #f8fafc; }
-  .section-dark .anti h3 code,
-  .section-dark .anti p code {
-    background: rgba(255,255,255,.05);
-    border-color: rgba(255,255,255,.08);
-    color: #e2e8f0;
-  }
-  .section-dark .anti p { color: #94a3b8; }
-  .section-dark .anti em { color: #cbd5e1; font-style: italic; }
-  .section-dark .anti-code { color: #475569; }
-  .section-dark .anti-tag { color: #94a3b8; }
-  .section-dark .anti.crit .anti-tag, .section-dark .anti.crit .anti-metric .num { color: #f87171; }
-  .section-dark .anti.warn .anti-tag, .section-dark .anti.warn .anti-metric .num { color: #fbbf24; }
-  .section-dark .anti.info .anti-tag, .section-dark .anti.info .anti-metric .num { color: #60a5fa; }
-  .section-dark .anti.crit .anti-tag .pulse { background: #f87171; box-shadow: 0 0 0 3px rgba(248,113,113,.18); }
-  .section-dark .anti.warn .anti-tag .pulse { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
-  .section-dark .anti.info .anti-tag .pulse { background: #60a5fa; box-shadow: 0 0 0 3px rgba(96,165,250,.18); }
-  .section-dark .anti-chart {
-    background: rgba(255,255,255,.015);
-    border-color: rgba(255,255,255,.06);
-  }
-  .section-dark .anti-foot { border-top-color: rgba(255,255,255,.07); border-top-style: dashed; }
-  .section-dark .anti-metric .unit { color: #64748b; }
-  .section-dark .anti-metric .baseline { color: #475569; }
-  .section-dark .anti a.example {
-    color: #60a5fa;
-    text-decoration-color: rgba(96, 165, 250, .35);
-  }
-  .section-dark .anti a.example:hover { text-decoration-color: #60a5fa; }
+      /* Dark section override (Why) */
+      .section-dark {
+        background: #07091a;
+        border-top-color: rgba(255, 255, 255, 0.06) !important;
+        border-bottom-color: rgba(255, 255, 255, 0.06) !important;
+        position: relative;
+        overflow: hidden;
+      }
+      .section-dark::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background:
+          radial-gradient(50% 60% at 0% 0%, rgba(220, 38, 38, 0.1), transparent 65%),
+          radial-gradient(45% 55% at 100% 100%, rgba(37, 99, 235, 0.08), transparent 65%);
+      }
+      .section-dark > .wrap {
+        position: relative;
+        z-index: 1;
+      }
+      .section-dark .eyebrow {
+        color: #60a5fa;
+      }
+      .section-dark h2 {
+        color: #f8fafc;
+      }
+      .section-dark .lede {
+        color: #94a3b8;
+      }
+      .section-dark .why-stats {
+        color: #64748b;
+      }
+      .section-dark .why-stats .num {
+        color: #f1f5f9;
+      }
+      .section-dark .why-stats .num.crit,
+      .section-dark .why-stats .lab.crit {
+        color: #f87171;
+      }
+      .section-dark .why-stats .num.warn,
+      .section-dark .why-stats .lab.warn {
+        color: #fbbf24;
+      }
+      .section-dark .why-stats .num.info,
+      .section-dark .why-stats .lab.info {
+        color: #60a5fa;
+      }
 
-  /* Roadmap */
-  .road-list { margin-top: 48px; display: grid; gap: 0; }
-  .road-item {
-    display: grid; grid-template-columns: 200px 1fr; gap: 32px;
-    padding: 24px 0; border-top: 1px solid var(--border);
-  }
-  .road-item:last-child { border-bottom: 1px solid var(--border); }
-  .road-item .tag {
-    font-family: var(--mono); font-size: 12px;
-    color: var(--accent); font-weight: 600; letter-spacing: .04em;
-    text-transform: uppercase; padding-top: 4px;
-  }
-  .road-item h3 { margin-bottom: 6px; }
-  .road-item p { color: var(--muted); font-size: 15px; }
-  @media (max-width: 720px) {
-    .road-item { grid-template-columns: 1fr; gap: 6px; }
-  }
+      .section-dark .anti {
+        background: linear-gradient(180deg, #0d1226 0%, #0a0f1f 100%);
+        border-color: rgba(255, 255, 255, 0.06);
+      }
+      .section-dark .anti:hover {
+        border-color: transparent;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.12),
+          0 28px 60px -22px rgba(0, 0, 0, 0.7);
+      }
+      .section-dark .anti h3 {
+        color: #f8fafc;
+      }
+      .section-dark .anti h3 code,
+      .section-dark .anti p code {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.08);
+        color: #e2e8f0;
+      }
+      .section-dark .anti p {
+        color: #94a3b8;
+      }
+      .section-dark .anti em {
+        color: #cbd5e1;
+        font-style: italic;
+      }
+      .section-dark .anti-code {
+        color: #475569;
+      }
+      .section-dark .anti-tag {
+        color: #94a3b8;
+      }
+      .section-dark .anti.crit .anti-tag,
+      .section-dark .anti.crit .anti-metric .num {
+        color: #f87171;
+      }
+      .section-dark .anti.warn .anti-tag,
+      .section-dark .anti.warn .anti-metric .num {
+        color: #fbbf24;
+      }
+      .section-dark .anti.info .anti-tag,
+      .section-dark .anti.info .anti-metric .num {
+        color: #60a5fa;
+      }
+      .section-dark .anti.crit .anti-tag .pulse {
+        background: #f87171;
+        box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.18);
+      }
+      .section-dark .anti.warn .anti-tag .pulse {
+        background: #fbbf24;
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18);
+      }
+      .section-dark .anti.info .anti-tag .pulse {
+        background: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+      }
+      .section-dark .anti-chart {
+        background: rgba(255, 255, 255, 0.015);
+        border-color: rgba(255, 255, 255, 0.06);
+      }
+      .section-dark .anti-foot {
+        border-top-color: rgba(255, 255, 255, 0.07);
+        border-top-style: dashed;
+      }
+      .section-dark .anti-metric .unit {
+        color: #64748b;
+      }
+      .section-dark .anti-metric .baseline {
+        color: #475569;
+      }
+      .section-dark .anti a.example {
+        color: #60a5fa;
+        text-decoration-color: rgba(96, 165, 250, 0.35);
+      }
+      .section-dark .anti a.example:hover {
+        text-decoration-color: #60a5fa;
+      }
 
-  /* Footer */
-  footer {
-    border-top: 1px solid var(--border); padding: 48px 0;
-    color: var(--muted); font-size: 14px;
-  }
-  .foot { display: flex; justify-content: space-between; gap: 24px; flex-wrap: wrap; }
-  .foot a { color: var(--muted); margin-right: 18px; }
-  .foot a:hover { color: var(--text); }
+      /* Roadmap */
+      .road-list {
+        margin-top: 48px;
+        display: grid;
+        gap: 0;
+      }
+      .road-item {
+        display: grid;
+        grid-template-columns: 200px 1fr;
+        gap: 32px;
+        padding: 24px 0;
+        border-top: 1px solid var(--border);
+      }
+      .road-item:last-child {
+        border-bottom: 1px solid var(--border);
+      }
+      .road-item .tag {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--accent);
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding-top: 4px;
+      }
+      .road-item h3 {
+        margin-bottom: 6px;
+      }
+      .road-item p {
+        color: var(--muted);
+        font-size: 15px;
+      }
+      @media (max-width: 720px) {
+        .road-item {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+      }
 
-  /* Utility */
-  .reveal { opacity: 0; transform: translateY(8px); transition: opacity .5s ease, transform .5s ease; }
-  .reveal.in { opacity: 1; transform: none; }
-  @media (prefers-reduced-motion: reduce) {
-    .reveal { opacity: 1; transform: none; transition: none; }
-  }
-</style>
-</head>
-<body>
+      /* Footer */
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 48px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
 
-<header class="nav" id="nav">
-  <div class="wrap nav-inner">
-    <a class="brand" href="#top">
-      <span class="brand-dot" aria-hidden="true"></span>
-      <span>Kapture</span>
-    </a>
-    <nav class="nav-links">
-      <a href="#why">Why</a>
-      <a href="#how">How it works</a>
-      <a href="#features">Features</a>
-      <a href="#install">Install</a>
-      <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
-      <a class="btn btn-primary" href="https://github.com/conduktor/kapture/releases/latest" target="_blank" rel="noopener">Download</a>
-    </nav>
-  </div>
-</header>
-
-<main id="top">
-
-<section class="hero">
-  <div class="wrap">
-    <h1>Wireshark <span class="accent">for Kafka.</span></h1>
-    <p class="lede">
-      A desktop app that speaks the Kafka protocol natively, intercepts the traffic
-      between your client and the broker, and shows you what's really going through the wire.
-    </p>
-    <div class="ctas">
-      <a class="btn btn-primary btn-lg" href="https://github.com/conduktor/kapture/releases/latest" target="_blank" rel="noopener">
-        Download for macOS
-      </a>
-      <a class="btn btn-ghost btn-lg" href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">
-        View on GitHub
-      </a>
-    </div>
-    <p class="meta">No instrumentation. No SDK swap. No broker plugin.</p>
-  </div>
-
-  <div class="screenshot reveal" id="hero-frame">
-    <img src="images/protocol-tab.png" alt="Kapture Protocol tab — live capture of a Kafka producer + consumer through the proxy, with a decoded MetadataResponse opened on the right" loading="eager">
-  </div>
-</section>
-
-<section class="why section-dark" id="why">
-  <div class="wrap">
-    <div class="why-head">
-      <div>
-        <span class="eyebrow">The problem</span>
-        <h2>What is your client actually doing?</h2>
-        <p class="lede" style="margin-top: 16px;">
-          Seven things that quietly go wrong between your client and the broker.
-          None of them show up in your application logs.
-        </p>
+      /* Utility */
+      .reveal {
+        opacity: 0;
+        transform: translateY(8px);
+        transition:
+          opacity 0.5s ease,
+          transform 0.5s ease;
+      }
+      .reveal.in {
+        opacity: 1;
+        transform: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .reveal {
+          opacity: 1;
+          transform: none;
+          transition: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="#top">
+          <img src="favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by"
+              >by
+              <a href="https://www.conduktor.io" target="_blank" rel="noopener">conduktor</a></span
+            >
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="#why">Why</a>
+          <a href="#how">How it works</a>
+          <a href="#features">Features</a>
+          <a href="#install">Install</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
       </div>
-      <div class="why-stats" aria-label="severity summary">
-        <span class="num">7</span><span class="lab">anti-patterns</span>
-        <span class="num crit">2</span><span class="lab crit">critical</span>
-        <span class="num warn">3</span><span class="lab warn">warn</span>
-        <span class="num info">2</span><span class="lab info">info</span>
-      </div>
-    </div>
+    </header>
 
-    <div class="why-mosaic">
-
-      <!-- 1. Producer-per-record — CRITICAL, span-3 -->
-      <div class="anti crit span-3">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Handshake storm</span>
-          <span class="anti-code">KAP-301</span>
-        </div>
-        <h3>Producer-per-record</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 400 80" preserveAspectRatio="none">
-            <g fill="#ef4444" opacity="0.95">
-              <rect x="0"   y="50" width="6" height="30"/><rect x="10"  y="38" width="6" height="42"/>
-              <rect x="20"  y="52" width="6" height="28"/><rect x="30"  y="25" width="6" height="55"/>
-              <rect x="40"  y="42" width="6" height="38"/><rect x="50"  y="48" width="6" height="32"/>
-              <rect x="60"  y="25" width="6" height="55"/><rect x="70"  y="32" width="6" height="48"/>
-              <rect x="80"  y="35" width="6" height="45"/><rect x="90"  y="28" width="6" height="52"/>
-              <rect x="100" y="40" width="6" height="40"/><rect x="110" y="45" width="6" height="35"/>
-              <rect x="120" y="22" width="6" height="58"/><rect x="130" y="28" width="6" height="52"/>
-              <rect x="140" y="32" width="6" height="48"/><rect x="150" y="24" width="6" height="56"/>
-              <rect x="160" y="30" width="6" height="50"/><rect x="170" y="35" width="6" height="45"/>
-              <rect x="180" y="20" width="6" height="60"/><rect x="190" y="26" width="6" height="54"/>
-              <rect x="200" y="32" width="6" height="48"/><rect x="210" y="28" width="6" height="52"/>
-              <rect x="220" y="24" width="6" height="56"/><rect x="230" y="20" width="6" height="60"/>
-              <rect x="240" y="28" width="6" height="52"/><rect x="250" y="22" width="6" height="58"/>
-              <rect x="260" y="18" width="6" height="62"/><rect x="270" y="25" width="6" height="55"/>
-              <rect x="280" y="20" width="6" height="60"/><rect x="290" y="16" width="6" height="64"/>
-              <rect x="300" y="22" width="6" height="58"/><rect x="310" y="18" width="6" height="62"/>
-              <rect x="320" y="24" width="6" height="56"/><rect x="330" y="20" width="6" height="60"/>
-              <rect x="340" y="16" width="6" height="64"/><rect x="350" y="22" width="6" height="58"/>
-              <rect x="360" y="18" width="6" height="62"/><rect x="370" y="20" width="6" height="60"/>
-              <rect x="380" y="14" width="6" height="66"/><rect x="390" y="18" width="6" height="62"/>
-            </g>
-          </svg>
-        </div>
-        <p>Your code creates a new producer for every record instead of reusing one. A full handshake fires per send — broker CPU burns, throughput collapses.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">1,247</span>
-            <span class="unit">handshakes/sec</span>
-            <span class="baseline">(baseline ~3)</span>
+    <main id="top">
+      <section class="hero">
+        <div class="wrap">
+          <h1>Wireshark <span class="accent">for Kafka.</span></h1>
+          <p class="lede">
+            A desktop app that speaks the Kafka protocol natively, intercepts the traffic between
+            your client and the broker, and shows you what's really going through the wire.
+          </p>
+          <div class="ctas">
+            <a
+              class="btn btn-primary btn-lg"
+              href="https://github.com/conduktor/kapture/releases/latest"
+              target="_blank"
+              rel="noopener"
+            >
+              Download for macOS
+            </a>
+            <a
+              class="btn btn-ghost btn-lg"
+              href="https://github.com/conduktor/kapture"
+              target="_blank"
+              rel="noopener"
+            >
+              View on GitHub
+            </a>
           </div>
-          <a class="example" href="https://www.pagerduty.com/eng/august-28-kafka-outages-what-happened-and-how-were-improving/" target="_blank" rel="noopener">PagerDuty post-mortem →</a>
+          <p class="meta">No instrumentation. No SDK swap. No broker plugin.</p>
         </div>
-      </div>
 
-      <!-- 2. Stale-leader producing — CRITICAL, span-3 -->
-      <div class="anti crit span-3">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Metadata drift</span>
-          <span class="anti-code">KAP-214</span>
+        <div class="screenshot reveal" id="hero-frame">
+          <img
+            src="images/protocol-tab.png"
+            alt="Kapture Protocol tab — live capture of a Kafka producer + consumer through the proxy, with a decoded MetadataResponse opened on the right"
+            loading="eager"
+          />
         </div>
-        <h3>Stale-leader producing</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 400 80">
-            <text x="60" y="10" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#64748b" letter-spacing="1">CACHE</text>
-            <text x="340" y="10" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#64748b" letter-spacing="1">ACTUAL</text>
-            <path d="M 78 32 Q 200 18, 322 56" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="5 4" fill="none" opacity="0.7"/>
-            <circle cx="60" cy="32" r="16" fill="rgba(255,255,255,.04)" stroke="#475569" stroke-width="1.5"/>
-            <text x="60" y="36" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#cbd5e1">50</text>
-            <circle cx="340" cy="56" r="16" fill="#ef4444" stroke="#ef4444" stroke-width="1.5"/>
-            <text x="340" y="60" text-anchor="middle" font-family="ui-monospace, monospace" font-size="12" font-weight="700" fill="#fff">34</text>
-            <text x="200" y="42" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" fill="#f87171">leader id mismatch</text>
-          </svg>
-        </div>
-        <p>Your client trusts a leader it cached an hour ago. The cluster has moved on; writes still go to the wrong broker until partitions start dropping.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">57m</span>
-            <span class="unit">cache age</span>
-            <span class="baseline">(baseline &lt; 5m)</span>
+      </section>
+
+      <section class="why section-dark" id="why">
+        <div class="wrap">
+          <div class="why-head">
+            <div>
+              <span class="eyebrow">The problem</span>
+              <h2>What is your client actually doing?</h2>
+              <p class="lede" style="margin-top: 16px">
+                Seven things that quietly go wrong between your client and the broker. None of them
+                show up in your application logs.
+              </p>
+            </div>
+            <div class="why-stats" aria-label="severity summary">
+              <span class="num">7</span><span class="lab">anti-patterns</span>
+              <span class="num crit">2</span><span class="lab crit">critical</span>
+              <span class="num warn">3</span><span class="lab warn">warn</span>
+              <span class="num info">2</span><span class="lab info">info</span>
+            </div>
           </div>
-          <a class="example" href="https://github.com/confluentinc/librdkafka/issues/4976" target="_blank" rel="noopener">librdkafka issue →</a>
-        </div>
-      </div>
 
-      <!-- 3. OffsetCommit — WARN, span-2 -->
-      <div class="anti warn span-2">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Overcommit</span>
-          <span class="anti-code">KAP-118</span>
-        </div>
-        <h3><code>OffsetCommit</code> after every record</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 200 60" preserveAspectRatio="none">
-            <path d="M 0 50 L 5 12 L 10 50 L 15 12 L 20 50 L 25 12 L 30 50 L 35 12 L 40 50 L 45 12 L 50 50 L 55 12 L 60 50 L 65 12 L 70 50 L 75 12 L 80 50 L 85 12 L 90 50 L 95 12 L 100 50 L 105 12 L 110 50 L 115 12 L 120 50 L 125 12 L 130 50 L 135 12 L 140 50 L 145 12 L 150 50 L 155 12 L 160 50 L 165 12 L 170 50 L 175 12 L 180 50 L 185 12 L 190 50 L 195 12 L 200 50" stroke="#fbbf24" stroke-width="1.5" fill="none"/>
-          </svg>
-        </div>
-        <p>A commit on every record. The group coordinator gets hammered, broker CPU spikes for nothing.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">38,400</span>
-            <span class="unit">commits/min</span>
+          <div class="why-mosaic">
+            <!-- 1. Producer-per-record — CRITICAL, span-3 -->
+            <div class="anti crit span-3">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Handshake storm</span>
+                <span class="anti-code">KAP-301</span>
+              </div>
+              <h3>Producer-per-record</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 400 80" preserveAspectRatio="none">
+                  <g fill="#ef4444" opacity="0.95">
+                    <rect x="0" y="50" width="6" height="30" />
+                    <rect x="10" y="38" width="6" height="42" />
+                    <rect x="20" y="52" width="6" height="28" />
+                    <rect x="30" y="25" width="6" height="55" />
+                    <rect x="40" y="42" width="6" height="38" />
+                    <rect x="50" y="48" width="6" height="32" />
+                    <rect x="60" y="25" width="6" height="55" />
+                    <rect x="70" y="32" width="6" height="48" />
+                    <rect x="80" y="35" width="6" height="45" />
+                    <rect x="90" y="28" width="6" height="52" />
+                    <rect x="100" y="40" width="6" height="40" />
+                    <rect x="110" y="45" width="6" height="35" />
+                    <rect x="120" y="22" width="6" height="58" />
+                    <rect x="130" y="28" width="6" height="52" />
+                    <rect x="140" y="32" width="6" height="48" />
+                    <rect x="150" y="24" width="6" height="56" />
+                    <rect x="160" y="30" width="6" height="50" />
+                    <rect x="170" y="35" width="6" height="45" />
+                    <rect x="180" y="20" width="6" height="60" />
+                    <rect x="190" y="26" width="6" height="54" />
+                    <rect x="200" y="32" width="6" height="48" />
+                    <rect x="210" y="28" width="6" height="52" />
+                    <rect x="220" y="24" width="6" height="56" />
+                    <rect x="230" y="20" width="6" height="60" />
+                    <rect x="240" y="28" width="6" height="52" />
+                    <rect x="250" y="22" width="6" height="58" />
+                    <rect x="260" y="18" width="6" height="62" />
+                    <rect x="270" y="25" width="6" height="55" />
+                    <rect x="280" y="20" width="6" height="60" />
+                    <rect x="290" y="16" width="6" height="64" />
+                    <rect x="300" y="22" width="6" height="58" />
+                    <rect x="310" y="18" width="6" height="62" />
+                    <rect x="320" y="24" width="6" height="56" />
+                    <rect x="330" y="20" width="6" height="60" />
+                    <rect x="340" y="16" width="6" height="64" />
+                    <rect x="350" y="22" width="6" height="58" />
+                    <rect x="360" y="18" width="6" height="62" />
+                    <rect x="370" y="20" width="6" height="60" />
+                    <rect x="380" y="14" width="6" height="66" />
+                    <rect x="390" y="18" width="6" height="62" />
+                  </g>
+                </svg>
+              </div>
+              <p>
+                Your code creates a new producer for every record instead of reusing one. A full
+                handshake fires per send — broker CPU burns, throughput collapses.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">1,247</span>
+                  <span class="unit">handshakes/sec</span>
+                  <span class="baseline">(baseline ~3)</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://www.pagerduty.com/eng/august-28-kafka-outages-what-happened-and-how-were-improving/"
+                  target="_blank"
+                  rel="noopener"
+                  >PagerDuty post-mortem →</a
+                >
+              </div>
+            </div>
+
+            <!-- 2. Stale-leader producing — CRITICAL, span-3 -->
+            <div class="anti crit span-3">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Metadata drift</span>
+                <span class="anti-code">KAP-214</span>
+              </div>
+              <h3>Stale-leader producing</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 400 80">
+                  <text
+                    x="60"
+                    y="10"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#64748b"
+                    letter-spacing="1"
+                  >
+                    CACHE
+                  </text>
+                  <text
+                    x="340"
+                    y="10"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#64748b"
+                    letter-spacing="1"
+                  >
+                    ACTUAL
+                  </text>
+                  <path
+                    d="M 78 32 Q 200 18, 322 56"
+                    stroke="#ef4444"
+                    stroke-width="1.5"
+                    stroke-dasharray="5 4"
+                    fill="none"
+                    opacity="0.7"
+                  />
+                  <circle
+                    cx="60"
+                    cy="32"
+                    r="16"
+                    fill="rgba(255,255,255,.04)"
+                    stroke="#475569"
+                    stroke-width="1.5"
+                  />
+                  <text
+                    x="60"
+                    y="36"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="12"
+                    font-weight="700"
+                    fill="#cbd5e1"
+                  >
+                    50
+                  </text>
+                  <circle
+                    cx="340"
+                    cy="56"
+                    r="16"
+                    fill="#ef4444"
+                    stroke="#ef4444"
+                    stroke-width="1.5"
+                  />
+                  <text
+                    x="340"
+                    y="60"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="12"
+                    font-weight="700"
+                    fill="#fff"
+                  >
+                    34
+                  </text>
+                  <text
+                    x="200"
+                    y="42"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="10"
+                    fill="#f87171"
+                  >
+                    leader id mismatch
+                  </text>
+                </svg>
+              </div>
+              <p>
+                Your client trusts a leader it cached an hour ago. The cluster has moved on; writes
+                still go to the wrong broker until partitions start dropping.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">57m</span>
+                  <span class="unit">cache age</span>
+                  <span class="baseline">(baseline &lt; 5m)</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://github.com/confluentinc/librdkafka/issues/4976"
+                  target="_blank"
+                  rel="noopener"
+                  >librdkafka issue →</a
+                >
+              </div>
+            </div>
+
+            <!-- 3. OffsetCommit — WARN, span-2 -->
+            <div class="anti warn span-2">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Overcommit</span>
+                <span class="anti-code">KAP-118</span>
+              </div>
+              <h3><code>OffsetCommit</code> after every record</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 200 60" preserveAspectRatio="none">
+                  <path
+                    d="M 0 50 L 5 12 L 10 50 L 15 12 L 20 50 L 25 12 L 30 50 L 35 12 L 40 50 L 45 12 L 50 50 L 55 12 L 60 50 L 65 12 L 70 50 L 75 12 L 80 50 L 85 12 L 90 50 L 95 12 L 100 50 L 105 12 L 110 50 L 115 12 L 120 50 L 125 12 L 130 50 L 135 12 L 140 50 L 145 12 L 150 50 L 155 12 L 160 50 L 165 12 L 170 50 L 175 12 L 180 50 L 185 12 L 190 50 L 195 12 L 200 50"
+                    stroke="#fbbf24"
+                    stroke-width="1.5"
+                    fill="none"
+                  />
+                </svg>
+              </div>
+              <p>
+                A commit on every record. The group coordinator gets hammered, broker CPU spikes for
+                nothing.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">38,400</span>
+                  <span class="unit">commits/min</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://github.com/confluentinc/confluent-kafka-dotnet/issues/1081"
+                  target="_blank"
+                  rel="noopener"
+                  >Real example →</a
+                >
+              </div>
+            </div>
+
+            <!-- 4. Rebalance — WARN, span-2 -->
+            <div class="anti warn span-2">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Group churn</span>
+                <span class="anti-code">KAP-422</span>
+              </div>
+              <h3>Rebalance every few seconds</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 200 60">
+                  <g>
+                    <!-- 12x3 grid of blocks; filled ones = rebalances -->
+                    <rect x="0" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="16"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="32" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="48"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="64" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="80"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="96" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="112"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="128" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="144"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="160" y="6" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="176"
+                      y="6"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+
+                    <rect
+                      x="0"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="16" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="32"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="48" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="64"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="80" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="96"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="112" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="128"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="144" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="160"
+                      y="24"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="176" y="24" width="14" height="14" rx="2" fill="#fbbf24" />
+
+                    <rect x="0" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="16"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="32" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="48"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="64" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="80"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="96" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="112"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="128" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="144"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                    <rect x="160" y="42" width="14" height="14" rx="2" fill="#fbbf24" />
+                    <rect
+                      x="176"
+                      y="42"
+                      width="14"
+                      height="14"
+                      rx="2"
+                      fill="rgba(251,191,36,.08)"
+                      stroke="rgba(251,191,36,.25)"
+                    />
+                  </g>
+                </svg>
+              </div>
+              <p>
+                <code>session.timeout.ms</code> is too tight. Consumers churn the group every few
+                seconds and stop processing.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">720</span>
+                  <span class="unit">rebalances/hr</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://medium.com/@nishada/fixing-kafka-stream-consumer-rebalancing-babda7f2e333"
+                  target="_blank"
+                  rel="noopener"
+                  >Field report →</a
+                >
+              </div>
+            </div>
+
+            <!-- 5. Tiny batches — INFO, span-2 -->
+            <div class="anti info span-2">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Throughput</span>
+                <span class="anti-code">KAP-507</span>
+              </div>
+              <h3>Tiny <code>Produce</code> batches</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 200 60" preserveAspectRatio="none">
+                  <line
+                    x1="0"
+                    y1="10"
+                    x2="200"
+                    y2="10"
+                    stroke="#475569"
+                    stroke-width="1"
+                    stroke-dasharray="3 3"
+                  />
+                  <text
+                    x="198"
+                    y="7"
+                    text-anchor="end"
+                    font-family="ui-monospace, monospace"
+                    font-size="8"
+                    fill="#64748b"
+                  >
+                    64KB target
+                  </text>
+                  <g fill="#60a5fa" opacity="0.95">
+                    <rect x="2" y="48" width="2" height="10" />
+                    <rect x="6" y="46" width="2" height="12" />
+                    <rect x="10" y="50" width="2" height="8" />
+                    <rect x="14" y="44" width="2" height="14" />
+                    <rect x="18" y="48" width="2" height="10" />
+                    <rect x="22" y="46" width="2" height="12" />
+                    <rect x="26" y="50" width="2" height="8" />
+                    <rect x="30" y="44" width="2" height="14" />
+                    <rect x="34" y="48" width="2" height="10" />
+                    <rect x="38" y="46" width="2" height="12" />
+                    <rect x="42" y="50" width="2" height="8" />
+                    <rect x="46" y="44" width="2" height="14" />
+                    <rect x="50" y="48" width="2" height="10" />
+                    <rect x="54" y="46" width="2" height="12" />
+                    <rect x="58" y="50" width="2" height="8" />
+                    <rect x="62" y="44" width="2" height="14" />
+                    <rect x="66" y="48" width="2" height="10" />
+                    <rect x="70" y="46" width="2" height="12" />
+                    <rect x="74" y="50" width="2" height="8" />
+                    <rect x="78" y="44" width="2" height="14" />
+                    <rect x="82" y="48" width="2" height="10" />
+                    <rect x="86" y="46" width="2" height="12" />
+                    <rect x="90" y="50" width="2" height="8" />
+                    <rect x="94" y="44" width="2" height="14" />
+                    <rect x="98" y="48" width="2" height="10" />
+                    <rect x="102" y="46" width="2" height="12" />
+                    <rect x="106" y="50" width="2" height="8" />
+                    <rect x="110" y="44" width="2" height="14" />
+                    <rect x="114" y="48" width="2" height="10" />
+                    <rect x="118" y="46" width="2" height="12" />
+                    <rect x="122" y="50" width="2" height="8" />
+                    <rect x="126" y="44" width="2" height="14" />
+                    <rect x="130" y="48" width="2" height="10" />
+                    <rect x="134" y="46" width="2" height="12" />
+                    <rect x="138" y="50" width="2" height="8" />
+                    <rect x="142" y="44" width="2" height="14" />
+                    <rect x="146" y="48" width="2" height="10" />
+                    <rect x="150" y="46" width="2" height="12" />
+                    <rect x="154" y="50" width="2" height="8" />
+                    <rect x="158" y="44" width="2" height="14" />
+                    <rect x="162" y="48" width="2" height="10" />
+                    <rect x="166" y="46" width="2" height="12" />
+                    <rect x="170" y="50" width="2" height="8" />
+                    <rect x="174" y="44" width="2" height="14" />
+                    <rect x="178" y="48" width="2" height="10" />
+                    <rect x="182" y="46" width="2" height="12" />
+                    <rect x="186" y="50" width="2" height="8" />
+                    <rect x="190" y="44" width="2" height="14" />
+                    <rect x="194" y="48" width="2" height="10" />
+                  </g>
+                </svg>
+              </div>
+              <p>
+                <code>linger.ms=0</code> + tiny <code>batch.size</code>. Latency wins, throughput
+                dies.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">1.2</span>
+                  <span class="unit">KB avg batch</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-1030%3A+Change+constraints+and+default+values+for+various+configurations"
+                  target="_blank"
+                  rel="noopener"
+                  >KIP-1030 →</a
+                >
+              </div>
+            </div>
+
+            <!-- 6. SASL re-auth — WARN, span-3 -->
+            <div class="anti warn span-3">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Auth drift</span>
+                <span class="anti-code">KAP-805</span>
+              </div>
+              <h3>SASL re-auth dies on a clock</h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 200 60">
+                  <line
+                    x1="120"
+                    y1="0"
+                    x2="120"
+                    y2="60"
+                    stroke="#fbbf24"
+                    stroke-width="1"
+                    stroke-dasharray="2 3"
+                    opacity="0.6"
+                  />
+                  <text
+                    x="124"
+                    y="10"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#fbbf24"
+                  >
+                    2h mark
+                  </text>
+                  <path
+                    d="M 0 30 Q 20 12, 40 30 Q 60 48, 80 30 Q 100 12, 120 30"
+                    stroke="#fbbf24"
+                    stroke-width="2"
+                    fill="none"
+                  />
+                  <path
+                    d="M 120 30 L 130 50 L 140 50 L 150 50 L 200 50"
+                    stroke="#f87171"
+                    stroke-width="2"
+                    fill="none"
+                    stroke-dasharray="3 3"
+                  />
+                  <circle cx="120" cy="30" r="3" fill="#f87171" />
+                </svg>
+              </div>
+              <p>
+                SASL re-auth fails on a fixed schedule. Looks fine for hours, then everything dies
+                at the same minute every time.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">2h00m</span>
+                  <span class="unit">to failure</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://github.com/aws/aws-msk-iam-auth/issues/176"
+                  target="_blank"
+                  rel="noopener"
+                  >aws-msk-iam-auth →</a
+                >
+              </div>
+            </div>
+
+            <!-- 7. Locked api_version — INFO, span-3 -->
+            <div class="anti info span-3">
+              <div class="anti-head">
+                <span class="anti-tag"><span class="pulse"></span>Version drift</span>
+                <span class="anti-code">KAP-602</span>
+              </div>
+              <h3>Locked <code>api_version</code></h3>
+              <div class="anti-chart" aria-hidden="true">
+                <svg viewBox="0 0 200 60">
+                  <line x1="15" y1="32" x2="185" y2="32" stroke="#334155" stroke-width="1.5" />
+                  <circle cx="40" cy="32" r="3" fill="#64748b" />
+                  <text
+                    x="40"
+                    y="50"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#64748b"
+                  >
+                    v3.1
+                  </text>
+                  <circle cx="80" cy="32" r="3" fill="#64748b" />
+                  <text
+                    x="80"
+                    y="50"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#64748b"
+                  >
+                    v3.4
+                  </text>
+                  <circle cx="120" cy="32" r="6" fill="#60a5fa" />
+                  <circle
+                    cx="120"
+                    cy="32"
+                    r="11"
+                    fill="none"
+                    stroke="#60a5fa"
+                    stroke-width="1"
+                    opacity="0.4"
+                  />
+                  <text
+                    x="120"
+                    y="14"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="10"
+                    font-weight="700"
+                    fill="#60a5fa"
+                  >
+                    v3.6 locked
+                  </text>
+                  <text
+                    x="120"
+                    y="50"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#60a5fa"
+                  >
+                    v3.6
+                  </text>
+                  <circle cx="160" cy="32" r="3" fill="#64748b" />
+                  <text
+                    x="160"
+                    y="50"
+                    text-anchor="middle"
+                    font-family="ui-monospace, monospace"
+                    font-size="9"
+                    fill="#64748b"
+                  >
+                    v3.8
+                  </text>
+                </svg>
+              </div>
+              <p>
+                Client picks a protocol version on startup and never updates it. Rolling broker
+                upgrades become silent breakage.
+              </p>
+              <div class="anti-foot">
+                <div class="anti-metric">
+                  <span class="num">v3.6</span>
+                  <span class="unit">pinned</span>
+                </div>
+                <a
+                  class="example"
+                  href="https://github.com/tulios/kafkajs/issues/1656"
+                  target="_blank"
+                  rel="noopener"
+                  >KafkaJS issue →</a
+                >
+              </div>
+            </div>
           </div>
-          <a class="example" href="https://github.com/confluentinc/confluent-kafka-dotnet/issues/1081" target="_blank" rel="noopener">Real example →</a>
         </div>
-      </div>
+      </section>
 
-      <!-- 4. Rebalance — WARN, span-2 -->
-      <div class="anti warn span-2">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Group churn</span>
-          <span class="anti-code">KAP-422</span>
-        </div>
-        <h3>Rebalance every few seconds</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 200 60">
-            <g>
-              <!-- 12x3 grid of blocks; filled ones = rebalances -->
-              <rect x="0"   y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="16"  y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="32"  y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="48"  y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="64"  y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="80"  y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="96"  y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="112" y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="128" y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="144" y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="160" y="6"  width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="176" y="6"  width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
+      <section id="how">
+        <div class="wrap">
+          <span class="eyebrow">How it works</span>
+          <h2>A local TCP proxy. That's it.</h2>
+          <p class="lede">
+            Point your Kafka client at <code>127.0.0.1:9092</code>. Kapture forwards every byte
+            upstream and copies a decoded view into the inspector. The client doesn't know it's
+            there.
+          </p>
 
-              <rect x="0"   y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="16"  y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="32"  y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="48"  y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="64"  y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="80"  y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="96"  y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="112" y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="128" y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="144" y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="160" y="24" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="176" y="24" width="14" height="14" rx="2" fill="#fbbf24"/>
-
-              <rect x="0"   y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="16"  y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="32"  y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="48"  y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="64"  y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="80"  y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="96"  y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="112" y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="128" y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="144" y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-              <rect x="160" y="42" width="14" height="14" rx="2" fill="#fbbf24"/>
-              <rect x="176" y="42" width="14" height="14" rx="2" fill="rgba(251,191,36,.08)" stroke="rgba(251,191,36,.25)"/>
-            </g>
-          </svg>
-        </div>
-        <p><code>session.timeout.ms</code> is too tight. Consumers churn the group every few seconds and stop processing.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">720</span>
-            <span class="unit">rebalances/hr</span>
-          </div>
-          <a class="example" href="https://medium.com/@nishada/fixing-kafka-stream-consumer-rebalancing-babda7f2e333" target="_blank" rel="noopener">Field report →</a>
-        </div>
-      </div>
-
-      <!-- 5. Tiny batches — INFO, span-2 -->
-      <div class="anti info span-2">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Throughput</span>
-          <span class="anti-code">KAP-507</span>
-        </div>
-        <h3>Tiny <code>Produce</code> batches</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 200 60" preserveAspectRatio="none">
-            <line x1="0" y1="10" x2="200" y2="10" stroke="#475569" stroke-width="1" stroke-dasharray="3 3"/>
-            <text x="198" y="7" text-anchor="end" font-family="ui-monospace, monospace" font-size="8" fill="#64748b">64KB target</text>
-            <g fill="#60a5fa" opacity="0.95">
-              <rect x="2"   y="48" width="2" height="10"/><rect x="6"   y="46" width="2" height="12"/>
-              <rect x="10"  y="50" width="2" height="8"/> <rect x="14"  y="44" width="2" height="14"/>
-              <rect x="18"  y="48" width="2" height="10"/><rect x="22"  y="46" width="2" height="12"/>
-              <rect x="26"  y="50" width="2" height="8"/> <rect x="30"  y="44" width="2" height="14"/>
-              <rect x="34"  y="48" width="2" height="10"/><rect x="38"  y="46" width="2" height="12"/>
-              <rect x="42"  y="50" width="2" height="8"/> <rect x="46"  y="44" width="2" height="14"/>
-              <rect x="50"  y="48" width="2" height="10"/><rect x="54"  y="46" width="2" height="12"/>
-              <rect x="58"  y="50" width="2" height="8"/> <rect x="62"  y="44" width="2" height="14"/>
-              <rect x="66"  y="48" width="2" height="10"/><rect x="70"  y="46" width="2" height="12"/>
-              <rect x="74"  y="50" width="2" height="8"/> <rect x="78"  y="44" width="2" height="14"/>
-              <rect x="82"  y="48" width="2" height="10"/><rect x="86"  y="46" width="2" height="12"/>
-              <rect x="90"  y="50" width="2" height="8"/> <rect x="94"  y="44" width="2" height="14"/>
-              <rect x="98"  y="48" width="2" height="10"/><rect x="102" y="46" width="2" height="12"/>
-              <rect x="106" y="50" width="2" height="8"/> <rect x="110" y="44" width="2" height="14"/>
-              <rect x="114" y="48" width="2" height="10"/><rect x="118" y="46" width="2" height="12"/>
-              <rect x="122" y="50" width="2" height="8"/> <rect x="126" y="44" width="2" height="14"/>
-              <rect x="130" y="48" width="2" height="10"/><rect x="134" y="46" width="2" height="12"/>
-              <rect x="138" y="50" width="2" height="8"/> <rect x="142" y="44" width="2" height="14"/>
-              <rect x="146" y="48" width="2" height="10"/><rect x="150" y="46" width="2" height="12"/>
-              <rect x="154" y="50" width="2" height="8"/> <rect x="158" y="44" width="2" height="14"/>
-              <rect x="162" y="48" width="2" height="10"/><rect x="166" y="46" width="2" height="12"/>
-              <rect x="170" y="50" width="2" height="8"/> <rect x="174" y="44" width="2" height="14"/>
-              <rect x="178" y="48" width="2" height="10"/><rect x="182" y="46" width="2" height="12"/>
-              <rect x="186" y="50" width="2" height="8"/> <rect x="190" y="44" width="2" height="14"/>
-              <rect x="194" y="48" width="2" height="10"/>
-            </g>
-          </svg>
-        </div>
-        <p><code>linger.ms=0</code> + tiny <code>batch.size</code>. Latency wins, throughput dies.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">1.2</span>
-            <span class="unit">KB avg batch</span>
-          </div>
-          <a class="example" href="https://cwiki.apache.org/confluence/display/KAFKA/KIP-1030%3A+Change+constraints+and+default+values+for+various+configurations" target="_blank" rel="noopener">KIP-1030 →</a>
-        </div>
-      </div>
-
-      <!-- 6. SASL re-auth — WARN, span-3 -->
-      <div class="anti warn span-3">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Auth drift</span>
-          <span class="anti-code">KAP-805</span>
-        </div>
-        <h3>SASL re-auth dies on a clock</h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 200 60">
-            <line x1="120" y1="0" x2="120" y2="60" stroke="#fbbf24" stroke-width="1" stroke-dasharray="2 3" opacity="0.6"/>
-            <text x="124" y="10" font-family="ui-monospace, monospace" font-size="9" fill="#fbbf24">2h mark</text>
-            <path d="M 0 30 Q 20 12, 40 30 Q 60 48, 80 30 Q 100 12, 120 30" stroke="#fbbf24" stroke-width="2" fill="none"/>
-            <path d="M 120 30 L 130 50 L 140 50 L 150 50 L 200 50" stroke="#f87171" stroke-width="2" fill="none" stroke-dasharray="3 3"/>
-            <circle cx="120" cy="30" r="3" fill="#f87171"/>
-          </svg>
-        </div>
-        <p>SASL re-auth fails on a fixed schedule. Looks fine for hours, then everything dies at the same minute every time.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">2h00m</span>
-            <span class="unit">to failure</span>
-          </div>
-          <a class="example" href="https://github.com/aws/aws-msk-iam-auth/issues/176" target="_blank" rel="noopener">aws-msk-iam-auth →</a>
-        </div>
-      </div>
-
-      <!-- 7. Locked api_version — INFO, span-3 -->
-      <div class="anti info span-3">
-        <div class="anti-head">
-          <span class="anti-tag"><span class="pulse"></span>Version drift</span>
-          <span class="anti-code">KAP-602</span>
-        </div>
-        <h3>Locked <code>api_version</code></h3>
-        <div class="anti-chart" aria-hidden="true">
-          <svg viewBox="0 0 200 60">
-            <line x1="15" y1="32" x2="185" y2="32" stroke="#334155" stroke-width="1.5"/>
-            <circle cx="40"  cy="32" r="3" fill="#64748b"/>
-            <text x="40"  y="50" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#64748b">v3.1</text>
-            <circle cx="80"  cy="32" r="3" fill="#64748b"/>
-            <text x="80"  y="50" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#64748b">v3.4</text>
-            <circle cx="120" cy="32" r="6" fill="#60a5fa"/>
-            <circle cx="120" cy="32" r="11" fill="none" stroke="#60a5fa" stroke-width="1" opacity="0.4"/>
-            <text x="120" y="14" text-anchor="middle" font-family="ui-monospace, monospace" font-size="10" font-weight="700" fill="#60a5fa">v3.6 locked</text>
-            <text x="120" y="50" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#60a5fa">v3.6</text>
-            <circle cx="160" cy="32" r="3" fill="#64748b"/>
-            <text x="160" y="50" text-anchor="middle" font-family="ui-monospace, monospace" font-size="9" fill="#64748b">v3.8</text>
-          </svg>
-        </div>
-        <p>Client picks a protocol version on startup and never updates it. Rolling broker upgrades become silent breakage.</p>
-        <div class="anti-foot">
-          <div class="anti-metric">
-            <span class="num">v3.6</span>
-            <span class="unit">pinned</span>
-          </div>
-          <a class="example" href="https://github.com/tulios/kafkajs/issues/1656" target="_blank" rel="noopener">KafkaJS issue →</a>
-        </div>
-      </div>
-
-    </div>
-  </div>
-</section>
-
-<section id="how">
-  <div class="wrap">
-    <span class="eyebrow">How it works</span>
-    <h2>A local TCP proxy. That's it.</h2>
-    <p class="lede">Point your Kafka client at <code>127.0.0.1:9092</code>. Kapture forwards every byte upstream and copies a decoded view into the inspector. The client doesn't know it's there.</p>
-
-    <div class="how-grid">
-      <pre class="diagram" aria-label="Architecture diagram">
+          <div class="how-grid">
+            <pre class="diagram" aria-label="Architecture diagram">
 <span class="hi">your client</span> ──<span class="arrow">▶</span> <span class="hi">127.0.0.1:9092</span> ──<span class="arrow">▶</span> <span class="hi">real broker</span>
                           │
                           <span class="arrow">▼</span>
                 <span class="label">Kapture inspector (live)</span>
       </pre>
-      <ul class="how-points">
-        <li><span class="check">✓</span><div><strong>No instrumentation</strong><span>Your code stays untouched. No SDK swap, no agent, no JMX dance.</span></div></li>
-        <li><span class="check">✓</span><div><strong>No broker plugin</strong><span>Works against Confluent Cloud, MSK, your local docker, anything.</span></div></li>
-        <li><span class="check">✓</span><div><strong>Auth pass-through</strong><span>SASL/PLAIN, SCRAM-SHA-256/512, TLS, mTLS upstream — all forwarded.</span></div></li>
-        <li><span class="check">✓</span><div><strong>Apache Kafka 4.x</strong><span>Including KIP-516 topic IDs and KIP-932 Share Groups.</span></div></li>
-      </ul>
-    </div>
-  </div>
-</section>
-
-<section id="features" style="background: var(--bg-soft); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);">
-  <div class="wrap">
-    <span class="eyebrow">What you get</span>
-    <h2>Everything you'd expect from a wire inspector — plus a few things you wouldn't.</h2>
-
-    <div class="features-grid">
-
-      <div class="feat">
-        <div class="feat-head">
-          <span class="feat-tag">Protocol</span>
-          <span class="feat-id">KAP · wire</span>
-        </div>
-        <h3>Live wire view</h3>
-        <div class="feat-preview fp-wire" aria-hidden="true">
-          <div class="row"><span class="dir out">→</span> <span class="api">MetadataRequest <span class="v">v13</span></span> <span class="meta">36·1</span> <span class="size">56 B</span></div>
-          <div class="row"><span class="dir in">←</span> <span class="api">MetadataResponse <span class="v">v13</span></span> <span class="meta">36·1</span> <span class="rtt">1.39ms</span></div>
-          <div class="row"><span class="dir out">→</span> <span class="api">ProduceRequest <span class="v">v10</span></span> <span class="meta">37·2</span> <span class="size">135 B</span></div>
-          <div class="row"><span class="dir in">←</span> <span class="api">ProduceResponse <span class="v">v10</span></span> <span class="meta">37·2</span> <span class="rtt">2.29ms</span></div>
-          <div class="row"><span class="dir out">→</span> <span class="api">FetchRequest <span class="v">v11</span></span> <span class="meta">23·9</span> <span class="size">2.3 KiB</span></div>
-        </div>
-        <p>Every Kafka API request/response decoded. <code>corr_id</code>, RTT, payload size, full body tree on click.</p>
-      </div>
-
-      <div class="feat">
-        <div class="feat-head">
-          <span class="feat-tag">Records</span>
-          <span class="feat-id">KAP · msg</span>
-        </div>
-        <h3>Messages tab</h3>
-        <div class="feat-preview fp-msg" aria-hidden="true">
-          <div class="row"><span class="topic">orders.events</span> <span class="k">k=</span><span class="str">"order-12847"</span> <span class="body">{"id":"…"</span></div>
-          <div class="row"><span class="topic">orders.events</span> <span class="k">k=</span><span class="str">"order-12848"</span> <span class="body">{"id":"…"</span></div>
-          <div class="row"><span class="topic">users.signup</span> <span class="k">k=</span><span class="str">"u-9001"</span> <span class="body">{"email…"</span></div>
-          <div class="row"><span class="topic">payments.txn</span> <span class="k">k=</span><span class="str">"tx-50ab"</span> <span class="body">{"amt"…</span></div>
-          <div class="row"><span class="topic">orders.events</span> <span class="k">k=</span><span class="str">"order-12849"</span> <span class="body">{"id":"…"</span></div>
-        </div>
-        <p>Records flattened from <code>Produce</code> + <code>Fetch</code>. Each one back-links to the frame it rode on.</p>
-      </div>
-
-      <div class="feat">
-        <div class="feat-head">
-          <span class="feat-tag">Query</span>
-          <span class="feat-id">KAP · dsl</span>
-        </div>
-        <h3>Filter DSL</h3>
-        <div class="feat-preview fp-filter" aria-hidden="true">
-          <div class="input">
-            <span class="key">topic</span>
-            <span class="op">==</span>
-            <span class="str">"orders"</span>
-            <span class="and">&amp;&amp;</span>
-            <span class="key">envelope.size</span>
-            <span class="op">&gt;</span>
-            <span class="num">1024</span>
-            <span class="caret"></span>
-          </div>
-          <div class="suggest">
-            <div class="sug">envelope.headers</div>
-            <div class="sug active">envelope.size</div>
-            <div class="sug">envelope.timestamp</div>
+            <ul class="how-points">
+              <li>
+                <span class="check">✓</span>
+                <div>
+                  <strong>No instrumentation</strong
+                  ><span>Your code stays untouched. No SDK swap, no agent, no JMX dance.</span>
+                </div>
+              </li>
+              <li>
+                <span class="check">✓</span>
+                <div>
+                  <strong>No broker plugin</strong
+                  ><span>Works against Confluent Cloud, MSK, your local docker, anything.</span>
+                </div>
+              </li>
+              <li>
+                <span class="check">✓</span>
+                <div>
+                  <strong>Auth pass-through</strong
+                  ><span>SASL/PLAIN, SCRAM-SHA-256/512, TLS, mTLS upstream — all forwarded.</span>
+                </div>
+              </li>
+              <li>
+                <span class="check">✓</span>
+                <div>
+                  <strong>Apache Kafka 4.x</strong
+                  ><span>Including KIP-516 topic IDs and KIP-932 Share Groups.</span>
+                </div>
+              </li>
+            </ul>
           </div>
         </div>
-        <p>Wireshark-style. Compose, autocomplete, save. Works on the protocol tree and the records.</p>
-      </div>
+      </section>
 
-      <div class="feat">
-        <div class="feat-head">
-          <span class="feat-tag">Connections</span>
-          <span class="feat-id">KAP · prof</span>
-        </div>
-        <h3>Connection profiles</h3>
-        <div class="feat-preview fp-prof" aria-hidden="true">
-          <div class="row active"><span class="dot on"></span><span class="name">prod-confluent</span><span class="auth">SASL_SSL</span></div>
-          <div class="row"><span class="dot"></span><span class="name">staging-msk</span><span class="auth">mTLS</span></div>
-          <div class="row"><span class="dot"></span><span class="name">local-docker</span><span class="auth">PLAINTEXT</span></div>
-          <div class="row"><span class="dot"></span><span class="name">eu-cluster-a</span><span class="auth">SCRAM-256</span></div>
-        </div>
-        <p>Bootstrap, TLS, SASL — saved locally. Passwords in the OS keychain. Last profile pre-selected on launch.</p>
-      </div>
+      <section
+        id="features"
+        style="
+          background: var(--bg-soft);
+          border-top: 1px solid var(--border);
+          border-bottom: 1px solid var(--border);
+        "
+      >
+        <div class="wrap">
+          <span class="eyebrow">What you get</span>
+          <h2>Everything you'd expect from a wire inspector — plus a few things you wouldn't.</h2>
 
-      <div class="feat feat-bonus">
-        <div>
-          <span class="icon">⌖</span>
-          <h3>Bonus — agent-driven (MCP)</h3>
-          <p>
-            A local MCP server at <code>http://127.0.0.1:7878/mcp</code> exposes capture / filter / inspect tools
-            so an IDE agent (Claude Code, Cursor, Windsurf) can drive Kapture for you.
-            SASL frames are redacted before they cross the boundary.
-          </p>
-        </div>
-
-        <div class="mcp-demo" aria-label="MCP demo">
-          <div class="mcp-bar">
-            <span class="endpoint">~/orders-svc · claude</span>
-            <span class="live"><span class="led"></span>kapture mcp</span>
-          </div>
-
-          <div class="mcp-block">
-            <div class="mcp-prompt">orders-svc keeps rebalancing in staging</div>
-          </div>
-
-          <div class="mcp-block">
-            <div class="mcp-tool-head"><span class="name">kapture.list_frames</span></div>
-            <div class="mcp-args">
-              <span class="k">group_id:</span> <span class="str">"orders-svc"</span><br>
-              <span class="k">api:</span> <span class="v">[Heartbeat, JoinGroup, SyncGroup]</span><br>
-              <span class="k">window:</span> <span class="str">"5m"</span>
+          <div class="features-grid">
+            <div class="feat">
+              <div class="feat-head">
+                <span class="feat-tag">Protocol</span>
+                <span class="feat-id">KAP · wire</span>
+              </div>
+              <h3>Live wire view</h3>
+              <div class="feat-preview fp-wire" aria-hidden="true">
+                <div class="row">
+                  <span class="dir out">→</span>
+                  <span class="api">MetadataRequest <span class="v">v13</span></span>
+                  <span class="meta">36·1</span> <span class="size">56 B</span>
+                </div>
+                <div class="row">
+                  <span class="dir in">←</span>
+                  <span class="api">MetadataResponse <span class="v">v13</span></span>
+                  <span class="meta">36·1</span> <span class="rtt">1.39ms</span>
+                </div>
+                <div class="row">
+                  <span class="dir out">→</span>
+                  <span class="api">ProduceRequest <span class="v">v10</span></span>
+                  <span class="meta">37·2</span> <span class="size">135 B</span>
+                </div>
+                <div class="row">
+                  <span class="dir in">←</span>
+                  <span class="api">ProduceResponse <span class="v">v10</span></span>
+                  <span class="meta">37·2</span> <span class="rtt">2.29ms</span>
+                </div>
+                <div class="row">
+                  <span class="dir out">→</span>
+                  <span class="api">FetchRequest <span class="v">v11</span></span>
+                  <span class="meta">23·9</span> <span class="size">2.3 KiB</span>
+                </div>
+              </div>
+              <p>
+                Every Kafka API request/response decoded. <code>corr_id</code>, RTT, payload size,
+                full body tree on click.
+              </p>
             </div>
-            <div class="mcp-out"><span class="num">312</span> frames · <span class="num">14</span> rebalances</div>
-          </div>
 
-          <div class="mcp-block">
-            <div class="mcp-tool-head"><span class="name">kapture.inspect</span></div>
-            <div class="mcp-args">
-              <span class="k">frame_id:</span> <span class="str">"7c2f"</span>
+            <div class="feat">
+              <div class="feat-head">
+                <span class="feat-tag">Records</span>
+                <span class="feat-id">KAP · msg</span>
+              </div>
+              <h3>Messages tab</h3>
+              <div class="feat-preview fp-msg" aria-hidden="true">
+                <div class="row">
+                  <span class="topic">orders.events</span> <span class="k">k=</span
+                  ><span class="str">"order-12847"</span> <span class="body">{"id":"…"</span>
+                </div>
+                <div class="row">
+                  <span class="topic">orders.events</span> <span class="k">k=</span
+                  ><span class="str">"order-12848"</span> <span class="body">{"id":"…"</span>
+                </div>
+                <div class="row">
+                  <span class="topic">users.signup</span> <span class="k">k=</span
+                  ><span class="str">"u-9001"</span> <span class="body">{"email…"</span>
+                </div>
+                <div class="row">
+                  <span class="topic">payments.txn</span> <span class="k">k=</span
+                  ><span class="str">"tx-50ab"</span> <span class="body">{"amt"…</span>
+                </div>
+                <div class="row">
+                  <span class="topic">orders.events</span> <span class="k">k=</span
+                  ><span class="str">"order-12849"</span> <span class="body">{"id":"…"</span>
+                </div>
+              </div>
+              <p>
+                Records flattened from <code>Produce</code> + <code>Fetch</code>. Each one
+                back-links to the frame it rode on.
+              </p>
             </div>
-            <div class="mcp-out">HeartbeatResponse · <span class="warn">err=25</span> · rtt=<span class="num">7842ms</span></div>
+
+            <div class="feat">
+              <div class="feat-head">
+                <span class="feat-tag">Query</span>
+                <span class="feat-id">KAP · dsl</span>
+              </div>
+              <h3>Filter DSL</h3>
+              <div class="feat-preview fp-filter" aria-hidden="true">
+                <div class="input">
+                  <span class="key">topic</span>
+                  <span class="op">==</span>
+                  <span class="str">"orders"</span>
+                  <span class="and">&amp;&amp;</span>
+                  <span class="key">envelope.size</span>
+                  <span class="op">&gt;</span>
+                  <span class="num">1024</span>
+                  <span class="caret"></span>
+                </div>
+                <div class="suggest">
+                  <div class="sug">envelope.headers</div>
+                  <div class="sug active">envelope.size</div>
+                  <div class="sug">envelope.timestamp</div>
+                </div>
+              </div>
+              <p>
+                Wireshark-style. Compose, autocomplete, save. Works on the protocol tree and the
+                records.
+              </p>
+            </div>
+
+            <div class="feat">
+              <div class="feat-head">
+                <span class="feat-tag">Connections</span>
+                <span class="feat-id">KAP · prof</span>
+              </div>
+              <h3>Connection profiles</h3>
+              <div class="feat-preview fp-prof" aria-hidden="true">
+                <div class="row active">
+                  <span class="dot on"></span><span class="name">prod-confluent</span
+                  ><span class="auth">SASL_SSL</span>
+                </div>
+                <div class="row">
+                  <span class="dot"></span><span class="name">staging-msk</span
+                  ><span class="auth">mTLS</span>
+                </div>
+                <div class="row">
+                  <span class="dot"></span><span class="name">local-docker</span
+                  ><span class="auth">PLAINTEXT</span>
+                </div>
+                <div class="row">
+                  <span class="dot"></span><span class="name">eu-cluster-a</span
+                  ><span class="auth">SCRAM-256</span>
+                </div>
+              </div>
+              <p>
+                Bootstrap, TLS, SASL — saved locally. Passwords in the OS keychain. Last profile
+                pre-selected on launch.
+              </p>
+            </div>
+
+            <div class="feat feat-bonus">
+              <div>
+                <span class="icon">⌖</span>
+                <h3>Bonus — agent-driven (MCP)</h3>
+                <p>
+                  A local MCP server at <code>http://127.0.0.1:7878/mcp</code> exposes capture /
+                  filter / inspect tools so an IDE agent (Claude Code, Cursor, Windsurf) can drive
+                  Kapture for you. SASL frames are redacted before they cross the boundary.
+                </p>
+              </div>
+
+              <div class="mcp-demo" aria-label="MCP demo">
+                <div class="mcp-bar">
+                  <span class="endpoint">~/orders-svc · claude</span>
+                  <span class="live"><span class="led"></span>kapture mcp</span>
+                </div>
+
+                <div class="mcp-block">
+                  <div class="mcp-prompt">orders-svc keeps rebalancing in staging</div>
+                </div>
+
+                <div class="mcp-block">
+                  <div class="mcp-tool-head"><span class="name">kapture.list_frames</span></div>
+                  <div class="mcp-args">
+                    <span class="k">group_id:</span> <span class="str">"orders-svc"</span><br />
+                    <span class="k">api:</span>
+                    <span class="v">[Heartbeat, JoinGroup, SyncGroup]</span><br />
+                    <span class="k">window:</span> <span class="str">"5m"</span>
+                  </div>
+                  <div class="mcp-out">
+                    <span class="num">312</span> frames · <span class="num">14</span> rebalances
+                  </div>
+                </div>
+
+                <div class="mcp-block">
+                  <div class="mcp-tool-head"><span class="name">kapture.inspect</span></div>
+                  <div class="mcp-args">
+                    <span class="k">frame_id:</span> <span class="str">"7c2f"</span>
+                  </div>
+                  <div class="mcp-out">
+                    HeartbeatResponse · <span class="warn">err=25</span> · rtt=<span class="num"
+                      >7842ms</span
+                    >
+                  </div>
+                </div>
+
+                <div class="mcp-final">
+                  <span class="v">session.timeout.ms</span> = <span class="num">6000</span>, but
+                  heartbeat RTT p95 = <span class="num">7.8s</span>. Coordinator evicts the member
+                  before the next heartbeat lands.
+                  <span class="verdict"
+                    >→ raise session.timeout.ms or unblock the heartbeat thread.</span
+                  >
+                </div>
+              </div>
+            </div>
           </div>
+        </div>
+      </section>
 
-          <div class="mcp-final">
-            <span class="v">session.timeout.ms</span> = <span class="num">6000</span>, but heartbeat RTT p95 = <span class="num">7.8s</span>. Coordinator evicts the member before the next heartbeat lands.
-            <span class="verdict">→ raise session.timeout.ms or unblock the heartbeat thread.</span>
+      <section class="install" id="install">
+        <div class="wrap">
+          <span class="eyebrow">Install</span>
+          <h2>Three steps. Then watch.</h2>
+
+          <div class="timeline">
+            <div class="tline-item">
+              <span class="marker">1</span>
+              <div>
+                <h3>Install Kapture</h3>
+                <p>
+                  Download the latest bundle from Releases, unzip, and drag
+                  <code>Kapture.app</code> to <code>/Applications</code>. The app self-updates on
+                  each launch.
+                </p>
+              </div>
+            </div>
+            <div class="tline-item">
+              <span class="marker">2</span>
+              <div>
+                <h3>Change your bootstrap server</h3>
+                <p>
+                  In your application, point <code>bootstrap.servers</code> at
+                  <code>127.0.0.1:9092</code> instead of your real broker. Nothing else to change in
+                  your code.
+                </p>
+              </div>
+            </div>
+            <div class="tline-item">
+              <span class="marker">3</span>
+              <div>
+                <h3>Run your app and watch</h3>
+                <p>
+                  Start your application as usual. Open Kapture and watch every Kafka frame stream
+                  in — find anomalies, understand exactly what your client is doing on the wire.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
-</section>
+      </section>
 
-<section class="install" id="install">
-  <div class="wrap">
-    <span class="eyebrow">Install</span>
-    <h2>Three steps. Then watch.</h2>
+      <section id="roadmap">
+        <div class="wrap">
+          <span class="eyebrow">Roadmap</span>
+          <h2>What's next.</h2>
 
-    <div class="timeline">
-      <div class="tline-item">
-        <span class="marker">1</span>
+          <div class="road-list">
+            <div class="road-item">
+              <span class="tag">Detection</span>
+              <div>
+                <h3>Pattern detector</h3>
+                <p>
+                  Spot the anti-patterns above (overcommit, producer-per-record, tiny batches,
+                  rebalance loop) and surface them as Wireshark-style "Expert info".
+                </p>
+              </div>
+            </div>
+            <div class="road-item">
+              <span class="tag">Detection</span>
+              <div>
+                <h3>SDK drift detector</h3>
+                <p>
+                  Flag wire-level contradictions where the client and the broker's authoritative
+                  state disagree — stale-leader producing, mixed-version <code>api_version</code>,
+                  missing <code>LeaveGroup</code>, scheduled SASL re-auth breaks.
+                </p>
+              </div>
+            </div>
+            <div class="road-item">
+              <span class="tag">Chaos</span>
+              <div>
+                <h3>Chaos injection</h3>
+                <p>
+                  Inject latency, error codes, connection drops at the proxy layer to validate
+                  client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
+                </p>
+              </div>
+            </div>
+            <div class="road-item">
+              <span class="tag">Debug</span>
+              <div>
+                <h3>Time-travel debugger</h3>
+                <p>
+                  Breakpoints by predicate against Kafka Streams / Flink consumers; step through
+                  messages; inspect state stores.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
         <div>
-          <h3>Install Kapture</h3>
-          <p>Download the latest bundle from Releases, unzip, and drag <code>Kapture.app</code> to <code>/Applications</code>. The app self-updates on each launch.</p>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
         </div>
       </div>
-      <div class="tline-item">
-        <span class="marker">2</span>
-        <div>
-          <h3>Change your bootstrap server</h3>
-          <p>In your application, point <code>bootstrap.servers</code> at <code>127.0.0.1:9092</code> instead of your real broker. Nothing else to change in your code.</p>
-        </div>
-      </div>
-      <div class="tline-item">
-        <span class="marker">3</span>
-        <div>
-          <h3>Run your app and watch</h3>
-          <p>Start your application as usual. Open Kapture and watch every Kafka frame stream in — find anomalies, understand exactly what your client is doing on the wire.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+    </footer>
 
-<section id="roadmap">
-  <div class="wrap">
-    <span class="eyebrow">Roadmap</span>
-    <h2>What's next.</h2>
+    <script>
+      // Sticky nav border on scroll
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
 
-    <div class="road-list">
-      <div class="road-item">
-        <span class="tag">Detection</span>
-        <div>
-          <h3>Pattern detector</h3>
-          <p>Spot the anti-patterns above (overcommit, producer-per-record, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".</p>
-        </div>
-      </div>
-      <div class="road-item">
-        <span class="tag">Detection</span>
-        <div>
-          <h3>SDK drift detector</h3>
-          <p>Flag wire-level contradictions where the client and the broker's authoritative state disagree — stale-leader producing, mixed-version <code>api_version</code>, missing <code>LeaveGroup</code>, scheduled SASL re-auth breaks.</p>
-        </div>
-      </div>
-      <div class="road-item">
-        <span class="tag">Chaos</span>
-        <div>
-          <h3>Chaos injection</h3>
-          <p>Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.</p>
-        </div>
-      </div>
-      <div class="road-item">
-        <span class="tag">Debug</span>
-        <div>
-          <h3>Time-travel debugger</h3>
-          <p>Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
+      // GitHub star count
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
 
-</main>
-
-<footer>
-  <div class="wrap foot">
-    <div>
-      <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team. Apache-2.0.
-    </div>
-    <div>
-      <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener">Issues</a>
-      <a href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog</a>
-      <a href="mailto:kapture@conduktor.io">Feedback</a>
-    </div>
-  </div>
-</footer>
-
-<script>
-  // Sticky nav border on scroll
-  const nav = document.getElementById('nav');
-  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 4);
-  document.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
-
-  // Reveal hero frame
-  const io = new IntersectionObserver((entries) => {
-    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
-  }, { threshold: 0.1 });
-  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
-</script>
-
-</body>
+      // Reveal hero frame
+      const io = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((e) => {
+            if (e.isIntersecting) {
+              e.target.classList.add("in");
+              io.unobserve(e.target);
+            }
+          });
+        },
+        { threshold: 0.1 },
+      );
+      document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+    </script>
+  </body>
 </html>
