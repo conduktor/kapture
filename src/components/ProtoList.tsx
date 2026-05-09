@@ -339,7 +339,7 @@ function ProtoRow({
   return (
     <div
       style={style}
-      className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}${isFresh ? " msglist__row--fresh" : ""}`}
+      className={`msglist__row${isSelected ? " is-selected" : ""}${isPaired ? " is-paired" : ""}${isFresh ? " msglist__row--fresh" : ""}${frame.frameError !== undefined ? " msglist__row--error" : ""}`}
       onClick={() => {
         onSelect(frame.id);
       }}
@@ -350,10 +350,16 @@ function ProtoRow({
     >
       <span
         className="proto__col proto__col--dir"
-        title={frame.direction === "send" ? "request out" : "response in"}
+        title={
+          frame.frameError !== undefined
+            ? `not forwarded — ${frame.frameError}`
+            : frame.direction === "send"
+              ? "request out"
+              : "response in"
+        }
       >
         <span className={`proto__dir--${frame.direction}`}>
-          {frame.direction === "send" ? "→" : "←"}
+          {frame.frameError !== undefined ? "✗" : frame.direction === "send" ? "→" : "←"}
         </span>
       </span>
       <span className="proto__col proto__col--ts">

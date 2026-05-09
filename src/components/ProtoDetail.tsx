@@ -31,6 +31,18 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
   const decoded = frame.decodedJson;
   return (
     <section className="layers" aria-label="Frame detail">
+      {frame.frameError !== undefined ? (
+        <div className="frame-error" role="status" aria-live="polite">
+          <span className="frame-error__icon" aria-hidden="true">
+            ✗
+          </span>
+          <span className="frame-error__text">
+            <strong>Not forwarded.</strong> {frame.frameError}. Kapture decoded the request from the
+            client side but the upstream broker was unreachable; the client got no response and will
+            likely retry.
+          </span>
+        </div>
+      ) : null}
       <details className="layer" open>
         <summary className="layer__title">frame</summary>
         <div className="layer__body">

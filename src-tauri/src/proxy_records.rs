@@ -893,7 +893,7 @@ mod tests {
             run_pump_with_rewrite(
                 ConnectionId(42),
                 0,
-                client_sock,
+                framed_kafka(client_sock),
                 upstream_sock,
                 correlator,
                 corr_map,

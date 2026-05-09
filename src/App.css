@@ -88,6 +88,36 @@ body,
   flex-shrink: 0;
 }
 
+/* ---------- ProtoDetail error banner ---------- */
+.frame-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 12px;
+}
+.frame-error__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.frame-error__text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.5;
+}
+
 /* ---------- TopBar ---------- */
 .topbar {
   display: grid;
@@ -819,6 +849,20 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   /* Override `is-paired` left-border so the selected row keeps a solid
    * fill instead of competing with the pair accent. */
   box-shadow: none;
+}
+.msglist__row--error {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.msglist__row--error.is-selected {
+  /* Selected wins over the inset bar but keep the warm error tint so
+   * the user doesn't lose the cue when navigating. */
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-selected));
+  box-shadow: none;
+}
+.msglist__row--error .proto__dir--send,
+.msglist__row--error .proto__dir--recv {
+  color: var(--danger);
 }
 
 /* Tree node inside the decoded body — flat indented disclosure, no

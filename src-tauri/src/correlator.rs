@@ -85,6 +85,11 @@ pub struct ProtoFrameSummary {
     /// the body decode failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<FrameSummary>,
+    /// Set when the proxy accepted the client TCP but couldn't reach
+    /// upstream — the frame was decoded from the client's send but
+    /// never forwarded. UI renders the row in error state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_error: Option<String>,
 }
 
 impl From<&ProtoFrame> for ProtoFrameSummary {
@@ -103,6 +108,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             captured: f.captured,
             rtt_ms: f.rtt_ms,
             summary: f.summary.clone(),
+            frame_error: f.frame_error.clone(),
         }
     }
 }
@@ -135,6 +141,14 @@ pub struct ProtoFrame {
     pub captured: usize,
     /// Round-trip time in milliseconds. Only meaningful on `Recv`.
     pub rtt_ms: f64,
+    /// Set when the proxy accepted the client TCP but couldn't reach
+    /// upstream — the frame was read off the client side but never
+    /// forwarded. The string is the upstream-connect error reason
+    /// (`Connection refused`, `dns lookup failed`, …). The frontend
+    /// renders the row + detail in error state so the user can still
+    /// see what the client was trying to send and how it retried.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_error: Option<String>,
     /// Lowercase hex of the captured prefix. Empty when `captured == 0`.
     /// At ~64 KiB cap → ~128 KiB of hex per frame in the worst case.
     pub payload_hex: String,
@@ -240,6 +254,7 @@ impl ProtoCorrelator {
                 size: event.payload_size,
                 captured,
                 rtt_ms: event.rtt_ms,
+                frame_error: event.frame_error.clone(),
                 payload_hex: hex::encode(&event.payload),
                 decoded_json,
                 summary,
@@ -374,6 +389,7 @@ mod tests {
             payload_size: 1024,
             rtt_ms,
             payload: Vec::new(),
+            frame_error: None,
         }
     }
 

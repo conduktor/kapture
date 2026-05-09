@@ -454,7 +454,7 @@ async fn pump_rewrites_metadata_response_brokers_to_local() {
         run_pump_with_rewrite(
             ConnectionId(1),
             0,
-            client_sock,
+            framed_kafka(client_sock),
             upstream_sock,
             correlator,
             corr_map,

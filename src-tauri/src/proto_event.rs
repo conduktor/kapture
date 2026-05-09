@@ -40,6 +40,14 @@ pub struct ProtoEvent {
     /// Captured wire-payload prefix. Empty if the proxy elected not to
     /// copy bytes (zero-length frame).
     pub payload: Vec<u8>,
+    /// Reason the frame was not actually forwarded — set when the
+    /// proxy accepted the client TCP but couldn't reach upstream
+    /// (e.g. broker down). Surfaces in the Protocol tab as a row
+    /// rendered in error state so the user can see what the client
+    /// emitted and how it retried, even with no upstream behind us.
+    /// `None` for normal forwarded frames.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_error: Option<String>,
 }
 
 impl ProtoEvent {

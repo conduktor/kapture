@@ -269,6 +269,7 @@ mod tests {
             payload_hex: String::new(),
             decoded_json: None,
             summary: None,
+            frame_error: None,
         }
     }
 

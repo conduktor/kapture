@@ -309,7 +309,7 @@ where
 pub async fn run_pump_with_rewrite<U>(
     conn_id: ConnectionId,
     local_port: u16,
-    client: TcpStream,
+    mut client_framed: Framed<TcpStream, LengthDelimitedCodec>,
     upstream: U,
     correlator: Arc<ProtoCorrelator>,
     corr_map: Arc<CorrelationMap>,
@@ -320,7 +320,6 @@ pub async fn run_pump_with_rewrite<U>(
 where
     U: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let mut client_framed = framed_kafka(client);
     let mut upstream_framed = framed_kafka(upstream);
 
     // Per-session map of in-flight Produce requests keyed by corr_id.
@@ -529,6 +528,7 @@ pub fn build_proto_event(
                 payload_size,
                 rtt_ms: 0.0,
                 payload: inspector_payload,
+                frame_error: None,
             }
         }
         ProxyDirection::UpstreamToClient => {
@@ -550,6 +550,7 @@ pub fn build_proto_event(
                 payload_size,
                 rtt_ms,
                 payload,
+                frame_error: None,
             }
         }
     };

@@ -11,20 +11,24 @@ use std::io;
 use std::mem;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tracing::{info, warn};
 
 use crate::correlator::ProtoCorrelator;
 use crate::message::CapturedMessage;
 use crate::proxy::{
-    next_connection_id, run_pump_with_rewrite, BrokerMap, CorrelationMap, ProxyConfig,
+    build_proto_event, framed_kafka, next_connection_id, run_pump_with_rewrite, BrokerMap,
+    ConnectionId, CorrelationMap, ProxyConfig, ProxyDirection,
 };
 use crate::proxy_broker_map::BrokerListener;
 use crate::proxy_provisioner::BrokerProvisioner;
@@ -268,26 +272,41 @@ fn spawn_accept_loop(
                                     let resolved_tls = upstream_tls
                                         .as_ref()
                                         .map(|cfg| resolve_server_name(&upstream_host, cfg));
-                                    let upstream_sock = match open_upstream(
+                                    // Lazy upstream open. Wrap the client in
+                                    // the Kafka codec up front so we can
+                                    // surface any frames the client sends
+                                    // while we're still trying to reach the
+                                    // broker. Each failed connect → drain one
+                                    // client frame, emit it as a Send event
+                                    // tagged with `frame_error`, retry. The
+                                    // moment upstream comes up, we hand the
+                                    // (already-framed) client to the normal
+                                    // pump and proceed transparently.
+                                    let mut client_framed = framed_kafka(client_sock);
+                                    let Some(upstream_sock) = drain_until_upstream(
                                         &upstream_host,
                                         upstream_port,
                                         resolved_tls.as_ref(),
                                         upstream_sasl.as_ref(),
+                                        &mut client_framed,
+                                        conn_id,
+                                        local_port,
+                                        &correlator,
+                                        &corr_map,
                                     )
                                     .await
-                                    {
-                                        Ok(s) => s,
-                                    Err(err) => {
-                                        warn!(conn = conn_id.0, error = %err, "upstream connect failed");
+                                    else {
+                                        // Client gave up while we were
+                                        // retrying upstream — pump never
+                                        // started, just clean up.
                                         pump_inner.active_pumps.lock().remove(&conn_id.0);
                                         return;
-                                    }
-                                };
+                                    };
                                 info!(conn = conn_id.0, peer = %peer, "proxy connection opened");
                                 let result = run_pump_with_rewrite(
                                     conn_id,
                                     local_port,
-                                    client_sock,
+                                    client_framed,
                                     upstream_sock,
                                     correlator,
                                     corr_map,
@@ -313,6 +332,84 @@ fn spawn_accept_loop(
             }
         }
     })
+}
+
+/// Connect-loop run **before** entering the main pump.
+///
+/// Tries `open_upstream` with a per-attempt 1.5 s ceiling — fast-fails
+/// on `ECONNREFUSED`, bounded on hung-route / dropped-firewall cases.
+/// While upstream is unreachable, frames the client sends are decoded
+/// and pushed to the correlator with `frame_error` set, so the user
+/// sees the client's request burst (and retry pattern) in the
+/// Protocol tab even though Kapture has nothing to forward to.
+///
+/// Returns `Some(stream)` once upstream is up, or `None` if the client
+/// disconnected before that ever happened.
+#[allow(clippy::too_many_arguments)]
+async fn drain_until_upstream(
+    host: &str,
+    port: u16,
+    tls: Option<&UpstreamTlsConfig>,
+    sasl: Option<&UpstreamSaslConfig>,
+    client_framed: &mut tokio_util::codec::Framed<
+        tokio::net::TcpStream,
+        tokio_util::codec::LengthDelimitedCodec,
+    >,
+    conn_id: ConnectionId,
+    local_port: u16,
+    correlator: &Arc<ProtoCorrelator>,
+    corr_map: &Arc<CorrelationMap>,
+) -> Option<crate::proxy_upstream::UpstreamStream> {
+    loop {
+        let attempt = timeout(
+            Duration::from_millis(1500),
+            open_upstream(host, port, tls, sasl),
+        )
+        .await;
+        let connect_err = match attempt {
+            Ok(Ok(stream)) => return Some(stream),
+            Ok(Err(err)) => err.to_string(),
+            Err(_) => format!("upstream connect timed out after 1500ms ({host}:{port})"),
+        };
+        // Block on the next client frame. If the client gives up
+        // (TCP close / read error), exit — no more frames to surface.
+        let frame_bytes = match client_framed.next().await {
+            Some(Ok(bytes)) => bytes.freeze(),
+            Some(Err(err)) => {
+                warn!(
+                    conn = conn_id.0,
+                    error = %err,
+                    "client read errored while upstream unreachable"
+                );
+                return None;
+            }
+            None => return None,
+        };
+        match build_proto_event(
+            ProxyDirection::ClientToUpstream,
+            conn_id,
+            local_port,
+            &frame_bytes,
+            corr_map,
+        ) {
+            Ok(mut event) => {
+                event.frame_error = Some(connect_err.clone());
+                correlator.record_event(&event);
+            }
+            Err(err) => {
+                warn!(
+                    conn = conn_id.0,
+                    error = %err,
+                    "build_proto_event failed while upstream unreachable"
+                );
+            }
+        }
+        warn!(
+            conn = conn_id.0,
+            error = %connect_err,
+            "upstream unreachable; surfaced client frame as error, retrying"
+        );
+    }
 }
 
 impl ProxyHandle {

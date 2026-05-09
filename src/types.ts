@@ -78,6 +78,13 @@ export interface ProtoFrame {
    * `FrameSummary` below.
    */
   summary?: FrameSummary;
+  /**
+   * Set when the proxy accepted the client TCP but couldn't reach
+   * upstream — the frame was decoded from the client send but never
+   * forwarded. Surfaces in the Protocol tab as an error-state row so
+   * the user can see what the client emitted and how it retried.
+   */
+  frameError?: string;
 }
 
 /**
