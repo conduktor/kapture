@@ -40,6 +40,24 @@ transactions, epoch fences, repeated init events.
 _Why:_ EOS / idempotent producers fail in subtle ways. Today the
 user has to grep the Protocol tab for `InitProducerId` manually.
 
+### Group lifecycle pane [M]
+
+Mirror of Producer / transaction state on the consumer side.
+Section in Session Activity tracking each group's membership
+lifecycle: `FindCoordinator → JoinGroup → JoinGroupResponse(gen=N)
+→ SyncGroup → Heartbeat × M → OffsetCommit → LeaveGroup`. One row
+per `(group_id, member_id, generation)`, with a status chip
+(active / zombie / fenced) and the last event timestamp. Flag the
+contradictions: `JoinGroup` from a new member with no preceding
+`LeaveGroup` from the previous one, generation gaps, missing
+heartbeats past `session.timeout.ms × 0.5`.
+
+_Why:_ Today the consumer-group lifecycle has to be reconstructed
+by hand from the Protocol list. The zombie-member story
+(connection closed without `LeaveGroup`, new joiner waits the full
+`session.timeout.ms` for assignment) becomes a one-glance
+diagnosis instead of a manual log walk.
+
 ### Per-partition error expansion [S]
 
 Walk the per-partition `error_code` fields nested inside
@@ -51,6 +69,19 @@ _Why:_ Top-level error code on Produce/Fetch is almost always 0.
 The interesting failures (NOT_LEADER, OFFSET_OUT_OF_RANGE) live in
 the partition results.
 
+### Partition routing audit [S]
+
+Per `(topic, partition)` table in Session Activity: current leader
+according to the last `MetadataResponse`, the broker the last N
+`ProduceRequest`s and `FetchRequest`s actually went to, and a
+mismatch counter. Green when they agree, red when they drift.
+
+_Why:_ The Protocol drift detector tells you when routing breaks;
+this pane tells you it's clean before you ship — useful as a
+pre-deploy or post-failover sanity check ("yes, my producer came
+back to the right broker"). Same data the drift detector folds
+over; just rendered as a standing audit instead of an alert.
+
 ### Negotiated API versions [S]
 
 Per-apiKey table showing the version each side advertised and the
@@ -60,6 +91,41 @@ broker maxVersion → "you're missing KIP-X".
 _Why:_ `summary.apiVersionsRequest` already carries the client
 software/version; broker-side max versions are in
 `ApiVersionsResponse`. Five lines of fold logic; one extra panel.
+
+### Per-broker capability matrix [M]
+
+Step beyond Negotiated API versions: fold every `ApiVersionsResponse`
+seen on the wire into a per-broker matrix (advertised api_version
+range per apiKey, supported compression types, KIP-516 topic IDs,
+SASL mechanisms). One row per upstream broker, keyed by the
+`(upstream_host, upstream_port)` already tracked by the broker
+provisioner — the per-broker listener arrangement makes the key
+trivially available.
+
+Surfaces:
+
+- Heterogeneity flag — brokers advertise different max versions
+  for the same apiKey → rolling upgrade in progress.
+- Authoritative mismatch — client sent `Produce v7` to broker B,
+  but B's advertised max in its `ApiVersionsResponse` is v6.
+  Wire-side proof of mixed-version bugs (KafkaJS #1656 shape),
+  not inference.
+- Per-broker capability table at a glance — which broker supports
+  what, in one view.
+
+_Why:_ Sister to the Protocol drift detector's mixed-version
+check. Drift detector catches the per-request contradiction; the
+matrix gives you the standing picture and makes "rolling upgrade
+in progress" a one-glance diagnosis. Pure passive — every
+well-behaved client connection already starts with
+`ApiVersionsRequest`/`Response`, so the data is on the wire today.
+
+Optional extension — active probe: when the client only ever
+talked to the bootstrap broker (KafkaJS #1656 shape, no
+re-negotiation per broker), Kapture itself can dial the other
+brokers from `MetadataResponse` using the upstream creds the proxy
+already holds, send its own `ApiVersionsRequest`, and fill the
+gaps in the matrix.
 
 ### Connection lifecycle [S]
 
@@ -223,6 +289,55 @@ _Why:_ Turn debugging-in-the-loop into regression tests. Captures
 "my client survived this once" as "my client survives this every
 build".
 
+### Virtual broker fan-out [L]
+
+Tell the proxy "pretend there are N brokers" when there is actually
+one upstream. Kapture spins up N local listeners with synthetic
+`node_id`s (high range, e.g. 10000+, to avoid clashing with real
+broker IDs), rewrites `MetadataResponse` to advertise the N
+brokers, distributes partition leadership and coordinator roles
+across them, and forwards every request to the single real
+upstream while preserving the per-fake-broker view client-side.
+
+Use cases:
+
+- Parallelism testing — measure how the client fans out across
+  N broker connections without standing up a real N-broker
+  cluster.
+- Leader-move chaos — rewrite metadata mid-session to move
+  partition X from fake-broker-1 to fake-broker-2. Client
+  experiences the full reconnect / re-route dance; underneath,
+  nothing moved.
+- Per-broker fault isolation — couple with Chaos mode to drop
+  fake-broker-2 alone, reproducible and deterministic, without
+  touching real infra.
+- Mixed-version simulation — make fake-broker-2 advertise older
+  api versions in its `ApiVersionsResponse`. Reproduce
+  KafkaJS-#1656-shape bugs in a controlled environment.
+
+_Why:_ Most clients are tested against one local broker and a
+real cloud cluster. The middle ground — adversarial multi-broker
+behaviour, deterministic and reproducible — is hard to stand up.
+The proxy already rewrites `MetadataResponse` and provisions a
+listener per upstream broker; multiplying the broker count is the
+same trick run in the other direction. Plays with Chaos mode
+(per-fake-broker fault injection) and the Per-broker capability
+matrix (each fake broker can declare its own capabilities).
+
+Open questions:
+
+- `node_id` rewriting must be consistent across every response
+  that carries one (replicas, ISRs, `node_endpoints[]` from
+  KIP-951, `FindCoordinatorResponse`) so the client never sees a
+  synthetic ID it can't resolve.
+- Idempotent / transactional producers — sequence numbers per
+  `(PID, partition)` should still work since partition ownership
+  is consistent (one real broker underneath), but worth
+  verifying with an EOS producer test before declaring done.
+- Operations that require real cluster topology (controller
+  election, real replica fencing, real ISR shrinks) can't be
+  simulated — this is illusion, not a real cluster.
+
 ---
 
 ## Beyond — bigger / longer-term swings
@@ -245,6 +360,26 @@ per-broker health. Replaces / extends the Brokers tab.
 
 _Why:_ Multi-broker scenarios are hard to reason about as a flat
 list. A graph is the natural shape.
+
+### Sequence / swim-lane view [L]
+
+Alternate projection of the Protocol timeline. Same frames,
+different lens: instead of one chronological list, render one row
+per actor (`member_id` / `producer_id` / `connection_id`) with
+events plotted along the time axis. Toggle from the Protocol tab.
+Gaps where an expected next event did not arrive become actual
+gaps on screen — the missing `LeaveGroup` before a `JoinGroup`
+on a new member, the `Heartbeat` cadence breaking, the `Produce`
+retries clustering on one broker after a leader move — instead of
+"frames you have to know to look for".
+
+_Why:_ Per-actor flow is how the protocol reads in your head
+anyway. The flat list serializes interleaved conversations into
+one stream; the swim-lane un-serializes them. Especially valuable
+for multi-member groups, multi-broker producers, and rolling
+upgrades where the contradiction sits across actors, not within
+one. Sister to the Group lifecycle pane and Connection topology
+view — same underlying data, third projection.
 
 ### MCP-driven diagnostics [M]
 
