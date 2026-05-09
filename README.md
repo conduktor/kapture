@@ -2,6 +2,8 @@
 
 **Wireshark for Kafka.** A desktop app that speaks the Kafka protocol natively, intercepts the traffic between your client and the broker, and shows you what's really going through the wire.
 
+![Kapture Protocol tab — live capture of a Kafka producer + consumer through the proxy, with a decoded MetadataResponse opened on the right](docs/images/protocol-tab.png)
+
 ## Why
 
 Most engineers building apps on Kafka have no good way to see what their clients actually do. Logs and dashboards lie about latency and frequency, and topic browsers (Conduktor Console, Redpanda Console, AKHQ, Kafdrop) show data at rest, not the protocol exchange.
