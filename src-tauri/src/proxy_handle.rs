@@ -345,7 +345,7 @@ fn spawn_accept_loop(
 ///
 /// Returns `Some(stream)` once upstream is up, or `None` if the client
 /// disconnected before that ever happened.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
 async fn drain_until_upstream(
     host: &str,
     port: u16,
