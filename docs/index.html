@@ -3,29 +3,193 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Kapture — Wireshark for Kafka</title>
+    <title>Kapture: Wireshark for Kafka — decode the wire</title>
     <meta
       name="description"
-      content="A desktop app that speaks the Kafka protocol natively, intercepts traffic between your client and the broker, and shows you what's really going through the wire."
+      content="Free macOS app to decode the Apache Kafka protocol on the wire. Catch SDK drift, rebalance loops, stale leaders & overcommits invisible from logs."
     />
+    <meta
+      name="keywords"
+      content="Kafka, Apache Kafka, Wireshark, Kafka protocol, Kafka debugger, Kafka proxy, Kafka inspector, Kafka traffic, SDK drift, OffsetCommit, rebalance, SASL, KIP-516, KIP-932, librdkafka, KafkaJS, MCP, Conduktor"
+    />
+    <meta name="author" content="Conduktor" />
+    <meta
+      name="robots"
+      content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+    />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
     <link rel="canonical" href="https://kapturekafka.dev/" />
+    <link rel="manifest" href="manifest.webmanifest" />
+
+    <!-- Open Graph -->
     <meta property="og:title" content="Kapture — Wireshark for Kafka" />
     <meta
       property="og:description"
-      content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does."
+      content="Free macOS app that decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms — bugs invisible from your application logs."
     />
     <meta property="og:url" content="https://kapturekafka.dev/" />
-    <meta property="og:image" content="https://kapturekafka.dev/images/protocol-tab.png" />
+    <meta property="og:site_name" content="Kapture" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:type" content="image/png" />
+    <meta
+      property="og:image:alt"
+      content="Kapture — Wireshark for Kafka. Decode the Kafka protocol on the wire."
+    />
+
+    <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:site" content="@conduktor" />
+    <meta name="twitter:creator" content="@conduktor" />
     <meta name="twitter:title" content="Kapture — Wireshark for Kafka" />
     <meta
       name="twitter:description"
-      content="See the Kafka protocol on the wire. Decode every request and response. Catch SDK drift before production does."
+      content="Free macOS app that decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms."
     />
-    <meta name="twitter:image" content="https://kapturekafka.dev/images/protocol-tab.png" />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta
+      name="twitter:image:alt"
+      content="Kapture — Wireshark for Kafka. Decode the Kafka protocol on the wire."
+    />
+
+    <!-- Icons & PWA-ish -->
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+
+    <!-- Performance -->
+    <link rel="preconnect" href="https://api.github.com" crossorigin />
+    <link rel="dns-prefetch" href="https://github.com" />
+    <link rel="preload" as="image" href="images/protocol-tab.png" fetchpriority="high" />
+
+    <!-- Structured data: SoftwareApplication -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Kapture",
+        "alternateName": "Wireshark for Kafka",
+        "applicationCategory": "DeveloperApplication",
+        "applicationSubCategory": "Network protocol analyzer",
+        "operatingSystem": "macOS",
+        "softwareVersion": "0.1.0",
+        "dateModified": "2026-05-09",
+        "url": "https://kapturekafka.dev/",
+        "description": "Desktop app that proxies and decodes the Apache Kafka protocol between your client and the broker. Catches protocol-level anti-patterns invisible from application logs.",
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "screenshot": "https://kapturekafka.dev/images/protocol-tab.png",
+        "downloadUrl": "https://github.com/conduktor/kapture/releases/latest",
+        "softwareHelp": "https://github.com/conduktor/kapture",
+        "license": "https://www.apache.org/licenses/LICENSE-2.0",
+        "featureList": [
+          "Live Kafka protocol view (decoded request/response, corr_id, RTT)",
+          "Decoded records from Produce and Fetch",
+          "Wireshark-style filter DSL",
+          "Connection profiles with TLS, SASL/PLAIN, SCRAM-256/512, mTLS",
+          "Local MCP server for IDE agents (Claude Code, Cursor, Windsurf)"
+        ],
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        }
+      }
+    </script>
+
+    <!-- Structured data: FAQPage -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is Kapture?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Kapture is a free macOS desktop app that proxies the Apache Kafka protocol between your client and the broker, decodes every frame, and shows you what is actually going through the wire."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How is Kapture different from Conduktor Console, AKHQ, or Kafdrop?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Topic browsers (Conduktor Console, AKHQ, Kafdrop, Redpanda Console) show data at rest, what is stored on a topic. Kapture shows data in motion: every Kafka API request and response, decoded live, including the protocol exchanges that never appear in your application logs."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Kapture work with Confluent Cloud, AWS MSK, Aiven, or Redpanda?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Kapture is a transparent TCP proxy. Point your Kafka client at Kapture's local listener (127.0.0.1:9092) and Kapture forwards every byte to your real broker. It works with any Kafka-compatible cluster, including Confluent Cloud, AWS MSK, Aiven, Redpanda, and self-hosted Apache Kafka or KRaft clusters."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "What authentication mechanisms does Kapture support?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Kapture passes through SASL/PLAIN, SASL/SCRAM-SHA-256, SASL/SCRAM-SHA-512, TLS, and mTLS upstream. Connection credentials are saved locally and passwords are stored in the macOS keychain."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I use Kapture with KafkaJS, librdkafka, kafka-python, Sarama, or Confluent .NET?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Kapture is client-agnostic. It inspects the Kafka wire protocol, not the client SDK. Any Kafka client that connects to a broker can connect to Kapture's listener instead, with no code changes."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Is Kapture open source?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Kapture is open source under the Apache 2.0 license. The source code is on GitHub at github.com/conduktor/kapture."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Kapture support Apache Kafka 4.x and KRaft?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Kapture decodes the latest Apache Kafka 4.x protocol, including KIP-516 topic IDs and KIP-932 share groups. It works with both KRaft and ZooKeeper-managed clusters."
+            }
+          }
+        ]
+      }
+    </script>
+
+    <!-- Structured data: WebSite -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebSite",
+        "name": "Kapture",
+        "url": "https://kapturekafka.dev/",
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": "https://kapturekafka.dev/apple-touch-icon.png"
+        }
+      }
+    </script>
     <style>
       :root {
         --bg: #ffffff;
@@ -241,11 +405,13 @@
           transform 0.15s,
           box-shadow 0.15s;
       }
-      .btn-primary {
+      .btn-primary,
+      .nav-links a.btn-primary {
         background: var(--text);
         color: #fff;
       }
-      .btn-primary:hover {
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
         background: #000;
         color: #fff;
         transform: translateY(-1px);
@@ -303,6 +469,16 @@
       }
       .hero h1 {
         max-width: 880px;
+      }
+      .hero h1 .hero-name {
+        display: block;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin-bottom: 14px;
+        font-family: var(--mono);
       }
       .hero h1 .accent {
         background: linear-gradient(135deg, #2563eb 0%, #06b6d4 100%);
@@ -1363,6 +1539,73 @@
         text-decoration-color: #60a5fa;
       }
 
+      /* FAQ */
+      .faq-list {
+        margin-top: 48px;
+        max-width: 820px;
+        display: grid;
+        gap: 12px;
+      }
+      .faq-item {
+        background: #fff;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0 24px;
+        transition: border-color 0.15s, box-shadow 0.15s;
+      }
+      .faq-item[open] {
+        border-color: var(--border-strong);
+        box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
+      }
+      .faq-item summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 22px 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+      .faq-item summary::-webkit-details-marker { display: none; }
+      .faq-item summary::after {
+        content: "+";
+        flex-shrink: 0;
+        font-family: var(--mono);
+        font-size: 22px;
+        font-weight: 400;
+        color: var(--muted);
+        line-height: 1;
+        transition: transform 0.2s;
+      }
+      .faq-item[open] summary::after {
+        content: "−";
+        color: var(--accent);
+      }
+      .faq-item summary h3 {
+        font-size: 17px;
+        font-weight: 600;
+        line-height: 1.4;
+        margin: 0;
+        letter-spacing: -0.005em;
+      }
+      .faq-item summary:hover h3 { color: var(--accent); }
+      .faq-item p {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.65;
+        margin: 0 0 22px 0;
+        max-width: 720px;
+      }
+      .faq-item p code {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        padding: 1px 6px;
+        border-radius: 4px;
+        font-size: 13px;
+        font-family: var(--mono);
+        color: var(--text);
+      }
+
       /* Roadmap */
       .road-list {
         margin-top: 48px;
@@ -1451,16 +1694,14 @@
           <img src="favicon.png" alt="" class="brand-icon" />
           <span class="brand-text">
             <span class="name">Kapture</span>
-            <span class="by"
-              >by
-              <a href="https://www.conduktor.io" target="_blank" rel="noopener">conduktor</a></span
-            >
+            <span class="by">by conduktor</span>
           </span>
         </a>
         <nav class="nav-links">
           <a href="#why">Why</a>
           <a href="#how">How it works</a>
           <a href="#features">Features</a>
+          <a href="#faq">FAQ</a>
           <a href="#install">Install</a>
           <a
             class="nav-star"
@@ -1491,7 +1732,10 @@
     <main id="top">
       <section class="hero">
         <div class="wrap">
-          <h1>Wireshark <span class="accent">for Kafka.</span></h1>
+          <h1>
+            <span class="hero-name">Kapture</span>
+            Wireshark <span class="accent">for Kafka.</span>
+          </h1>
           <p class="lede">
             A desktop app that speaks the Kafka protocol natively, intercepts the traffic between
             your client and the broker, and shows you what's really going through the wire.
@@ -1521,7 +1765,11 @@
           <img
             src="images/protocol-tab.png"
             alt="Kapture Protocol tab — live capture of a Kafka producer + consumer through the proxy, with a decoded MetadataResponse opened on the right"
+            width="3414"
+            height="1850"
             loading="eager"
+            decoding="async"
+            fetchpriority="high"
           />
         </div>
       </section>
@@ -2301,7 +2549,7 @@
       >
         <div class="wrap">
           <span class="eyebrow">What you get</span>
-          <h2>Everything you'd expect from a wire inspector — plus a few things you wouldn't.</h2>
+          <h2>Inside Kapture: protocol view, messages, filter DSL, MCP.</h2>
 
           <div class="features-grid">
             <div class="feat">
@@ -2496,10 +2744,95 @@
         </div>
       </section>
 
+      <section class="faq" id="faq">
+        <div class="wrap">
+          <span class="eyebrow">FAQ</span>
+          <h2>Frequently asked questions.</h2>
+
+          <div class="faq-list">
+            <details class="faq-item">
+              <summary><h3>What is Kapture?</h3></summary>
+              <p>
+                Kapture is a free macOS desktop app that proxies the Apache Kafka protocol between
+                your client and the broker, decodes every frame, and shows you what's actually
+                going through the wire.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>
+                <h3>How is Kapture different from Conduktor Console, AKHQ, or Kafdrop?</h3>
+              </summary>
+              <p>
+                Topic browsers (Conduktor Console, AKHQ, Kafdrop, Redpanda Console) show data
+                <em>at rest</em> — what's stored on a topic. Kapture shows data <em>in motion</em>:
+                every Kafka API request and response, decoded live, including the protocol
+                exchanges that never appear in your application logs.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>
+                <h3>Does Kapture work with Confluent Cloud, AWS MSK, Aiven, or Redpanda?</h3>
+              </summary>
+              <p>
+                Yes. Kapture is a transparent TCP proxy. Point your Kafka client at Kapture's local
+                listener (<code>127.0.0.1:9092</code>) and Kapture forwards every byte to your real
+                broker. It works with any Kafka-compatible cluster, including Confluent Cloud, AWS
+                MSK, Aiven, Redpanda, and self-hosted Apache Kafka or KRaft clusters.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary><h3>What authentication mechanisms does Kapture support?</h3></summary>
+              <p>
+                Kapture passes through <code>SASL/PLAIN</code>, <code>SASL/SCRAM-SHA-256</code>,
+                <code>SASL/SCRAM-SHA-512</code>, TLS, and mTLS upstream. Connection credentials are
+                saved locally; passwords are stored in the macOS keychain.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary>
+                <h3>
+                  Can I use Kapture with KafkaJS, librdkafka, kafka-python, Sarama, or Confluent
+                  .NET?
+                </h3>
+              </summary>
+              <p>
+                Yes. Kapture is client-agnostic — it inspects the Kafka wire protocol, not the
+                client SDK. Any Kafka client that connects to a broker can connect to Kapture's
+                listener instead, with no code changes.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary><h3>Is Kapture open source?</h3></summary>
+              <p>
+                Yes. Kapture is open source under the Apache 2.0 license. The source is on GitHub
+                at
+                <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener"
+                  >conduktor/kapture</a
+                >.
+              </p>
+            </details>
+
+            <details class="faq-item">
+              <summary><h3>Does Kapture support Apache Kafka 4.x and KRaft?</h3></summary>
+              <p>
+                Yes. Kapture decodes the latest Apache Kafka 4.x protocol, including KIP-516 topic
+                IDs and KIP-932 share groups. It works with both KRaft and ZooKeeper-managed
+                clusters.
+              </p>
+            </details>
+          </div>
+        </div>
+      </section>
+
       <section class="install" id="install">
         <div class="wrap">
           <span class="eyebrow">Install</span>
-          <h2>Three steps. Then watch.</h2>
+          <h2>Install Kapture in three steps.</h2>
 
           <div class="timeline">
             <div class="tline-item">
@@ -2541,7 +2874,7 @@
       <section id="roadmap">
         <div class="wrap">
           <span class="eyebrow">Roadmap</span>
-          <h2>What's next.</h2>
+          <h2>Kapture roadmap.</h2>
 
           <div class="road-list">
             <div class="road-item">
@@ -2594,7 +2927,8 @@
       <div class="wrap foot">
         <div>
           <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
-          Apache-2.0.
+          Apache-2.0. v0.1.0 · updated
+          <time datetime="2026-05-09">May 2026</time>.
         </div>
         <div>
           <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>

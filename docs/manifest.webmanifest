@@ -1,0 +1,23 @@
+{
+  "name": "Kapture — Wireshark for Kafka",
+  "short_name": "Kapture",
+  "description": "Decode the Kafka protocol on the wire. Catch SDK drift, rebalance loops, stale leaders & overcommits invisible from logs.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "browser",
+  "theme_color": "#0f172a",
+  "background_color": "#ffffff",
+  "icons": [
+    {
+      "src": "favicon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "apple-touch-icon.png",
+      "sizes": "128x128",
+      "type": "image/png"
+    }
+  ]
+}

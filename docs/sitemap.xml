@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url>
+    <loc>https://kapturekafka.dev/</loc>
+    <lastmod>2026-05-09</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+    <image:image>
+      <image:loc>https://kapturekafka.dev/images/og-card.png</image:loc>
+      <image:caption>Kapture — Wireshark for Kafka</image:caption>
+    </image:image>
+    <image:image>
+      <image:loc>https://kapturekafka.dev/images/protocol-tab.png</image:loc>
+      <image:caption>Kapture protocol tab — live capture of a Kafka producer and consumer through the proxy</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/#why</loc>
+    <lastmod>2026-05-09</lastmod>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/#features</loc>
+    <lastmod>2026-05-09</lastmod>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/#faq</loc>
+    <lastmod>2026-05-09</lastmod>
+    <priority>0.8</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/#install</loc>
+    <lastmod>2026-05-09</lastmod>
+    <priority>0.7</priority>
+  </url>
+</urlset>
