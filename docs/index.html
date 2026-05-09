@@ -1551,7 +1551,9 @@
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 0 24px;
-        transition: border-color 0.15s, box-shadow 0.15s;
+        transition:
+          border-color 0.15s,
+          box-shadow 0.15s;
       }
       .faq-item[open] {
         border-color: var(--border-strong);
@@ -1566,7 +1568,9 @@
         justify-content: space-between;
         gap: 16px;
       }
-      .faq-item summary::-webkit-details-marker { display: none; }
+      .faq-item summary::-webkit-details-marker {
+        display: none;
+      }
       .faq-item summary::after {
         content: "+";
         flex-shrink: 0;
@@ -1588,7 +1592,9 @@
         margin: 0;
         letter-spacing: -0.005em;
       }
-      .faq-item summary:hover h3 { color: var(--accent); }
+      .faq-item summary:hover h3 {
+        color: var(--accent);
+      }
       .faq-item p {
         color: var(--muted);
         font-size: 15px;
@@ -2754,8 +2760,8 @@
               <summary><h3>What is Kapture?</h3></summary>
               <p>
                 Kapture is a free macOS desktop app that proxies the Apache Kafka protocol between
-                your client and the broker, decodes every frame, and shows you what's actually
-                going through the wire.
+                your client and the broker, decodes every frame, and shows you what's actually going
+                through the wire.
               </p>
             </details>
 
@@ -2766,8 +2772,8 @@
               <p>
                 Topic browsers (Conduktor Console, AKHQ, Kafdrop, Redpanda Console) show data
                 <em>at rest</em> — what's stored on a topic. Kapture shows data <em>in motion</em>:
-                every Kafka API request and response, decoded live, including the protocol
-                exchanges that never appear in your application logs.
+                every Kafka API request and response, decoded live, including the protocol exchanges
+                that never appear in your application logs.
               </p>
             </details>
 
@@ -2809,8 +2815,7 @@
             <details class="faq-item">
               <summary><h3>Is Kapture open source?</h3></summary>
               <p>
-                Yes. Kapture is open source under the Apache 2.0 license. The source is on GitHub
-                at
+                Yes. Kapture is open source under the Apache 2.0 license. The source is on GitHub at
                 <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener"
                   >conduktor/kapture</a
                 >.
@@ -2927,8 +2932,7 @@
       <div class="wrap foot">
         <div>
           <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
-          Apache-2.0. v0.1.0 · updated
-          <time datetime="2026-05-09">May 2026</time>.
+          Apache-2.0. v0.1.0 · updated <time datetime="2026-05-09">May 2026</time>.
         </div>
         <div>
           <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
