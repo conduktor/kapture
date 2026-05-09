@@ -204,12 +204,12 @@ mod tests {
     /// Returns DER cert, PEM cert (for the user-CA test), and the
     /// `rustls`-ready private key.
     fn gen_self_signed() -> (CertificateDer<'static>, String, PrivateKeyDer<'static>) {
-        let rcgen::CertifiedKey { cert, key_pair } =
+        let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(["localhost".to_owned()]).unwrap();
         let cert_pem = cert.pem();
         let cert_der = cert.der().clone();
         let key_der: PrivateKeyDer<'static> =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der()));
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
         (cert_der, cert_pem, key_der)
     }
 

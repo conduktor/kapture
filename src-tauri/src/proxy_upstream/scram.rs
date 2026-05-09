@@ -23,9 +23,8 @@
 use std::marker::PhantomData;
 
 use base64::Engine;
-use hmac::{Hmac, Mac};
-use rand::distributions::Alphanumeric;
-use rand::Rng;
+use hmac::{Hmac, KeyInit, Mac};
+use rand::distr::{Alphanumeric, SampleString};
 use sha2::{Digest, Sha256, Sha512};
 use subtle::ConstantTimeEq;
 
@@ -58,7 +57,7 @@ impl ScramHash for Sha256Hash {
     const NAME: &'static str = "SCRAM-SHA-256";
 
     fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(key)
             .unwrap_or_else(|_| unreachable_hmac_keylen());
         mac.update(data);
         mac.finalize().into_bytes().to_vec()
@@ -86,7 +85,7 @@ impl ScramHash for Sha512Hash {
     const NAME: &'static str = "SCRAM-SHA-512";
 
     fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {
-        let mut mac = <Hmac<Sha512> as Mac>::new_from_slice(key)
+        let mut mac = <Hmac<Sha512> as KeyInit>::new_from_slice(key)
             .unwrap_or_else(|_| unreachable_hmac_keylen());
         mac.update(data);
         mac.finalize().into_bytes().to_vec()
@@ -378,11 +377,7 @@ fn xor(a: &[u8], b: &[u8]) -> Vec<u8> {
 }
 
 fn generate_client_nonce() -> String {
-    rand::thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(24)
-        .map(char::from)
-        .collect()
+    Alphanumeric.sample_string(&mut rand::rng(), 24)
 }
 
 #[cfg(test)]
