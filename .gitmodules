@@ -1,4 +1,4 @@
 [submodule "vendor/kafka-protocol-rs"]
 	path = vendor/kafka-protocol-rs
-	url = git@github.com:sderosiaux/kafka-protocol-rs.git
+	url = https://github.com/sderosiaux/kafka-protocol-rs.git
 	branch = kapture
