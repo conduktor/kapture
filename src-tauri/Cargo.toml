@@ -60,7 +60,7 @@ schemars = "1"
 subtle = "2"
 sha2 = "0.10"
 hmac = "0.12"
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 base64 = "0.22"
 rand = "0.8"
 tokio-rustls = "0.26"
