@@ -1,4 +1,4 @@
-import { type JSX, type MouseEvent } from "react";
+import { useState, type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
 import { formatBytes } from "../lib/formatBytes";
 import { formatRtt } from "../lib/formatRtt";
@@ -30,6 +30,10 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
   // Group hex into 16-byte rows for readability.
   const rows = chunkHex(frame.payloadHex, 16);
   const decoded = frame.decodedJson;
+  const frameClipboard = buildFrameClipboard(frame);
+  const decodedClipboard =
+    decoded !== undefined && decoded !== null ? JSON.stringify(decoded, null, 2) : null;
+  const hexClipboard = rows.map((r) => r.hex).join("\n");
   return (
     <section className="layers" aria-label="Frame detail">
       {frame.frameError !== undefined ? (
@@ -45,7 +49,10 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
         </div>
       ) : null}
       <details className="layer" open>
-        <summary className="layer__title">frame</summary>
+        <summary className="layer__title">
+          <span className="layer__title-text">frame</span>
+          <LayerCopyButton text={frameClipboard} label="frame metadata" />
+        </summary>
         <div className="layer__body">
           <Field name="direction" value={frame.direction} />
           <Field name="api" value={`${frame.apiName} (${String(frame.apiKey)})`} />
@@ -68,10 +75,11 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {decoded !== undefined && decoded !== null ? (
+      {decoded !== undefined && decoded !== null && decodedClipboard !== null ? (
         <DecodedTree
           decoded={decoded}
           apiName={frame.apiName}
+          clipboardText={decodedClipboard}
           {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
         />
       ) : null}
@@ -80,7 +88,10 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           className="layer"
           {...(decoded !== undefined && decoded !== null ? {} : { open: true })}
         >
-          <summary className="layer__title">payload — hex view</summary>
+          <summary className="layer__title">
+            <span className="layer__title-text">payload — hex view</span>
+            <LayerCopyButton text={hexClipboard} label="payload hex" />
+          </summary>
           <div className="layer__body">
             <pre className="proto-hex">
               {rows.map((row, i) => (
@@ -95,6 +106,63 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
         </details>
       ) : null}
     </section>
+  );
+}
+
+/** Plain-text dump of the frame metadata, ready for pasting in a
+ *  Slack thread / GitHub issue without losing context. Mirrors the
+ *  rows shown in the `frame` layer so the recipient sees the same
+ *  fields in the same order. */
+function buildFrameClipboard(frame: ProtoFrameDetail): string {
+  const lines: string[] = [];
+  if (frame.frameError !== undefined) {
+    lines.push(`error: ${frame.frameError} (request was not forwarded; client got no response)`);
+  }
+  lines.push(`direction: ${frame.direction}`);
+  lines.push(`api: ${frame.apiName} (${String(frame.apiKey)})`);
+  lines.push(`api_version: v${String(frame.apiVersion)}`);
+  lines.push(`connection_id: ${String(frame.connectionId)}`);
+  lines.push(`corr_id: ${String(frame.corrId)}`);
+  lines.push(`size: ${formatBytes(frame.size)}`);
+  if (frame.captured < frame.size) {
+    lines.push(
+      `captured: ${formatBytes(frame.captured)} of ${formatBytes(frame.size)} (truncated)`,
+    );
+  }
+  if (frame.direction === "recv") {
+    const fmt = formatRtt(frame.rttMs);
+    lines.push(`rtt: ${fmt.value}${fmt.unit ? ` ${fmt.unit}` : ""}`);
+  }
+  lines.push(`timestamp: ${frame.timestamp}`);
+  return lines.join("\n");
+}
+
+/** Copy-to-clipboard chip pinned to the right of a layer summary.
+ *  Stops the click from toggling the `<details>` so the user doesn't
+ *  collapse the section they're trying to copy. Brief "copied"
+ *  affordance, then back to "copy" — no toast, no modal. */
+function LayerCopyButton({ text, label }: { text: string; label: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  const onClick = (e: MouseEvent<HTMLButtonElement>): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    void navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      window.setTimeout(() => {
+        setCopied(false);
+      }, 1500);
+    });
+  };
+  return (
+    <button
+      type="button"
+      className="layer__copy"
+      onClick={onClick}
+      aria-label={`Copy ${label} to clipboard`}
+      title={`Copy ${label}`}
+    >
+      {copied ? "copied" : "copy"}
+    </button>
   );
 }
 
@@ -179,10 +247,12 @@ function FilterableValue({
 function DecodedTree({
   decoded,
   apiName,
+  clipboardText,
   onAddDecodedFilter,
 }: {
   decoded: unknown;
   apiName: string;
+  clipboardText: string;
   onAddDecodedFilter?: AddDecodedFn;
 }): JSX.Element {
   // The layer already provides the top-level disclosure (`apiName`).
@@ -221,7 +291,10 @@ function DecodedTree({
   }
   return (
     <details className="layer" open>
-      <summary className="layer__title">{apiName}</summary>
+      <summary className="layer__title">
+        <span className="layer__title-text">{apiName}</span>
+        <LayerCopyButton text={clipboardText} label={`${apiName} JSON`} />
+      </summary>
       <div className="layer__body proto-decoded-tree">{body}</div>
     </details>
   );

@@ -1077,6 +1077,40 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   color: var(--text);
   list-style: none;
   user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.layer__title-text {
+  flex: 1;
+  min-width: 0;
+}
+.layer__copy {
+  /* Pinned right of the summary, hover-revealed so the chrome stays
+   * quiet at rest. Click does NOT toggle the <details>. */
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.layer:hover > .layer__title > .layer__copy,
+.layer__title:focus-within > .layer__copy,
+.layer__copy:focus-visible {
+  opacity: 1;
+}
+.layer__copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .layer__title::-webkit-details-marker {
   display: none;
