@@ -1,6 +1,7 @@
 import { type JSX, type MouseEvent } from "react";
 import type { ProtoFrameDetail } from "../types";
 import { formatBytes } from "../lib/formatBytes";
+import { formatRtt } from "../lib/formatRtt";
 import type { DecodedFieldPair, ProtoFilterMode } from "../lib/protoFilter";
 
 /**
@@ -58,9 +59,12 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
               value={`${formatBytes(frame.captured)} of ${formatBytes(frame.size)} (truncated at 64 KiB cap — hex/decoded views show only this prefix)`}
             />
           ) : null}
-          {frame.direction === "recv" ? (
-            <Field name="rtt" value={`${frame.rttMs.toFixed(2)} ms`} />
-          ) : null}
+          {frame.direction === "recv"
+            ? (() => {
+                const fmt = formatRtt(frame.rttMs);
+                return <Field name="rtt" value={`${fmt.value}${fmt.unit ? ` ${fmt.unit}` : ""}`} />;
+              })()
+            : null}
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>

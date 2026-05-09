@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef, type JSX, type KeyboardEvent } from "reac
 import { List, type ListImperativeAPI, type RowComponentProps } from "react-window";
 import type { ProtoFrame } from "../types";
 import { formatBytes } from "../lib/formatBytes";
+import { formatRtt } from "../lib/formatRtt";
 import {
   applyFilter,
   isFilterEmpty,
@@ -404,12 +405,17 @@ function ProtoRow({
       </FilterableField>
       <span className="proto__col proto__col--rtt">
         {frame.direction === "recv" ? (
-          <>
-            {frame.rttMs.toFixed(2)}
-            <span className="proto__rtt-unit"> ms</span>
-          </>
+          (() => {
+            const fmt = formatRtt(frame.rttMs);
+            return (
+              <>
+                {fmt.value}
+                {fmt.unit ? <span className="proto__rtt-unit"> {fmt.unit}</span> : null}
+              </>
+            );
+          })()
         ) : (
-          "—"
+          <>—</>
         )}
       </span>
     </div>
