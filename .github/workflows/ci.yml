@@ -62,6 +62,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Save the cargo registry + target/ even when the job fails
+          # (clippy / fmt / test errors). Without this, a red run never
+          # writes the cache, so the *next* green run still has to
+          # re-download every crate. With it, a clippy fix on top of a
+          # red main hits the warm cache.
+          cache-on-failure: true
 
       - name: Tauri system deps (cached)
         # Tauri on Linux pulls webkit2gtk + glib + librsvg for the
