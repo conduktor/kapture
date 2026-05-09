@@ -37,7 +37,7 @@
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/sderosiaux/kapture/releases/latest/download/latest.json"],
+      "endpoints": ["https://github.com/conduktor/kapture/releases/latest/download/latest.json"],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJEMzRDMEE0OUE1MEE0QTMKUldTanBGQ2FwTUEwdldSY1REWmNJNE9UOElyRk41U0U0U0dubUNmVVdIazY5ODNmQjdYaWtJSmMK"
     }
   }

@@ -45,7 +45,7 @@ No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's 
 
 ## Install
 
-Download the latest bundle from [Releases](https://github.com/sderosiaux/kapture/releases/latest), unzip, and drag `Kapture.app` to `/Applications`. The app self-updates on each launch.
+Download the latest bundle from [Releases](https://github.com/conduktor/kapture/releases/latest), unzip, and drag `Kapture.app` to `/Applications`. The app self-updates on each launch.
 
 > macOS only at the moment. Linux / Windows planned.
 
@@ -66,8 +66,8 @@ See [CHANGELOG.md](CHANGELOG.md) for the full feature inventory grouped by area,
 
 ## Feedback
 
-- Email: [stephane@conduktor.io](mailto:stephane@conduktor.io)
-- Issues: https://github.com/sderosiaux/kapture/issues (will move to `conduktor/kapture`)
+- Email: [kapture@conduktor.io](mailto:kapture@conduktor.io)
+- Issues: https://github.com/conduktor/kapture/issues
 
 ## License
 

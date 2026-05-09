@@ -5,7 +5,7 @@ description = "Kapture — Wireshark for Kafka events"
 authors = ["Stephane Derosiaux"]
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/sderosiaux/kapture"
+repository = "https://github.com/conduktor/kapture"
 
 [lib]
 name = "kapture_lib"

@@ -114,7 +114,7 @@ export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
         className="statusbar__link"
         title="Email feedback to the author"
         onClick={() => {
-          void openUrl("mailto:stephane@conduktor.io?subject=Kapture%20feedback");
+          void openUrl("mailto:kapture@conduktor.io?subject=Kapture%20feedback");
         }}
       >
         feedback
@@ -127,7 +127,7 @@ export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
         className="statusbar__link"
         title="Open an issue on GitHub"
         onClick={() => {
-          void openUrl("https://github.com/sderosiaux/kapture/issues");
+          void openUrl("https://github.com/conduktor/kapture/issues");
         }}
       >
         github

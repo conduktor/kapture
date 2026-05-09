@@ -2,7 +2,7 @@
 
 The release pipeline is GitHub Actions on tag push (`v*`). It builds the Tauri app, signs the updater artifact, and uploads everything to a GitHub Release alongside `latest.json`.
 
-The in-app updater (`tauri-plugin-updater`) hits `https://github.com/sderosiaux/kapture/releases/latest/download/latest.json`, verifies the signature against the public key baked into `tauri.conf.json`, and prompts the user to install.
+The in-app updater (`tauri-plugin-updater`) hits `https://github.com/conduktor/kapture/releases/latest/download/latest.json`, verifies the signature against the public key baked into `tauri.conf.json`, and prompts the user to install.
 
 ## One-time setup
 
