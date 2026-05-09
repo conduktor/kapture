@@ -164,7 +164,7 @@ jobs:
           tar -czf "${ARTIFACT}" -C "${BUNDLE_DIR}" Kapture.app
           # `tauri signer sign` reads the private key from env, writes
           # <file>.sig next to the input.
-          pnpm tauri signer sign --no-confirm "${ARTIFACT}"
+          pnpm tauri signer sign "${ARTIFACT}"
           echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
 
       - name: Generate latest.json manifest
