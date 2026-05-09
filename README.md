@@ -11,10 +11,10 @@ Most engineers building apps on Kafka have no good way to see what their clients
 That's where the bad patterns hide:
 
 - `OffsetCommit` after every single record.
-- A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record.
+- A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record. [[example]](https://www.pagerduty.com/eng/august-28-kafka-outages-what-happened-and-how-were-improving/)
 - A `Metadata` storm because someone disabled the cache.
-- Tiny Produce batches behind a high message rate (`linger.ms=0` + tiny `batch.size`).
-- A consumer group rebalancing every few seconds because the heartbeat config is wrong.
+- Tiny Produce batches behind a high message rate (`linger.ms=0` + tiny `batch.size`). [[example]](https://cwiki.apache.org/confluence/display/KAFKA/KIP-1030%3A+Change+constraints+and+default+values+for+various+configurations)
+- A consumer group rebalancing every few seconds because the heartbeat config is wrong. [[example]](https://medium.com/@nishada/fixing-kafka-stream-consumer-rebalancing-babda7f2e333)
 
 Invisible from logs. Obvious once you see the protocol.
 
