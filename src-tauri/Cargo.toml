@@ -58,7 +58,7 @@ axum = "0.8"
 tower = "0.5"
 schemars = "1"
 subtle = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 hmac = "0.12"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 base64 = "0.22"
