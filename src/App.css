@@ -93,6 +93,7 @@ body,
   display: flex;
   align-items: flex-start;
   gap: 10px;
+  margin-bottom: 12px;
   padding: 10px 12px;
   background: color-mix(in srgb, var(--danger) 8%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
@@ -552,11 +553,16 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 .proto__col--broker {
   text-align: center;
 }
-/* When the column is wrapped by a FilterableCell (inline-flex), the
- * column's `text-align: center` only positions the wrapper, not its
- * inner content. Force the wrapper to center its own children too so
- * the conn·corr tuple visibly sits in the middle of the column. */
-.proto__col--broker.proto-cell--filterable {
+/* When the column is wrapped by a FilterableField, the default
+ * inline-flex container shrinks to fit content and lands at the start
+ * of the 110 px grid track — `text-align: center` doesn't reach the
+ * tuple inside. Promote to block-level flex so the wrapper fills the
+ * track and `justify-content: center` actually centers conn·corr. */
+.proto__col--broker.filterable-field {
+  /* Override the base `.filterable-field { justify-self: start }` so
+   * the wrapper actually fills the 110 px grid track; without this it
+   * stays content-sized and pinned left. */
+  justify-self: stretch;
   justify-content: center;
 }
 

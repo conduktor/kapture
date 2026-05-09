@@ -51,15 +51,13 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           <Field name="api_version" value={`v${String(frame.apiVersion)}`} />
           <Field name="connection_id" value={String(frame.connectionId)} />
           <Field name="corr_id" value={String(frame.corrId)} />
-          <Field name="size (wire)" value={formatBytes(frame.size)} />
-          <Field
-            name="captured"
-            value={
-              frame.captured === frame.size
-                ? `${formatBytes(frame.captured)} (full)`
-                : `${formatBytes(frame.captured)} of ${formatBytes(frame.size)} (truncated at 64 KiB cap)`
-            }
-          />
+          <Field name="size" value={formatBytes(frame.size)} />
+          {frame.captured < frame.size ? (
+            <Field
+              name="captured"
+              value={`${formatBytes(frame.captured)} of ${formatBytes(frame.size)} (truncated at 64 KiB cap — hex/decoded views show only this prefix)`}
+            />
+          ) : null}
           {frame.direction === "recv" ? (
             <Field name="rtt" value={`${frame.rttMs.toFixed(2)} ms`} />
           ) : null}
