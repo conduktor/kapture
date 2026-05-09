@@ -63,19 +63,18 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Tauri system deps
-        # Tauri on Linux pulls webkit2gtk + glib for the build. These
-        # are runtime deps of the bundle, but cargo check/test compiles
-        # the tauri crate which links against them.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libsoup-3.0-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
+      - name: Tauri system deps (cached)
+        # Tauri on Linux pulls webkit2gtk + glib + librsvg for the
+        # build. cargo check / clippy / test compile the tauri crate
+        # which links against them.
+        # The cached-action snapshots /var/cache/apt + the installed
+        # files on first run; later runs skip the 30+ s download. Bump
+        # `version:` to bust the cache deliberately when the package
+        # set changes.
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          version: "1"
 
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
