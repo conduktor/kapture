@@ -51,24 +51,6 @@ In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at
 
 Building from source: `pnpm install && pnpm tauri dev`.
 
-## Test it locally
-
-A docker stack is included with two clusters side-by-side so you can validate against canonical Apache Kafka and Redpanda in parallel:
-
-| Cluster      | Bootstrap         | Schema Registry          |
-| ------------ | ----------------- | ------------------------ |
-| Redpanda     | `localhost:19092` | `http://localhost:18081` |
-| Apache Kafka | `localhost:29092` | `http://localhost:28081` |
-
-```bash
-pnpm stack:up              # both clusters
-pnpm seed                  # 200 messages of mixed encodings (JSON, Avro, JSON Schema)
-pnpm seed:loop             # continuous ~10 msg/s
-pnpm stack:down            # tear it down
-```
-
-Then in Kapture, set upstream to one of the cluster addresses and produce/consume normally.
-
 ## Roadmap
 
 - **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, metadata storm, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
