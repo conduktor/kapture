@@ -8,13 +8,15 @@
 
 Most engineers building apps on Kafka have no good way to see what their clients actually do. Logs and dashboards don't show protocol exchanges, and topic browsers (Conduktor Console, Redpanda Console, AKHQ, Kafdrop) show data at rest, not the wire.
 
-That's where the bad patterns hide:
+That's where the trouble hides — both the bad patterns in your code and the silent drift bugs in your SDK:
 
 - `OffsetCommit` after every single record. [[example]](https://github.com/confluentinc/confluent-kafka-dotnet/issues/1081)
 - A fresh producer (full `ApiVersions` + `Metadata` + `InitProducerId` handshake) per record. [[example]](https://www.pagerduty.com/eng/august-28-kafka-outages-what-happened-and-how-were-improving/)
-- A `Metadata` storm because someone disabled the cache.
 - Tiny Produce batches behind a high message rate (`linger.ms=0` + tiny `batch.size`). [[example]](https://cwiki.apache.org/confluence/display/KAFKA/KIP-1030%3A+Change+constraints+and+default+values+for+various+configurations)
 - A consumer group rebalancing every few seconds because the heartbeat config is wrong. [[example]](https://medium.com/@nishada/fixing-kafka-stream-consumer-rebalancing-babda7f2e333)
+- A producer pinned to a stale leader after a broker restart — `Metadata` says leader is broker 50, `Produce` still goes to broker 34. [[example]](https://github.com/confluentinc/librdkafka/issues/4976)
+- A rolling upgrade where the client locks in the seed broker's `api_version` and breaks against older brokers. [[example]](https://github.com/tulios/kafkajs/issues/1656)
+- A SASL re-auth that dies on a clock-like cadence — `Session too short` on the second 2h hop. [[example]](https://github.com/aws/aws-msk-iam-auth/issues/176)
 
 Invisible from logs. Obvious once you see the protocol.
 
@@ -53,7 +55,8 @@ Building from source: `pnpm install && pnpm tauri dev`.
 
 ## Roadmap
 
-- **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, metadata storm, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
+- **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
+- **SDK drift detector.** Flag wire-level contradictions where the client and the broker's authoritative state disagree (stale-leader producing, mixed-version `api_version`, missing `LeaveGroup`, scheduled SASL re-auth breaks).
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
 

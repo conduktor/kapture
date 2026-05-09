@@ -88,6 +88,41 @@ _Why:_ This is what elevates Kapture above "Wireshark with a Kafka
 dissector". Not just frames, but _flags_. Heuristics are cheap,
 patterns are well-documented in Kafka client lore.
 
+### Protocol drift detector [M]
+
+Sister to the Anomaly banner: same surface (Expert info / banner),
+different signal class. Where the banner watches volumes and
+cadences, this watches _contradictions_ — places where the wire
+says one thing and the client does another. Fires on:
+
+- Stale-leader producing — client routes `Produce` to broker A
+  while the latest `MetadataResponse` named broker B as leader for
+  that partition.
+- Mixed-version `api_version` — request sent with a version the
+  target broker did not advertise in its `ApiVersionsResponse`
+  (rolling-upgrade hazard).
+- Topic-ID drift — same topic name appears with two different
+  topic IDs across `Metadata` responses but `Produce` routing did
+  not follow.
+- Missing `LeaveGroup` on shutdown — connection closed without a
+  clean group exit, leaving the coordinator to wait
+  `session.timeout.ms` before reassigning.
+- Stale-generation `OffsetCommit` — commit carries a `generation_id`
+  older than the latest `JoinGroupResponse`.
+- Idempotent producer wedge — `Produce` failures with PID errors
+  after a timeout, with no `InitProducerId` re-handshake on the
+  path.
+- Scheduled SASL re-auth break — `SaslAuthenticate` succeeds
+  initially, then the next scheduled re-auth fails on the same
+  connection on a clock-like cadence.
+
+_Why:_ These are the bugs that turn into multi-day incidents
+because the app symptom (timeout, wedge, no progress) is identical
+to a dozen other causes. The wire tells you which one in seconds —
+but only if the tool flags the contradiction. Patterns drawn from
+public issues in librdkafka, KafkaJS, confluent-kafka-go,
+aws-msk-iam-auth, and ClickHouse.
+
 ### Schema activity [S]
 
 Panel listing schema fetches: subject / id / kind (Avro/Protobuf/
