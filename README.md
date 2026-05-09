@@ -68,17 +68,6 @@ pnpm stack:down            # tear it down
 
 Then in Kapture, set upstream to one of the cluster addresses and produce/consume normally.
 
-## Stress test
-
-The numbers from a recent local run on M-series hardware, 80k × 4 KiB at 1.2k msg/s sustained:
-
-- Ring buffer at the byte cap (256 MiB exact).
-- Drop-oldest active, no crash, mem stable.
-- Producer p99 latency dominated by the proxy IPC path, not the broker.
-- All MCP tools (`kafka_snapshot`, `kafka_set_filter`, `kafka_inspect_frame`) responsive under load.
-
-`drops` you see are observability eviction (oldest captured frames being recycled to make room). The Kafka traffic itself is never lost — TCP flow control is the only backpressure mechanism between client and broker, and it works whether Kapture is in the middle or not.
-
 ## Roadmap
 
 - **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, metadata storm, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
