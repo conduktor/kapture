@@ -1,8 +1,9 @@
 name: Release
 
-# Triggered by pushing a tag like `v0.2.0`. Builds the Tauri app, signs the
-# updater artifact, and publishes everything to a GitHub Release alongside
-# `latest.json` (the manifest the in-app updater fetches).
+# Triggered by pushing a tag like `v0.2.0`. Builds the Tauri app for macOS
+# (Apple Silicon), Linux (x86_64) and Windows (x86_64), signs each updater
+# artifact, and publishes everything to a single GitHub Release alongside a
+# unified `latest.json` (the manifest the in-app updater fetches).
 #
 # Secrets required (set in repo settings):
 #   TAURI_SIGNING_PRIVATE_KEY            — Tauri updater signing private key
@@ -30,16 +31,15 @@ permissions:
   contents: write
 
 jobs:
-  release-macos:
-    name: macOS (aarch64)
-    runs-on: macos-14
-    timeout-minutes: 60
+  prep:
+    name: Prep (version + pubkey check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-          fetch-depth: 0
+      - uses: actions/checkout@v6
 
       - name: Read version from tag
         id: meta
@@ -51,9 +51,9 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Verify tag matches package versions
-        # Codex finding [15]: a tag of v0.2.0 must not advertise an artifact
-        # whose package.json / Cargo.toml / tauri.conf.json says 0.1.0.
-        # We fail early so the release never publishes a misleading version.
+        # A tag of v0.2.0 must not advertise an artifact whose package.json /
+        # Cargo.toml / tauri.conf.json says 0.1.0. We fail early so the
+        # release never publishes a misleading version.
         run: |
           set -euo pipefail
           EXPECTED="${{ steps.meta.outputs.version }}"
@@ -69,9 +69,8 @@ jobs:
           done
 
       - name: Verify updater pubkey is configured
-        # Codex finding [1]: prevent shipping a release whose tauri.conf.json
-        # still has the placeholder pubkey. The updater would silently fail
-        # for every user.
+        # Prevent shipping a release whose tauri.conf.json still has the
+        # placeholder pubkey. The updater would silently fail for every user.
         run: |
           set -euo pipefail
           PUB="$(jq -r '.plugins.updater.pubkey' src-tauri/tauri.conf.json)"
@@ -85,6 +84,18 @@ jobs:
             exit 1
           fi
 
+  build-macos:
+    name: Build macOS (aarch64)
+    needs: prep
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
       - name: Install Node + pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -97,23 +108,25 @@ jobs:
           cache: pnpm
 
       - name: Install Rust toolchain (pinned)
-        # Pin to a specific stable so a Rust release doesn't silently
-        # change codegen between v0.X and v0.X+1 of Kapture. Bump
-        # deliberately when MSRV / dependencies require it.
+        # Pin to a specific stable so a Rust release doesn't silently change
+        # codegen between v0.X and v0.X+1 of Kapture. Bump deliberately when
+        # MSRV / dependencies require it.
         uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: aarch64-apple-darwin
 
-      - name: pnpm install
-        run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile
 
       - name: Tauri build (release, no updater artifact yet)
         env:
-          # We sign manually after the bundle step; the workflow signs
-          # the produced .app.tar.gz with the updater key further down.
+          # We sign manually after notarization; the workflow signs the
+          # produced .app.tar.gz with the updater key further down.
           TAURI_SIGNING_PRIVATE_KEY: ""
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
-        run: pnpm tauri build --bundles app
+        # `app,dmg` produces both the .app (used for the updater tarball
+        # below) and the .dmg (shipped to Brew + manual download). Tauri
+        # builds the binary once and bundles in both formats.
+        run: pnpm tauri build --bundles app,dmg
 
       - name: Check Apple notarization secrets
         id: notarize_check
@@ -128,12 +141,29 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Locate dmg
+        id: dmg
+        run: |
+          set -euo pipefail
+          DMG="$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -n1)"
+          # Rename to a deterministic basename so Brew Cask + manual download
+          # links survive across releases without globbing surprises.
+          DEST="src-tauri/target/release/bundle/dmg/Kapture_${{ needs.prep.outputs.version }}_aarch64.dmg"
+          if [[ "${DMG}" != "${DEST}" ]]; then
+            mv "${DMG}" "${DEST}"
+          fi
+          echo "path=${DEST}" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${DEST}")" >> "$GITHUB_OUTPUT"
+
       - name: Notarize (Apple)
-        # Skipped if the Apple credentials are not provided. Releases
-        # without notarization are still installable but Gatekeeper will
-        # show a warning to the user. Codex finding [12].
-        # The `secrets` context is not allowed in step-level `if:` — we
-        # gate via the output of the preceding check step instead.
+        # Skipped if the Apple credentials are not provided. Releases without
+        # notarization are still installable but Gatekeeper will show a
+        # warning to the user. The `secrets` context is not allowed in
+        # step-level `if:` — we gate via the output of the preceding check.
+        # Both the .app (used by the updater tarball) and the .dmg (shipped
+        # to Brew) are notarized + stapled. The .dmg notarization re-checks
+        # the contained .app on Apple's side so users who install via Brew
+        # don't see a Gatekeeper warning.
         if: steps.notarize_check.outputs.enabled == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -142,6 +172,8 @@ jobs:
         run: |
           set -euo pipefail
           APP_PATH="src-tauri/target/release/bundle/macos/Kapture.app"
+          DMG_PATH="${{ steps.dmg.outputs.path }}"
+
           ZIP="${APP_PATH%.app}-notarize.zip"
           /usr/bin/ditto -c -k --keepParent "${APP_PATH}" "${ZIP}"
           xcrun notarytool submit "${ZIP}" \
@@ -152,55 +184,421 @@ jobs:
           xcrun stapler staple "${APP_PATH}"
           rm -f "${ZIP}"
 
+          xcrun notarytool submit "${DMG_PATH}" \
+            --apple-id "${APPLE_ID}" \
+            --password "${APPLE_APP_PASSWORD}" \
+            --team-id "${APPLE_TEAM_ID}" \
+            --wait
+          xcrun stapler staple "${DMG_PATH}"
+
       - name: Repackage and sign updater artifact
+        id: artifact
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           BUNDLE_DIR="src-tauri/target/release/bundle/macos"
-          ARTIFACT="${BUNDLE_DIR}/Kapture_${{ steps.meta.outputs.version }}_aarch64.app.tar.gz"
+          ARTIFACT="${BUNDLE_DIR}/Kapture_${{ needs.prep.outputs.version }}_aarch64.app.tar.gz"
 
           tar -czf "${ARTIFACT}" -C "${BUNDLE_DIR}" Kapture.app
           # `tauri signer sign` reads the private key from env, writes
           # <file>.sig next to the input.
           pnpm tauri signer sign "${ARTIFACT}"
-          echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
+          echo "path=${ARTIFACT}" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${ARTIFACT}")" >> "$GITHUB_OUTPUT"
 
-      - name: Generate latest.json manifest
+      - name: Compute dmg sha256
+        id: dmg_hash
         run: |
           set -euo pipefail
-          VERSION="${{ steps.meta.outputs.version }}"
-          ARTIFACT_BASENAME="$(basename "${ARTIFACT}")"
-          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          DOWNLOAD_BASE="https://github.com/${{ github.repository }}/releases/download/${{ steps.meta.outputs.tag }}"
-          NOTES_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.meta.outputs.tag }}"
-          # tauri-plugin-updater expects the .sig file's contents verbatim
-          # (it parses the minisign block including comments). jq's
-          # --rawfile preserves newlines correctly.
+          SHA="$(shasum -a 256 "${{ steps.dmg.outputs.path }}" | awk '{print $1}')"
+          echo "sha256=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Attach binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prep.outputs.tag }}
+          name: Kapture ${{ needs.prep.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.artifact.outputs.path }}
+            ${{ steps.artifact.outputs.path }}.sig
+            ${{ steps.dmg.outputs.path }}
+
+      - name: Emit updater manifest fragment
+        run: |
+          set -euo pipefail
+          mkdir -p manifest-out
           jq -n \
+            --arg platform "darwin-aarch64" \
+            --arg basename "${{ steps.artifact.outputs.basename }}" \
+            --rawfile sig "${{ steps.artifact.outputs.path }}.sig" \
+            '{platform: $platform, basename: $basename, signature: $sig}' \
+            > manifest-out/darwin-aarch64.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest-darwin-aarch64
+          path: manifest-out/darwin-aarch64.json
+          if-no-files-found: error
+
+      - name: Emit cask metadata
+        # Consumed by the update-cask job to rewrite Casks/kapture.rb on main
+        # with the new version + sha256 + dmg basename.
+        run: |
+          set -euo pipefail
+          mkdir -p cask-out
+          jq -n \
+            --arg version  "${{ needs.prep.outputs.version }}" \
+            --arg basename "${{ steps.dmg.outputs.basename }}" \
+            --arg sha256   "${{ steps.dmg_hash.outputs.sha256 }}" \
+            '{version: $version, basename: $basename, sha256: $sha256}' \
+            > cask-out/cask.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cask-meta
+          path: cask-out/cask.json
+          if-no-files-found: error
+
+  build-linux:
+    name: Build Linux (x86_64)
+    needs: prep
+    # Ubuntu 22.04 ships an older glibc than 24.04, which keeps the AppImage
+    # runnable on more distros. Bump only when target distros catch up.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Node + pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Tauri system deps
+        # Same set as ci.yml: webkit2gtk + glib + librsvg + appindicator +
+        # patchelf (needed by the AppImage bundler).
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          version: "1"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tauri build (release, with updater artifact)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # `--config` override turns on the AppImage updater artifact for this
+        # build only (tauri.conf.json keeps it off so local `pnpm tauri build`
+        # doesn't try to sign without a key).
+        run: |
+          pnpm tauri build \
+            --bundles deb,appimage \
+            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+
+      - name: Locate artifacts
+        id: artifact
+        run: |
+          set -euo pipefail
+          APPIMAGE_DIR="src-tauri/target/release/bundle/appimage"
+          DEB_DIR="src-tauri/target/release/bundle/deb"
+
+          # AppImage filenames are lowercase by convention on the linux
+          # bundler. Glob defensively in case Tauri changes the casing.
+          UPDATER="$(ls "${APPIMAGE_DIR}"/*.AppImage.tar.gz | head -n1)"
+          UPDATER_SIG="${UPDATER}.sig"
+          APPIMAGE="$(ls "${APPIMAGE_DIR}"/*.AppImage | head -n1)"
+          DEB="$(ls "${DEB_DIR}"/*.deb | head -n1)"
+
+          if [[ ! -f "${UPDATER_SIG}" ]]; then
+            echo "ERROR: ${UPDATER_SIG} missing — tauri build did not produce a signed updater artifact." >&2
+            exit 1
+          fi
+
+          echo "updater=${UPDATER}" >> "$GITHUB_OUTPUT"
+          echo "updater_sig=${UPDATER_SIG}" >> "$GITHUB_OUTPUT"
+          echo "appimage=${APPIMAGE}" >> "$GITHUB_OUTPUT"
+          echo "deb=${DEB}" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${UPDATER}")" >> "$GITHUB_OUTPUT"
+
+      - name: Attach binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prep.outputs.tag }}
+          name: Kapture ${{ needs.prep.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.artifact.outputs.updater }}
+            ${{ steps.artifact.outputs.updater_sig }}
+            ${{ steps.artifact.outputs.appimage }}
+            ${{ steps.artifact.outputs.deb }}
+
+      - name: Emit updater manifest fragment
+        run: |
+          set -euo pipefail
+          mkdir -p manifest-out
+          jq -n \
+            --arg platform "linux-x86_64" \
+            --arg basename "${{ steps.artifact.outputs.basename }}" \
+            --rawfile sig "${{ steps.artifact.outputs.updater_sig }}" \
+            '{platform: $platform, basename: $basename, signature: $sig}' \
+            > manifest-out/linux-x86_64.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest-linux-x86_64
+          path: manifest-out/linux-x86_64.json
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows (x86_64)
+    needs: prep
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Node + pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tauri build (release, with updater artifact)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        # No code-signing cert wired up — the .exe will trigger SmartScreen
+        # warnings on first run. Add WINDOWS_CERTIFICATE secrets and a
+        # signtool step here when a cert is acquired.
+        # Use bash on Windows so the JSON --config string keeps its quotes
+        # without pwsh escaping headaches.
+        shell: bash
+        run: |
+          pnpm tauri build \
+            --bundles nsis,msi \
+            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+
+      - name: Locate artifacts
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          NSIS_DIR="src-tauri/target/release/bundle/nsis"
+          MSI_DIR="src-tauri/target/release/bundle/msi"
+
+          UPDATER="$(ls "${NSIS_DIR}"/*-setup.nsis.zip | head -n1)"
+          UPDATER_SIG="${UPDATER}.sig"
+          SETUP="$(ls "${NSIS_DIR}"/*-setup.exe | head -n1)"
+          MSI="$(ls "${MSI_DIR}"/*.msi | head -n1)"
+
+          if [[ ! -f "${UPDATER_SIG}" ]]; then
+            echo "ERROR: ${UPDATER_SIG} missing — tauri build did not produce a signed updater artifact." >&2
+            exit 1
+          fi
+
+          echo "updater=${UPDATER}" >> "$GITHUB_OUTPUT"
+          echo "updater_sig=${UPDATER_SIG}" >> "$GITHUB_OUTPUT"
+          echo "setup=${SETUP}" >> "$GITHUB_OUTPUT"
+          echo "msi=${MSI}" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${UPDATER}")" >> "$GITHUB_OUTPUT"
+
+      - name: Attach binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prep.outputs.tag }}
+          name: Kapture ${{ needs.prep.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.artifact.outputs.updater }}
+            ${{ steps.artifact.outputs.updater_sig }}
+            ${{ steps.artifact.outputs.setup }}
+            ${{ steps.artifact.outputs.msi }}
+
+      - name: Emit updater manifest fragment
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p manifest-out
+          jq -n \
+            --arg platform "windows-x86_64" \
+            --arg basename "${{ steps.artifact.outputs.basename }}" \
+            --rawfile sig "${{ steps.artifact.outputs.updater_sig }}" \
+            '{platform: $platform, basename: $basename, signature: $sig}' \
+            > manifest-out/windows-x86_64.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifest-windows-x86_64
+          path: manifest-out/windows-x86_64.json
+          if-no-files-found: error
+
+  finalize:
+    name: Publish unified latest.json
+    needs: [prep, build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: manifests
+          pattern: manifest-*
+          merge-multiple: true
+
+      - name: Build unified latest.json
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.prep.outputs.version }}"
+          TAG="${{ needs.prep.outputs.tag }}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DOWNLOAD_BASE="https://github.com/${{ github.repository }}/releases/download/${TAG}"
+          NOTES_URL="${{ github.server_url }}/${{ github.repository }}/releases/tag/${TAG}"
+
+          # tauri-plugin-updater expects each `.signature` field to contain
+          # the entire .sig file verbatim (minisign block including comments
+          # and newlines). --rawfile in each fragment job preserved that.
+          jq -s \
             --arg version  "${VERSION}" \
             --arg pub_date "${PUB_DATE}" \
             --arg notes    "See release notes at ${NOTES_URL}" \
-            --rawfile sig  "${ARTIFACT}.sig" \
-            --arg url      "${DOWNLOAD_BASE}/${ARTIFACT_BASENAME}" \
+            --arg base     "${DOWNLOAD_BASE}" \
             '{
               version: $version,
               notes: $notes,
               pub_date: $pub_date,
-              platforms: {
-                "darwin-aarch64": { signature: $sig, url: $url }
-              }
-            }' > latest.json
+              platforms: (
+                map({
+                  (.platform): {
+                    signature: .signature,
+                    url: ($base + "/" + .basename)
+                  }
+                }) | add
+              )
+            }' \
+            manifests/*.json > latest.json
           cat latest.json
 
-      - name: Create / update GitHub Release
+      - name: Attach latest.json to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: Kapture ${{ steps.meta.outputs.tag }}
-          generate_release_notes: true
-          files: |
-            ${{ env.ARTIFACT }}
-            ${{ env.ARTIFACT }}.sig
-            latest.json
+          tag_name: ${{ needs.prep.outputs.tag }}
+          files: latest.json
+
+  update-cask:
+    name: Update Brew Cask
+    needs: [prep, build-macos, finalize]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        # Cask file lives on main, not on the tag. Tags are immutable, so we
+        # commit the bumped Casks/kapture.rb to main.
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cask-meta
+          path: cask-meta
+
+      - name: Rewrite Casks/kapture.rb
+        run: |
+          set -euo pipefail
+          VERSION="$(jq -r '.version' cask-meta/cask.json)"
+          SHA256="$(jq -r '.sha256' cask-meta/cask.json)"
+          BASENAME="$(jq -r '.basename' cask-meta/cask.json)"
+
+          # In-place rewrite of the three fields the cask exposes. The rest
+          # of the cask (name/desc/zap) stays human-edited in main.
+          python3 - "$VERSION" "$SHA256" "$BASENAME" <<'PY'
+          import re, sys, pathlib
+          version, sha256, basename = sys.argv[1], sys.argv[2], sys.argv[3]
+          path = pathlib.Path("Casks/kapture.rb")
+          src = path.read_text()
+          src = re.sub(r'version "[^"]*"', f'version "{version}"', src, count=1)
+          src = re.sub(r'sha256 "[^"]*"',   f'sha256 "{sha256}"',   src, count=1)
+          # The url line uses #{version} interpolation, so only the basename
+          # template needs an update if the bundler ever changes naming.
+          src = re.sub(r'KAPTURE_DMG_BASENAME\s*=\s*"[^"]*"',
+                       f'KAPTURE_DMG_BASENAME = "{basename}"', src, count=1)
+          path.write_text(src)
+          PY
+
+      - name: Commit + push
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- Casks/kapture.rb; then
+            echo "Cask already up to date — nothing to commit."
+            exit 0
+          fi
+          git add Casks/kapture.rb
+          git commit -m "chore(cask): bump to ${{ needs.prep.outputs.tag }}"
+          git push origin main
+
+  winget:
+    name: Submit to Winget
+    needs: [prep, build-windows, finalize]
+    runs-on: windows-latest
+    timeout-minutes: 10
+    # Skipped automatically when WINGET_TOKEN is unset (e.g. before the PAT
+    # is provisioned). Once the secret exists, every tag triggers a PR
+    # against microsoft/winget-pkgs.
+    if: ${{ vars.WINGET_ENABLED == 'true' }}
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: Conduktor.Kapture
+          version: ${{ needs.prep.outputs.version }}
+          # Match only the NSIS user-mode installer (`*-setup.exe`). The
+          # .msi is also on the release but we ship a single installer
+          # type to winget to keep the manifest unambiguous.
+          installers-regex: '-setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
