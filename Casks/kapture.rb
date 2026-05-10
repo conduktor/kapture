@@ -9,12 +9,12 @@
 #   brew install --cask kapture
 
 cask "kapture" do
-  version "0.1.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "0.2.0"
+  sha256 "74460e08024f97b296a27299e4585c823a56b669110fac91b730bbd2e87af915"
 
   # The bundler basename. Kept as a constant so the auto-bump workflow can
   # rewrite it deterministically without parsing Ruby string interpolation.
-  KAPTURE_DMG_BASENAME = "Kapture_0.1.0_aarch64.dmg"
+  KAPTURE_DMG_BASENAME = "Kapture_0.2.0_aarch64.dmg"
 
   url "https://github.com/conduktor/kapture/releases/download/v#{version}/#{KAPTURE_DMG_BASENAME}",
       verified: "github.com/conduktor/kapture/"
