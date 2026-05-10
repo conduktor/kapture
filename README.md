@@ -45,9 +45,26 @@ No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's 
 
 ## Install
 
-Download the latest bundle from [Releases](https://github.com/conduktor/kapture/releases/latest), unzip, and drag `Kapture.app` to `/Applications`. The app self-updates on each launch.
+The app self-updates on each launch on every platform.
 
-> macOS only at the moment. Linux / Windows planned.
+**macOS (Homebrew)** — Apple Silicon only:
+
+```sh
+brew tap conduktor/kapture https://github.com/conduktor/kapture
+brew install --cask kapture
+```
+
+> macOS will refuse to open the app the first time with a _"Kapture is damaged"_ warning. The app is not yet codesigned with an Apple Developer ID, so Gatekeeper rejects the quarantine attribute. Strip it once and the app launches normally:
+>
+> ```sh
+> xattr -cr /Applications/Kapture.app
+> ```
+
+**macOS (manual)** — download `Kapture_<version>_aarch64.dmg` from [Releases](https://github.com/conduktor/kapture/releases/latest), open it, drag `Kapture.app` to `/Applications`. Same `xattr -cr` workaround applies.
+
+**Linux** — `Kapture_<version>_amd64.AppImage` (chmod +x and run) or `Kapture_<version>_amd64.deb` (`sudo apt install ./Kapture_*.deb`). x86_64 only.
+
+**Windows** — `Kapture_<version>_x64-setup.exe` (NSIS installer) or `Kapture_<version>_x64_en-US.msi`. SmartScreen will warn on first run because the binary is not yet codesigned — click _More info_ → _Run anyway_.
 
 In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at your upstream broker (Confluent Cloud, MSK, your local docker, …). Configure SASL/TLS if needed. Hit Start. Then point any Kafka client at `127.0.0.1:9092` and watch.
 

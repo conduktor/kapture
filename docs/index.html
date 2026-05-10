@@ -6,7 +6,7 @@
     <title>Kapture: Wireshark for Kafka — decode the wire</title>
     <meta
       name="description"
-      content="Free macOS app to decode the Apache Kafka protocol on the wire. Catch SDK drift, rebalance loops, stale leaders & overcommits invisible from logs."
+      content="Free desktop app for macOS, Linux & Windows. Decodes the Apache Kafka protocol on the wire. Catch SDK drift, rebalance loops, stale leaders & overcommits invisible from logs."
     />
     <meta
       name="keywords"
@@ -26,7 +26,7 @@
     <meta property="og:title" content="Kapture — Wireshark for Kafka" />
     <meta
       property="og:description"
-      content="Free macOS app that decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms — bugs invisible from your application logs."
+      content="Free desktop app for macOS, Linux & Windows. Decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms — bugs invisible from your application logs."
     />
     <meta property="og:url" content="https://kapturekafka.dev/" />
     <meta property="og:site_name" content="Kapture" />
@@ -48,7 +48,7 @@
     <meta name="twitter:title" content="Kapture — Wireshark for Kafka" />
     <meta
       name="twitter:description"
-      content="Free macOS app that decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms."
+      content="Free desktop app for macOS, Linux & Windows. Decodes the Kafka protocol on the wire. Catch SDK drift, stale leaders, rebalance loops, OffsetCommit storms."
     />
     <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
     <meta
@@ -74,8 +74,8 @@
         "alternateName": "Wireshark for Kafka",
         "applicationCategory": "DeveloperApplication",
         "applicationSubCategory": "Network protocol analyzer",
-        "operatingSystem": "macOS",
-        "softwareVersion": "0.1.0",
+        "operatingSystem": "macOS, Linux, Windows",
+        "softwareVersion": "0.2.0",
         "dateModified": "2026-05-09",
         "url": "https://kapturekafka.dev/",
         "description": "Desktop app that proxies and decodes the Apache Kafka protocol between your client and the broker. Catches protocol-level anti-patterns invisible from application logs.",
@@ -120,7 +120,7 @@
             "name": "What is Kapture?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Kapture is a free macOS desktop app that proxies the Apache Kafka protocol between your client and the broker, decodes every frame, and shows you what is actually going through the wire."
+              "text": "Kapture is a free desktop app for macOS, Linux, and Windows that proxies the Apache Kafka protocol between your client and the broker, decodes every frame, and shows you what is actually going through the wire."
             }
           },
           {
@@ -144,7 +144,7 @@
             "name": "What authentication mechanisms does Kapture support?",
             "acceptedAnswer": {
               "@type": "Answer",
-              "text": "Kapture passes through SASL/PLAIN, SASL/SCRAM-SHA-256, SASL/SCRAM-SHA-512, TLS, and mTLS upstream. Connection credentials are saved locally and passwords are stored in the macOS keychain."
+              "text": "Kapture passes through SASL/PLAIN, SASL/SCRAM-SHA-256, SASL/SCRAM-SHA-512, TLS, and mTLS upstream. Connection credentials are saved locally and passwords are stored in the OS keychain (macOS Keychain, Linux Secret Service, or Windows Credential Manager)."
             }
           },
           {
@@ -1411,6 +1411,40 @@
         font-size: 13px;
         color: var(--accent);
       }
+      .tline-item pre {
+        background: #fff;
+        border: 1px solid var(--border);
+        padding: 12px 14px;
+        border-radius: 8px;
+        margin-top: 10px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .tline-item pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: var(--text);
+        font-size: inherit;
+      }
+      .tline-item .install-note {
+        margin-top: 12px;
+        font-size: 13.5px;
+        padding: 10px 12px;
+        background: #fff7ed;
+        border: 1px solid #fed7aa;
+        border-radius: 8px;
+        color: #7c2d12;
+      }
+      .tline-item .install-note code {
+        background: #fff;
+        border-color: #fed7aa;
+        color: #9a3412;
+      }
+      .tline-item .install-note strong {
+        color: #7c2d12;
+      }
 
       /* Dark section override (Why) */
       .section-dark {
@@ -1753,7 +1787,7 @@
               target="_blank"
               rel="noopener"
             >
-              Download for macOS
+              Download
             </a>
             <a
               class="btn btn-ghost btn-lg"
@@ -2759,9 +2793,9 @@
             <details class="faq-item">
               <summary><h3>What is Kapture?</h3></summary>
               <p>
-                Kapture is a free macOS desktop app that proxies the Apache Kafka protocol between
-                your client and the broker, decodes every frame, and shows you what's actually going
-                through the wire.
+                Kapture is a free desktop app for macOS, Linux, and Windows that proxies the Apache
+                Kafka protocol between your client and the broker, decodes every frame, and shows
+                you what's actually going through the wire.
               </p>
             </details>
 
@@ -2794,7 +2828,8 @@
               <p>
                 Kapture passes through <code>SASL/PLAIN</code>, <code>SASL/SCRAM-SHA-256</code>,
                 <code>SASL/SCRAM-SHA-512</code>, TLS, and mTLS upstream. Connection credentials are
-                saved locally; passwords are stored in the macOS keychain.
+                saved locally; passwords are stored in the OS keychain (macOS Keychain, Linux Secret
+                Service, or Windows Credential Manager).
               </p>
             </details>
 
@@ -2844,10 +2879,27 @@
               <span class="marker">1</span>
               <div>
                 <h3>Install Kapture</h3>
+                <p><strong>macOS (Apple Silicon)</strong> via Homebrew:</p>
+                <pre><code>brew tap conduktor/kapture https://github.com/conduktor/kapture
+brew install --cask kapture</code></pre>
                 <p>
-                  Download the latest bundle from Releases, unzip, and drag
-                  <code>Kapture.app</code> to <code>/Applications</code>. The app self-updates on
-                  each launch.
+                  <strong>Linux</strong> (<code>.AppImage</code> or <code>.deb</code>) and
+                  <strong>Windows</strong> (<code>.msi</code> or NSIS <code>.exe</code>): grab the
+                  bundle for your platform from
+                  <a
+                    href="https://github.com/conduktor/kapture/releases/latest"
+                    target="_blank"
+                    rel="noopener"
+                    >Releases</a
+                  >. The app self-updates on each launch.
+                </p>
+                <p class="install-note">
+                  <strong>macOS Gatekeeper:</strong> the app is not yet codesigned with an Apple
+                  Developer ID, so the first launch shows a <em>"Kapture is damaged"</em> warning.
+                  Strip the quarantine attribute once and the app opens normally:
+                  <code>xattr -cr /Applications/Kapture.app</code>.
+                  <strong>Windows SmartScreen</strong> shows a similar warning on first run — click
+                  <em>More info</em> → <em>Run anyway</em>.
                 </p>
               </div>
             </div>
@@ -2932,7 +2984,7 @@
       <div class="wrap foot">
         <div>
           <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
-          Apache-2.0. v0.1.0 · updated <time datetime="2026-05-09">May 2026</time>.
+          Apache-2.0. v0.2.0 · updated <time datetime="2026-05-09">May 2026</time>.
         </div>
         <div>
           <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
