@@ -325,23 +325,21 @@ jobs:
           APPIMAGE_DIR="src-tauri/target/release/bundle/appimage"
           DEB_DIR="src-tauri/target/release/bundle/deb"
 
-          # AppImage filenames are lowercase by convention on the linux
-          # bundler. Glob defensively in case Tauri changes the casing.
-          UPDATER="$(ls "${APPIMAGE_DIR}"/*.AppImage.tar.gz | head -n1)"
-          UPDATER_SIG="${UPDATER}.sig"
+          # Tauri 2 signs the AppImage directly (no .tar.gz wrapper). The
+          # AppImage IS the updater artifact + the user-facing binary.
           APPIMAGE="$(ls "${APPIMAGE_DIR}"/*.AppImage | head -n1)"
+          APPIMAGE_SIG="${APPIMAGE}.sig"
           DEB="$(ls "${DEB_DIR}"/*.deb | head -n1)"
 
-          if [[ ! -f "${UPDATER_SIG}" ]]; then
-            echo "ERROR: ${UPDATER_SIG} missing — tauri build did not produce a signed updater artifact." >&2
+          if [[ ! -f "${APPIMAGE_SIG}" ]]; then
+            echo "ERROR: ${APPIMAGE_SIG} missing — tauri build did not produce a signed updater artifact." >&2
             exit 1
           fi
 
-          echo "updater=${UPDATER}" >> "$GITHUB_OUTPUT"
-          echo "updater_sig=${UPDATER_SIG}" >> "$GITHUB_OUTPUT"
           echo "appimage=${APPIMAGE}" >> "$GITHUB_OUTPUT"
+          echo "appimage_sig=${APPIMAGE_SIG}" >> "$GITHUB_OUTPUT"
           echo "deb=${DEB}" >> "$GITHUB_OUTPUT"
-          echo "basename=$(basename "${UPDATER}")" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${APPIMAGE}")" >> "$GITHUB_OUTPUT"
 
       - name: Attach binaries to release
         uses: softprops/action-gh-release@v2
@@ -350,9 +348,8 @@ jobs:
           name: Kapture ${{ needs.prep.outputs.tag }}
           generate_release_notes: true
           files: |
-            ${{ steps.artifact.outputs.updater }}
-            ${{ steps.artifact.outputs.updater_sig }}
             ${{ steps.artifact.outputs.appimage }}
+            ${{ steps.artifact.outputs.appimage_sig }}
             ${{ steps.artifact.outputs.deb }}
 
       - name: Emit updater manifest fragment
@@ -362,7 +359,7 @@ jobs:
           jq -n \
             --arg platform "linux-x86_64" \
             --arg basename "${{ steps.artifact.outputs.basename }}" \
-            --rawfile sig "${{ steps.artifact.outputs.updater_sig }}" \
+            --rawfile sig "${{ steps.artifact.outputs.appimage_sig }}" \
             '{platform: $platform, basename: $basename, signature: $sig}' \
             > manifest-out/linux-x86_64.json
 
@@ -429,21 +426,22 @@ jobs:
           NSIS_DIR="src-tauri/target/release/bundle/nsis"
           MSI_DIR="src-tauri/target/release/bundle/msi"
 
-          UPDATER="$(ls "${NSIS_DIR}"/*-setup.nsis.zip | head -n1)"
-          UPDATER_SIG="${UPDATER}.sig"
+          # Tauri 2 signs the NSIS installer (.exe) directly — no .nsis.zip
+          # wrapper. The setup .exe IS the updater artifact + the user-facing
+          # installer.
           SETUP="$(ls "${NSIS_DIR}"/*-setup.exe | head -n1)"
+          SETUP_SIG="${SETUP}.sig"
           MSI="$(ls "${MSI_DIR}"/*.msi | head -n1)"
 
-          if [[ ! -f "${UPDATER_SIG}" ]]; then
-            echo "ERROR: ${UPDATER_SIG} missing — tauri build did not produce a signed updater artifact." >&2
+          if [[ ! -f "${SETUP_SIG}" ]]; then
+            echo "ERROR: ${SETUP_SIG} missing — tauri build did not produce a signed updater artifact." >&2
             exit 1
           fi
 
-          echo "updater=${UPDATER}" >> "$GITHUB_OUTPUT"
-          echo "updater_sig=${UPDATER_SIG}" >> "$GITHUB_OUTPUT"
           echo "setup=${SETUP}" >> "$GITHUB_OUTPUT"
+          echo "setup_sig=${SETUP_SIG}" >> "$GITHUB_OUTPUT"
           echo "msi=${MSI}" >> "$GITHUB_OUTPUT"
-          echo "basename=$(basename "${UPDATER}")" >> "$GITHUB_OUTPUT"
+          echo "basename=$(basename "${SETUP}")" >> "$GITHUB_OUTPUT"
 
       - name: Attach binaries to release
         uses: softprops/action-gh-release@v2
@@ -452,9 +450,8 @@ jobs:
           name: Kapture ${{ needs.prep.outputs.tag }}
           generate_release_notes: true
           files: |
-            ${{ steps.artifact.outputs.updater }}
-            ${{ steps.artifact.outputs.updater_sig }}
             ${{ steps.artifact.outputs.setup }}
+            ${{ steps.artifact.outputs.setup_sig }}
             ${{ steps.artifact.outputs.msi }}
 
       - name: Emit updater manifest fragment
@@ -465,7 +462,7 @@ jobs:
           jq -n \
             --arg platform "windows-x86_64" \
             --arg basename "${{ steps.artifact.outputs.basename }}" \
-            --rawfile sig "${{ steps.artifact.outputs.updater_sig }}" \
+            --rawfile sig "${{ steps.artifact.outputs.setup_sig }}" \
             '{platform: $platform, basename: $basename, signature: $sig}' \
             > manifest-out/windows-x86_64.json
 
