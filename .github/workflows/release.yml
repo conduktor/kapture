@@ -244,16 +244,15 @@ jobs:
           if-no-files-found: error
 
       - name: Emit cask metadata
-        # Consumed by the update-cask job to rewrite Casks/kapture.rb on main
-        # with the new version + sha256 + dmg basename.
+        # Consumed by the update-cask job to rewrite Casks/kapture.rb on
+        # main with the new version + sha256.
         run: |
           set -euo pipefail
           mkdir -p cask-out
           jq -n \
-            --arg version  "${{ needs.prep.outputs.version }}" \
-            --arg basename "${{ steps.dmg.outputs.basename }}" \
-            --arg sha256   "${{ steps.dmg_hash.outputs.sha256 }}" \
-            '{version: $version, basename: $basename, sha256: $sha256}' \
+            --arg version "${{ needs.prep.outputs.version }}" \
+            --arg sha256  "${{ steps.dmg_hash.outputs.sha256 }}" \
+            '{version: $version, sha256: $sha256}' \
             > cask-out/cask.json
 
       - uses: actions/upload-artifact@v4
@@ -549,21 +548,17 @@ jobs:
           set -euo pipefail
           VERSION="$(jq -r '.version' cask-meta/cask.json)"
           SHA256="$(jq -r '.sha256' cask-meta/cask.json)"
-          BASENAME="$(jq -r '.basename' cask-meta/cask.json)"
 
-          # In-place rewrite of the three fields the cask exposes. The rest
+          # In-place rewrite of the two volatile fields. The url line uses
+          # #{version} interpolation so it follows automatically. The rest
           # of the cask (name/desc/zap) stays human-edited in main.
-          python3 - "$VERSION" "$SHA256" "$BASENAME" <<'PY'
+          python3 - "$VERSION" "$SHA256" <<'PY'
           import re, sys, pathlib
-          version, sha256, basename = sys.argv[1], sys.argv[2], sys.argv[3]
+          version, sha256 = sys.argv[1], sys.argv[2]
           path = pathlib.Path("Casks/kapture.rb")
           src = path.read_text()
           src = re.sub(r'version "[^"]*"', f'version "{version}"', src, count=1)
           src = re.sub(r'sha256 "[^"]*"',   f'sha256 "{sha256}"',   src, count=1)
-          # The url line uses #{version} interpolation, so only the basename
-          # template needs an update if the bundler ever changes naming.
-          src = re.sub(r'KAPTURE_DMG_BASENAME\s*=\s*"[^"]*"',
-                       f'KAPTURE_DMG_BASENAME = "{basename}"', src, count=1)
           path.write_text(src)
           PY
 

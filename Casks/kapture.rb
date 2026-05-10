@@ -1,8 +1,8 @@
 # Homebrew Cask for Kapture.
 #
 # This file is auto-bumped by .github/workflows/release.yml (update-cask
-# job) on every tag push. Only `version`, `sha256` and KAPTURE_DMG_BASENAME
-# are rewritten — the rest is human-edited.
+# job) on every tag push. Only `version` and `sha256` are rewritten — the
+# rest is human-edited.
 #
 # Install:
 #   brew tap conduktor/kapture https://github.com/conduktor/kapture
@@ -12,11 +12,7 @@ cask "kapture" do
   version "0.2.0"
   sha256 "74460e08024f97b296a27299e4585c823a56b669110fac91b730bbd2e87af915"
 
-  # The bundler basename. Kept as a constant so the auto-bump workflow can
-  # rewrite it deterministically without parsing Ruby string interpolation.
-  KAPTURE_DMG_BASENAME = "Kapture_0.2.0_aarch64.dmg"
-
-  url "https://github.com/conduktor/kapture/releases/download/v#{version}/#{KAPTURE_DMG_BASENAME}",
+  url "https://github.com/conduktor/kapture/releases/download/v#{version}/Kapture_#{version}_aarch64.dmg",
       verified: "github.com/conduktor/kapture/"
 
   name "Kapture"
