@@ -14,7 +14,7 @@ use crate::anti_patterns::fold::AntiPatternsFold;
 use crate::anti_patterns::{AntiPatternKind, Severity};
 use crate::correlator::ProtoFrame;
 use crate::proto_event::ProtoDirection;
-use crate::proto_summary::{FrameSummary, ProducePartitionError};
+use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
 
 fn frame(id: &str, ts: &str, connection_id: i32, local_port: u16) -> ProtoFrame {
     ProtoFrame {
@@ -132,6 +132,7 @@ fn rebalance_loop_after_five_joins() {
             Some(&FrameSummary::JoinGroupRequest {
                 group_id: "g1".into(),
                 member_id: "m".into(),
+                protocols: vec!["range".into()],
             }),
         );
     }
@@ -359,6 +360,7 @@ fn tight_fetch_polling_fires() {
                 session_id: 1,
                 throttle_time_ms: 0,
                 response_size: 100,
+                errors: vec![],
             }),
         );
     }
@@ -381,6 +383,7 @@ fn fetch_session_error_cascade_fires_after_3() {
                 session_id: 1,
                 throttle_time_ms: 0,
                 response_size: 0,
+                errors: vec![],
             }),
         );
     }
@@ -460,6 +463,7 @@ fn classic_rebalance_on_kip848_cluster_fires() {
         Some(&FrameSummary::JoinGroupRequest {
             group_id: "g-classic".into(),
             member_id: String::new(),
+            protocols: vec!["range".into()],
         }),
     );
     assert!(fold
@@ -467,4 +471,171 @@ fn classic_rebalance_on_kip848_cluster_fires() {
         .detections
         .iter()
         .any(|d| d.kind == AntiPatternKind::ClassicRebalanceOnModernCluster));
+}
+
+// ---------- Phase B+ detectors (#19–#25) ----------
+
+#[test]
+fn message_too_large_rejected_fires() {
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("mtl", "t", 1, 9092);
+    fold.absorb(
+        &f,
+        Some(&FrameSummary::ProduceResponse {
+            errors: vec![ProducePartitionError {
+                topic: "orders".into(),
+                partition: 0,
+                error_code: 10,
+                current_leader_id: None,
+            }],
+            throttle_time_ms: 0,
+        }),
+    );
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::MessageTooLargeRejected && d.scope == "orders:0"));
+}
+
+#[test]
+fn offset_out_of_range_on_fetch_fires() {
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("oor", "t", 1, 9092);
+    fold.absorb(
+        &f,
+        Some(&FrameSummary::FetchResponse {
+            error_code: 0,
+            session_id: 0,
+            throttle_time_ms: 0,
+            response_size: 0,
+            errors: vec![TopicPartitionError {
+                topic: "t1".into(),
+                partition: 5,
+                error_code: 1,
+            }],
+        }),
+    );
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch && d.scope == "t1:5"));
+}
+
+#[test]
+fn cooperative_sticky_churn_fires() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..4 {
+        let f = frame(&format!("cs{i}"), "t", 1, 9092);
+        fold.absorb(
+            &f,
+            Some(&FrameSummary::JoinGroupRequest {
+                group_id: "g-coop".into(),
+                member_id: String::new(),
+                protocols: vec!["cooperative-sticky".into()],
+            }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::CooperativeStickyChurn && d.scope == "group=g-coop"));
+}
+
+#[test]
+fn commit_during_rebalance_fires() {
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("cdr", "t", 1, 9092);
+    fold.absorb(
+        &f,
+        Some(&FrameSummary::OffsetCommitResponse {
+            max_error_code: 27,
+            throttle_time_ms: 0,
+            errors: vec![TopicPartitionError {
+                topic: "t1".into(),
+                partition: 0,
+                error_code: 27,
+            }],
+        }),
+    );
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::CommitDuringRebalance && d.scope == "t1:0"));
+}
+
+#[test]
+fn acl_deny_fires_after_threshold() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..3 {
+        let f = frame(&format!("acl{i}"), "t", 7, 9092);
+        fold.absorb(
+            &f,
+            Some(&FrameSummary::FetchResponse {
+                error_code: 0,
+                session_id: 0,
+                throttle_time_ms: 0,
+                response_size: 0,
+                errors: vec![TopicPartitionError {
+                    topic: "t".into(),
+                    partition: 0,
+                    error_code: 29,
+                }],
+            }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::AclDeny && d.scope == "conn=7"));
+}
+
+#[test]
+fn unknown_topic_poll_loop_fires_after_threshold() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..3 {
+        let f = frame(&format!("utp{i}"), "t", 1, 9092);
+        fold.absorb(
+            &f,
+            Some(&FrameSummary::FetchResponse {
+                error_code: 0,
+                session_id: 0,
+                throttle_time_ms: 0,
+                response_size: 0,
+                errors: vec![TopicPartitionError {
+                    topic: "ghost".into(),
+                    partition: 0,
+                    error_code: 3,
+                }],
+            }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::UnknownTopicPollLoop && d.scope == "ghost:0"));
+}
+
+#[test]
+fn coordinator_churn_fires_after_threshold() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..4 {
+        let f = frame(&format!("cc{i}"), "t", 1, 9092);
+        fold.absorb(
+            &f,
+            Some(&FrameSummary::FindCoordinatorRequest {
+                keys: vec!["g-churn".into()],
+            }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::CoordinatorChurn && d.scope == "key=g-churn"));
 }

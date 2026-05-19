@@ -26,7 +26,14 @@ export type AntiPatternKind =
   | "fetchSessionErrorCascade"
   | "throttlePressure"
   | "metadataStorm"
-  | "classicRebalanceOnModernCluster";
+  | "classicRebalanceOnModernCluster"
+  | "messageTooLargeRejected"
+  | "offsetOutOfRangeOnFetch"
+  | "cooperativeStickyChurn"
+  | "commitDuringRebalance"
+  | "aclDeny"
+  | "unknownTopicPollLoop"
+  | "coordinatorChurn";
 
 export type Severity = "warn" | "note";
 
@@ -89,5 +96,19 @@ export function kindLabel(kind: AntiPatternKind): string {
       return "Metadata storm";
     case "classicRebalanceOnModernCluster":
       return "Classic rebalance on KIP-848 cluster";
+    case "messageTooLargeRejected":
+      return "Message too large rejected by broker";
+    case "offsetOutOfRangeOnFetch":
+      return "Offset out of range on Fetch";
+    case "cooperativeStickyChurn":
+      return "Cooperative-sticky rebalance churn";
+    case "commitDuringRebalance":
+      return "Offset commit during rebalance";
+    case "aclDeny":
+      return "ACL deny";
+    case "unknownTopicPollLoop":
+      return "Unknown-topic poll loop";
+    case "coordinatorChurn":
+      return "Coordinator churn";
   }
 }

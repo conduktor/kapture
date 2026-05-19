@@ -98,6 +98,34 @@ pub enum AntiPatternKind {
     /// advertises `ConsumerGroupHeartbeat` (api_key 68) — KIP-848
     /// incremental rebalance available, stop-the-world chosen instead.
     ClassicRebalanceOnModernCluster,
+    /// Broker rejected a `ProduceRequest` with `MESSAGE_TOO_LARGE` (10)
+    /// — producer + broker size-limit configs out of sync.
+    MessageTooLargeRejected,
+    /// `FetchResponse` per-partition `OFFSET_OUT_OF_RANGE` (1) — the
+    /// consumer is past the broker's log end. Auto-reset will mask it
+    /// but the underlying drift is real.
+    OffsetOutOfRangeOnFetch,
+    /// Repeated `JoinGroup` advertising `cooperative-sticky` — the
+    /// KAFKA-12896 leader-retrigger loop or a misconfigured incremental
+    /// rebalance. Distinct from the generic `RebalanceLoop`.
+    CooperativeStickyChurn,
+    /// `OffsetCommitResponse` per-partition `REBALANCE_IN_PROGRESS` (27)
+    /// — client committed mid-rebalance. Commit dropped; can cause
+    /// duplicate processing.
+    CommitDuringRebalance,
+    /// Any response with `TOPIC_AUTHORIZATION_FAILED` (29),
+    /// `GROUP_AUTHORIZATION_FAILED` (30), or
+    /// `CLUSTER_AUTHORIZATION_FAILED` (31). ACL deny — common
+    /// multi-tenant pain.
+    AclDeny,
+    /// Repeated `FetchResponse` per-partition `UNKNOWN_TOPIC_OR_PARTITION`
+    /// (3) on the same partition — consumer pointed at non-existent
+    /// or pending topic (KAFKA-3727).
+    UnknownTopicPollLoop,
+    /// Repeated `FindCoordinatorRequest` for the same group within the
+    /// rolling window — coordinator unstable or client churning
+    /// connections.
+    CoordinatorChurn,
 }
 
 impl AntiPatternKind {
@@ -122,6 +150,13 @@ impl AntiPatternKind {
             Self::ThrottlePressure => "Throttle pressure",
             Self::MetadataStorm => "Metadata storm",
             Self::ClassicRebalanceOnModernCluster => "Classic rebalance on KIP-848 cluster",
+            Self::MessageTooLargeRejected => "Message too large rejected by broker",
+            Self::OffsetOutOfRangeOnFetch => "Offset out of range on Fetch",
+            Self::CooperativeStickyChurn => "Cooperative-sticky rebalance churn",
+            Self::CommitDuringRebalance => "Offset commit during rebalance",
+            Self::AclDeny => "ACL deny",
+            Self::UnknownTopicPollLoop => "Unknown-topic poll loop",
+            Self::CoordinatorChurn => "Coordinator churn",
         }
     }
 }

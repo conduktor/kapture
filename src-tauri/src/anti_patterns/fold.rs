@@ -49,6 +49,16 @@ pub struct AntiPatternsFold {
     pub(super) metadata_requests: HashMap<i32, RollingWindow>,
     /// Ports where the broker advertised KIP-848 (api_key=68).
     pub(super) kip848_ports: HashSet<u16>,
+    /// Per-group `FindCoordinator` request timestamps (coordinator
+    /// churn).
+    pub(super) coordinator_requests: HashMap<String, RollingWindow>,
+    /// Per-(connection, topic, partition) timestamps of
+    /// `UNKNOWN_TOPIC_OR_PARTITION` fetch errors (UTOP poll loop).
+    pub(super) utop_per_partition: HashMap<(i32, String, i32), RollingWindow>,
+    /// Per-scope (principal stand-in: `conn=N`) ACL deny timestamps.
+    pub(super) acl_deny_window: HashMap<i32, RollingWindow>,
+    /// Per-group `JoinGroup` events that advertised `cooperative-sticky`.
+    pub(super) cooperative_sticky_joins: HashMap<String, RollingWindow>,
 }
 
 impl AntiPatternsFold {
@@ -60,6 +70,7 @@ impl AntiPatternsFold {
         self.dispatch(frame, s, now);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self, frame: &ProtoFrame, s: &FrameSummary, now: Instant) {
         // Throttle pressure detector runs on every response that carries
         // the field — kept out of the per-variant match for brevity.
@@ -69,9 +80,6 @@ impl AntiPatternsFold {
             FrameSummary::OffsetCommitRequest { group_id, .. } => {
                 self.on_offset_commit(frame, group_id, now);
             }
-            FrameSummary::JoinGroupRequest { group_id, .. } => {
-                self.on_join_group(frame, group_id, now);
-            }
             FrameSummary::InitProducerIdRequest {
                 transactional_id, ..
             } => {
@@ -79,6 +87,13 @@ impl AntiPatternsFold {
             }
             FrameSummary::AddPartitionsToTxnRequest { transactional_id } => {
                 self.on_add_partitions_to_txn(frame, transactional_id);
+            }
+            FrameSummary::JoinGroupRequest {
+                group_id,
+                protocols,
+                ..
+            } => {
+                self.on_join_group_request(frame, group_id, protocols, now);
             }
             FrameSummary::EndTxnRequest {
                 transactional_id,
@@ -109,6 +124,27 @@ impl AntiPatternsFold {
             FrameSummary::ProduceResponse { errors, .. } => {
                 self.on_produce_response(frame, errors);
             }
+            FrameSummary::OffsetCommitResponse { errors, .. } => {
+                self.on_offset_commit_response(frame, errors, now);
+            }
+            FrameSummary::FindCoordinatorRequest { keys } => {
+                self.on_find_coordinator_request(frame, keys, now);
+            }
+            FrameSummary::FindCoordinatorResponse { error_code, .. } => {
+                self.on_auth_error_response(frame, "FindCoordinator", *error_code, now);
+            }
+            FrameSummary::JoinGroupResponse { error_code, .. } => {
+                self.on_auth_error_response(frame, "JoinGroup", *error_code, now);
+            }
+            FrameSummary::SyncGroupResponse { error_code, .. } => {
+                self.on_auth_error_response(frame, "SyncGroup", *error_code, now);
+            }
+            FrameSummary::HeartbeatResponse { error_code, .. } => {
+                self.on_auth_error_response(frame, "Heartbeat", *error_code, now);
+            }
+            FrameSummary::LeaveGroupResponse { error_code, .. } => {
+                self.on_auth_error_response(frame, "LeaveGroup", *error_code, now);
+            }
             FrameSummary::ApiVersionsResponse { max_versions, .. } => {
                 self.on_api_versions_response(frame, max_versions);
             }
@@ -128,9 +164,10 @@ impl AntiPatternsFold {
             FrameSummary::FetchResponse {
                 error_code,
                 response_size,
+                errors,
                 ..
             } => {
-                self.on_fetch_response(frame, *error_code, *response_size, now);
+                self.on_fetch_response(frame, *error_code, *response_size, errors, now);
             }
             FrameSummary::SaslAuthenticateResponse {
                 error_code,
@@ -230,5 +267,9 @@ impl AntiPatternsFold {
         self.fetch_session_errors.clear();
         self.metadata_requests.clear();
         self.kip848_ports.clear();
+        self.coordinator_requests.clear();
+        self.utop_per_partition.clear();
+        self.acl_deny_window.clear();
+        self.cooperative_sticky_joins.clear();
     }
 }

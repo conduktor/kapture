@@ -11,18 +11,20 @@ use std::time::Instant;
 
 use crate::anti_patterns::fold::AntiPatternsFold;
 use crate::anti_patterns::state::{
-    AUTOCOMMIT_INTERVAL_MS, AUTOCOMMIT_INTERVAL_TOLERANCE, AUTOCOMMIT_MIN_SAMPLES,
-    COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES, FETCH_SESSION_ERRORS_THRESHOLD,
-    METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC, NON_IDEMPOTENT_MIN_SAMPLES,
-    OVERCOMMIT_MIN_SAMPLES, OVERCOMMIT_RATE_PER_SEC, PRODUCER_INSTANCE_LEAK_MIN_SAMPLES,
-    PRODUCER_INSTANCE_LEAK_PER_SEC, PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS,
-    RATE_QUEUE_CAP, RATE_WINDOW, REBALANCE_JOINS_IN_WINDOW, SASL_SHORT_SESSION_MS,
-    TIGHT_FETCH_AVG_RESPONSE_BYTES, TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES,
-    TINY_BATCH_MIN_PRODUCE_RATE, TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE,
+    ACL_DENY_THRESHOLD, AUTOCOMMIT_INTERVAL_MS, AUTOCOMMIT_INTERVAL_TOLERANCE,
+    AUTOCOMMIT_MIN_SAMPLES, COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES,
+    COOPERATIVE_STICKY_CHURN_THRESHOLD, COORDINATOR_CHURN_THRESHOLD,
+    FETCH_SESSION_ERRORS_THRESHOLD, METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC,
+    NON_IDEMPOTENT_MIN_SAMPLES, OVERCOMMIT_MIN_SAMPLES, OVERCOMMIT_RATE_PER_SEC,
+    PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
+    PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS, RATE_QUEUE_CAP, RATE_WINDOW,
+    REBALANCE_JOINS_IN_WINDOW, SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES,
+    TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE,
+    TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE, UNKNOWN_TOPIC_POLL_THRESHOLD,
 };
 use crate::anti_patterns::{AntiPatternKind, Severity};
 use crate::correlator::ProtoFrame;
-use crate::proto_summary::{FrameSummary, ProducePartitionError};
+use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
 
 /// `ConsumerGroupHeartbeat` API key — used to gate KIP-848 detection.
 const API_KEY_CONSUMER_GROUP_HEARTBEAT: i16 = 68;
@@ -337,7 +339,25 @@ impl AntiPatternsFold {
         frame: &ProtoFrame,
         errors: &[ProducePartitionError],
     ) {
+        let now = Instant::now();
         for e in errors {
+            // MessageTooLargeRejected (#19): broker rejected the
+            // produce because it exceeded `message.max.bytes`.
+            if e.error_code == 10 {
+                self.upsert(
+                    AntiPatternKind::MessageTooLargeRejected,
+                    format!("{}:{}", e.topic, e.partition),
+                    Severity::Warn,
+                    format!("Message too large on {}:{}", e.topic, e.partition),
+                    "ProduceResponse partition error_code=10 (MESSAGE_TOO_LARGE) — producer's max.request.size cleared but broker's message.max.bytes (or topic-level max.message.bytes) rejected it. Align both sides.".into(),
+                    frame,
+                );
+                continue;
+            }
+            if matches!(e.error_code, 29..=31) {
+                self.fire_acl_deny(frame, "Produce", e.error_code, now);
+                continue;
+            }
             if !matches!(e.error_code, 6 | 47) {
                 continue;
             }
@@ -429,6 +449,46 @@ impl AntiPatternsFold {
         }
     }
 
+    pub(super) fn on_join_group_request(
+        &mut self,
+        frame: &ProtoFrame,
+        group_id: &str,
+        protocols: &[String],
+        now: Instant,
+    ) {
+        // Cooperative-sticky churn (#21): client uses cooperative-sticky
+        // and fires JoinGroup repeatedly. KAFKA-12896. Distinct from
+        // the generic rebalance loop in that it specifically flags
+        // the incremental-rebalance loop variant.
+        if protocols
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case("cooperative-sticky"))
+        {
+            let count = {
+                let w = self
+                    .cooperative_sticky_joins
+                    .entry(group_id.to_owned())
+                    .or_default();
+                w.push(now);
+                w.trim(now);
+                w.len()
+            };
+            if count >= COOPERATIVE_STICKY_CHURN_THRESHOLD {
+                self.upsert(
+                    AntiPatternKind::CooperativeStickyChurn,
+                    format!("group={group_id}"),
+                    Severity::Warn,
+                    format!("Cooperative-sticky churn on '{group_id}'"),
+                    format!(
+                        "{count} JoinGroup with cooperative-sticky in the rolling window — KAFKA-12896 leader-retrigger loop or unstable assignor.",
+                    ),
+                    frame,
+                );
+            }
+        }
+        self.on_join_group(frame, group_id, now);
+    }
+
     pub(super) fn on_join_group(&mut self, frame: &ProtoFrame, group_id: &str, now: Instant) {
         // Classic-protocol-on-modern-cluster detector — fires once if the
         // listener has seen ConsumerGroupHeartbeat advertised.
@@ -481,8 +541,47 @@ impl AntiPatternsFold {
         frame: &ProtoFrame,
         error_code: i16,
         response_size: u64,
+        errors: &[TopicPartitionError],
         now: Instant,
     ) {
+        // Per-partition errors → OffsetOutOfRange (1),
+        // UnknownTopicPollLoop (3), AclDeny (29/30/31).
+        for e in errors {
+            match e.error_code {
+                1 => self.upsert(
+                    AntiPatternKind::OffsetOutOfRangeOnFetch,
+                    format!("{}:{}", e.topic, e.partition),
+                    Severity::Warn,
+                    format!("Offset out of range on {}:{}", e.topic, e.partition),
+                    "FetchResponse partition error_code=1 (OFFSET_OUT_OF_RANGE) — consumer position past the broker's log end. auto.offset.reset may mask this but the drift is real.".into(),
+                    frame,
+                ),
+                3 => {
+                    let key = (frame.connection_id, e.topic.clone(), e.partition);
+                    let count = {
+                        let w = self.utop_per_partition.entry(key).or_default();
+                        w.push(now);
+                        w.trim(now);
+                        w.len()
+                    };
+                    if count >= UNKNOWN_TOPIC_POLL_THRESHOLD {
+                        self.upsert(
+                            AntiPatternKind::UnknownTopicPollLoop,
+                            format!("{}:{}", e.topic, e.partition),
+                            Severity::Warn,
+                            format!("Unknown-topic poll loop on {}:{}", e.topic, e.partition),
+                            format!(
+                                "{count} FetchResponse partition errors UNKNOWN_TOPIC_OR_PARTITION on the same partition. Consumer pointed at a non-existent or pending topic.",
+                            ),
+                            frame,
+                        );
+                    }
+                }
+                29..=31 => self.fire_acl_deny(frame, "Fetch", e.error_code, now),
+                _ => {}
+            }
+        }
+
         // Fetch-session error cascade.
         if matches!(error_code, 70 | 71) {
             let count = {
@@ -687,6 +786,98 @@ impl AntiPatternsFold {
                 ),
                 format!(
                     "session_lifetime_ms dropped from {prev} to {session_lifetime_ms} on re-auth #{count}",
+                ),
+                frame,
+            );
+        }
+    }
+
+    pub(super) fn on_offset_commit_response(
+        &mut self,
+        frame: &ProtoFrame,
+        errors: &[TopicPartitionError],
+        now: Instant,
+    ) {
+        for e in errors {
+            match e.error_code {
+                27 => self.upsert(
+                    AntiPatternKind::CommitDuringRebalance,
+                    format!("{}:{}", e.topic, e.partition),
+                    Severity::Warn,
+                    format!("Commit during rebalance on {}:{}", e.topic, e.partition),
+                    "OffsetCommitResponse partition error_code=27 (REBALANCE_IN_PROGRESS) — commit dropped. Consumer can re-process the records after the rebalance settles (at-least-once duplicate window).".into(),
+                    frame,
+                ),
+                29..=31 => self.fire_acl_deny(frame, "OffsetCommit", e.error_code, now),
+                _ => {}
+            }
+        }
+    }
+
+    pub(super) fn on_find_coordinator_request(
+        &mut self,
+        frame: &ProtoFrame,
+        keys: &[String],
+        now: Instant,
+    ) {
+        for key in keys {
+            let count = {
+                let w = self.coordinator_requests.entry(key.clone()).or_default();
+                w.push(now);
+                w.trim(now);
+                w.len()
+            };
+            if count >= COORDINATOR_CHURN_THRESHOLD {
+                self.upsert(
+                    AntiPatternKind::CoordinatorChurn,
+                    format!("key={key}"),
+                    Severity::Warn,
+                    format!("Coordinator churn for '{key}'"),
+                    format!(
+                        "{count} FindCoordinatorRequest for the same key in the rolling window — coordinator unstable, broker GC pause, or client churning connections.",
+                    ),
+                    frame,
+                );
+            }
+        }
+    }
+
+    /// Catch-all auth-error funnel for response variants that only
+    /// carry a top-level `error_code`. ACL denies (29/30/31) flow
+    /// through `fire_acl_deny`; other codes are ignored here.
+    pub(super) fn on_auth_error_response(
+        &mut self,
+        frame: &ProtoFrame,
+        api_name: &str,
+        error_code: i16,
+        now: Instant,
+    ) {
+        if matches!(error_code, 29..=31) {
+            self.fire_acl_deny(frame, api_name, error_code, now);
+        }
+    }
+
+    fn fire_acl_deny(&mut self, frame: &ProtoFrame, api_name: &str, error_code: i16, now: Instant) {
+        let count = {
+            let w = self.acl_deny_window.entry(frame.connection_id).or_default();
+            w.push(now);
+            w.trim(now);
+            w.len()
+        };
+        if count >= ACL_DENY_THRESHOLD {
+            let name = match error_code {
+                29 => "TOPIC_AUTHORIZATION_FAILED",
+                30 => "GROUP_AUTHORIZATION_FAILED",
+                31 => "CLUSTER_AUTHORIZATION_FAILED",
+                _ => "AUTHORIZATION_FAILED",
+            };
+            self.upsert(
+                AntiPatternKind::AclDeny,
+                format!("conn={}", frame.connection_id),
+                Severity::Warn,
+                format!("ACL deny (conn {})", frame.connection_id),
+                format!(
+                    "{count} {name} errors on this connection (latest from {api_name}). Principal lacks the required ACL — fix grants or stop retrying blindly.",
                 ),
                 frame,
             );

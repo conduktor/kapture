@@ -276,6 +276,45 @@ services:
     restart: "no"
     networks: [kafka-scram]
 
+  # ──────────── Apache Kafka with ACLs (deny-by-default) ────────────
+  # Single-broker KRaft with the StandardAuthorizer + no grants for
+  # ANONYMOUS. PLAINTEXT clients are denied any topic / group /
+  # cluster operation with TOPIC_AUTHORIZATION_FAILED / GROUP_…
+  # ACL deny detector exercise. NEVER run with these settings in
+  # anything other than the test sandbox.
+  kafka-acl:
+    image: apache/kafka:latest
+    container_name: kapture-kafka-acl
+    profiles: ["acl"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      # Internal PLAINTEXT (broker↔controller, also super-user as
+      # ANONYMOUS) + external SASL_PLAINTEXT where `alice` has no ACL
+      # grants so any client op returns *_AUTHORIZATION_FAILED.
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,EXTERNAL://0.0.0.0:39097,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-acl:9092,EXTERNAL://localhost:39097"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-acl:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTHORIZER_CLASS_NAME: "org.apache.kafka.metadata.authorizer.StandardAuthorizer"
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      # ANONYMOUS = internal PLAINTEXT principal (broker self-registration).
+      # alice = SASL principal on external — no grants → denied.
+      KAFKA_SUPER_USERS: "User:ANONYMOUS"
+      KAFKA_SASL_ENABLED_MECHANISMS: "PLAIN"
+      KAFKA_LISTENER_NAME_EXTERNAL_SASL_ENABLED_MECHANISMS: "PLAIN"
+      KAFKA_LISTENER_NAME_EXTERNAL_PLAIN_SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin-secret" user_admin="admin-secret" user_alice="alice-secret";'
+      CLUSTER_ID: "kapture-acl-cluster"
+    ports:
+      - "39097:39097"
+    networks: [kafka-acl]
+
   # ──────────── Apache Kafka 3.7.0 — legacy decoder smoke ────────────
   # Pinned to the OLDEST apache/kafka image tag (Apache only started
   # publishing the official Docker image with 3.7). Used to verify
@@ -317,5 +356,7 @@ networks:
     name: kapture-kafka-mb
   kafka-sasl:
     name: kapture-kafka-sasl
+  kafka-acl:
+    name: kapture-kafka-acl
   kafka-scram:
     name: kapture-kafka-scram

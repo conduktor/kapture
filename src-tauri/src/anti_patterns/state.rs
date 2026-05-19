@@ -69,6 +69,22 @@ pub(super) const FETCH_SESSION_ERRORS_THRESHOLD: usize = 3;
 pub(super) const METADATA_STORM_RATE_PER_SEC: f64 = 10.0 / 60.0;
 pub(super) const METADATA_STORM_MIN_SAMPLES: usize = 10;
 
+/// Cooperative-sticky churn: at least this many `JoinGroup` frames
+/// using `cooperative-sticky` in the rolling window.
+pub(super) const COOPERATIVE_STICKY_CHURN_THRESHOLD: usize = 4;
+
+/// Coordinator churn: at least this many `FindCoordinatorRequest`
+/// frames for the same key in the rolling window.
+pub(super) const COORDINATOR_CHURN_THRESHOLD: usize = 4;
+
+/// Unknown-topic poll loop: at least this many `UNKNOWN_TOPIC_OR_PARTITION`
+/// errors on the same partition in the rolling window.
+pub(super) const UNKNOWN_TOPIC_POLL_THRESHOLD: usize = 3;
+
+/// ACL deny storm: at least this many auth errors (29/30/31) in the
+/// rolling window on the same scope.
+pub(super) const ACL_DENY_THRESHOLD: usize = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct DetectionKey {
     pub kind: AntiPatternKind,

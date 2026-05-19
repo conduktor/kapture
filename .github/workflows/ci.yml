@@ -121,9 +121,9 @@ jobs:
           packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
           version: "1"
 
-      - name: Bring up Kafka cluster zoo (kafka + mb + legacy + sasl)
+      - name: Bring up Kafka cluster zoo (kafka + mb + legacy + sasl + acl)
         run: |
-          docker compose --profile kafka --profile mb --profile legacy --profile sasl up -d
+          docker compose --profile kafka --profile mb --profile legacy --profile sasl --profile acl up -d
           docker compose ps
 
       - name: Wait for every bootstrap port
@@ -131,7 +131,7 @@ jobs:
         # don't all map to a TCP-ready external listener — wait for
         # each one explicitly so test start is deterministic.
         run: |
-          for port in 29092 39092 39093 39094 39096 49092; do
+          for port in 29092 39092 39093 39094 39096 49092 39097; do
             ok=""
             for _ in $(seq 1 60); do
               if (echo > /dev/tcp/localhost/$port) >/dev/null 2>&1; then
@@ -149,7 +149,7 @@ jobs:
           done
         shell: bash
 
-      - name: Run all 18 anti-pattern detector tests against real brokers
+      - name: Run all 25 anti-pattern detector tests against real brokers
         env:
           # `kafka` profile (single-broker, latest)
           KAPTURE_KAFKA_BOOTSTRAP: localhost:29092
@@ -159,14 +159,19 @@ jobs:
           KAPTURE_KAFKA_LEGACY: localhost:39096
           # `sasl` profile (SASL_PLAINTEXT, PLAIN)
           KAPTURE_KAFKA_SASL: localhost:49092
+          # `acl` profile (SASL_PLAINTEXT + deny-by-default ACLs)
+          KAPTURE_KAFKA_ACL: localhost:39097
         # `--test-threads=1` because each test owns its own proxy +
         # correlator and races would mix detections across the shared
-        # fold otherwise. We run both the original-7 integration file
-        # and the extended-11 file in sequence.
+        # fold otherwise. Three test crates run in sequence:
+        # - anti_patterns_integration  (original 7)
+        # - anti_patterns_extended     (next 11)
+        # - anti_patterns_more         (latest 7, ACL/UTOP/coordinator…)
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml \
             --test anti_patterns_integration \
             --test anti_patterns_extended \
+            --test anti_patterns_more \
             --all-features -- --test-threads=1
 
       - name: Dump broker logs on failure

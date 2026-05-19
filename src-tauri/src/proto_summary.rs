@@ -170,6 +170,10 @@ pub enum FrameSummary {
         /// Lets the tight-polling detector compute avg response size
         /// per connection.
         response_size: u64,
+        /// Per-partition non-zero errors. Feeds the
+        /// `OFFSET_OUT_OF_RANGE` (1), `UNKNOWN_TOPIC_OR_PARTITION` (3),
+        /// and ACL-deny detectors.
+        errors: Vec<TopicPartitionError>,
     },
     /// Topics + flags advertised in a `MetadataRequest`. Feeds the
     /// metadata-storm detector (rate per connection).
@@ -194,6 +198,10 @@ pub enum FrameSummary {
     JoinGroupRequest {
         group_id: String,
         member_id: String,
+        /// Assignor protocol names advertised by the member (e.g.
+        /// `["cooperative-sticky"]`, `["range", "roundrobin"]`). Feeds
+        /// the cooperative-sticky-churn detector (KAFKA-12896).
+        protocols: Vec<String>,
     },
     JoinGroupResponse {
         error_code: i16,
@@ -234,6 +242,10 @@ pub enum FrameSummary {
         /// nested partition results.
         max_error_code: i16,
         throttle_time_ms: i32,
+        /// Per-partition error codes (non-zero only). Feeds detectors
+        /// that need granularity beyond `max_error_code`, e.g.
+        /// `REBALANCE_IN_PROGRESS` (27) commit-during-rebalance.
+        errors: Vec<TopicPartitionError>,
     },
     /// SASL re-auth result. `session_lifetime_ms` is the broker-grant
     /// window the client is expected to schedule its next
@@ -268,6 +280,17 @@ pub struct BrokerEndpoint {
 pub struct TopicPartition {
     pub topic: String,
     pub partition: i32,
+}
+
+/// Per-partition non-zero error from any response that lists them
+/// (Fetch, OffsetCommit). `topic` may be empty for response variants
+/// that omit it (legacy versions).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TopicPartitionError {
+    pub topic: String,
+    pub partition: i32,
+    pub error_code: i16,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -466,9 +489,16 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
         }
         ApiKey::JoinGroup => {
             let req = JoinGroupRequest::decode(buf, version).ok()?;
+            let protocols: Vec<String> = req
+                .protocols
+                .iter()
+                .map(|p| p.name.to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             Some(FrameSummary::JoinGroupRequest {
                 group_id: req.group_id.0.to_string(),
                 member_id: req.member_id.to_string(),
+                protocols,
             })
         }
         ApiKey::SyncGroup => {
@@ -563,11 +593,25 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 .flat_map(|t| t.partitions.iter())
                 .map(|p| p.records.as_ref().map_or(0_u64, |r| r.len() as u64))
                 .sum();
+            let mut errors: Vec<TopicPartitionError> = Vec::new();
+            for t in &resp.responses {
+                let topic = t.topic.0.to_string();
+                for p in &t.partitions {
+                    if p.error_code != 0 {
+                        errors.push(TopicPartitionError {
+                            topic: topic.clone(),
+                            partition: p.partition_index,
+                            error_code: p.error_code,
+                        });
+                    }
+                }
+            }
             Some(FrameSummary::FetchResponse {
                 error_code: resp.error_code,
                 session_id: resp.session_id,
                 throttle_time_ms: resp.throttle_time_ms,
                 response_size,
+                errors,
             })
         }
         ApiKey::ApiVersions => {
@@ -676,9 +720,23 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 .map(|p| p.error_code)
                 .max()
                 .unwrap_or(0);
+            let mut errors: Vec<TopicPartitionError> = Vec::new();
+            for t in &resp.topics {
+                let topic = t.name.0.to_string();
+                for p in &t.partitions {
+                    if p.error_code != 0 {
+                        errors.push(TopicPartitionError {
+                            topic: topic.clone(),
+                            partition: p.partition_index,
+                            error_code: p.error_code,
+                        });
+                    }
+                }
+            }
             Some(FrameSummary::OffsetCommitResponse {
                 max_error_code,
                 throttle_time_ms: resp.throttle_time_ms,
+                errors,
             })
         }
         _ => None,
