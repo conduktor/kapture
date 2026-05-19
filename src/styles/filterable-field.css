@@ -1,0 +1,264 @@
+/* ---------- FilterableField (shared) ---------- *
+ * One canonical chrome for "this value can become a DSL predicate":
+ * naked funnel icon at the cell's right edge, hover-revealed,
+ * accent-pinned while the popover is open. Used everywhere we want
+ * to pivot a value to a filter (Messages list, LayerTree fields,
+ * etc.). The wrapper is `position: relative` so the absolute icon
+ * floats without participating in layout. */
+.filterable-field {
+  /* Inline-flex so the funnel rides right next to the value, with
+   * a 4 px gap, never at the cell's far edge. Both the value and
+   * the icon reserve width so revealing the icon doesn't shift
+   * content. `justify-self: start` is critical when the wrapper
+   * is itself a grid item (LayerTree's `.field` rows): without it
+   * the wrapper stretches to fill the 1fr track and the icon ends
+   * up at the panel's right edge. No-op in non-grid contexts
+   * (msglist cells where the wrapper sits inside the column). */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  justify-self: start;
+  vertical-align: middle;
+}
+.filterable-field--filterable {
+  cursor: pointer;
+}
+.filterable-field--filterable:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.filterable-field__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filterable-field__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+.filterable-field__icon svg {
+  display: block;
+}
+.filterable-field--filterable:hover .filterable-field__icon,
+.filterable-field--filterable:focus-within .filterable-field__icon,
+.filterable-field.is-menu-anchor .filterable-field__icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+.filterable-field__icon:hover {
+  color: var(--accent);
+}
+.filterable-field.is-menu-anchor .filterable-field__icon {
+  color: var(--accent);
+}
+
+/* Cells with a filter affordance: the chevron icon appears on hover and
+   is the primary "click for filter options" affordance. Right-click on
+   the cell still opens the menu — same target, no UI cost. */
+.msglist__col--filterable {
+  position: relative;
+  cursor: pointer;
+}
+.msglist__col--filterable:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.msglist__col-content {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+.msglist__filter-icon {
+  /* Naked funnel — no surrounding box. The cell has
+   * `position: relative` so the icon floats over the right edge
+   * without participating in layout. Padding gives a comfortable
+   * click target without making it look like a button. */
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.12s,
+    color 0.12s;
+}
+.msglist__filter-icon svg {
+  display: block;
+}
+.msglist__col--filterable:hover .msglist__filter-icon,
+.msglist__row:hover .msglist__filter-icon:focus-visible,
+.msglist__col--filterable.is-menu-anchor .msglist__filter-icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Pin the icon in the accent colour while its popover is open so
+ * the cell-row anchor is unambiguous even when the cursor drifts
+ * onto the popover. */
+.msglist__col--filterable.is-menu-anchor .msglist__filter-icon {
+  color: var(--accent);
+}
+.msglist__filter-icon:hover {
+  color: var(--accent);
+}
+.field--filterable {
+  cursor: pointer;
+}
+/* Lightweight section grouping: title sits inline on a horizontal
+ * rule (`──── Upstream ────────────`) — no boxed container. Plain
+ * <div> wrapper, NOT <fieldset>, because <legend> in flex containers
+ * doesn't participate in the flow on every browser and overlaps the
+ * first field. */
+.dialog__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin-top: 14px;
+}
+.dialog__section:first-of-type {
+  margin-top: 4px;
+}
+.dialog__section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.dialog__section-title::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+/* `<details>`-based collapsible variant. Reuses the same title chrome
+ * (uppercased label + trailing rule) but adds a chevron and makes the
+ * header click-to-toggle. Children stack with the same gap as a normal
+ * section once expanded. */
+.dialog__section--collapsible {
+  display: block;
+}
+.dialog__section--collapsible > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.dialog__section--collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+.dialog__section--collapsible > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  font-size: 10px;
+  color: var(--text-faint);
+  transition: transform 0.12s;
+}
+.dialog__section--collapsible[open] > summary::before {
+  transform: rotate(90deg);
+}
+.dialog__section--collapsible > .dialog__field {
+  margin-top: 10px;
+}
+.dialog__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dialog__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+.dialog__input {
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text);
+  outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+.dialog__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.dialog__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text);
+  user-select: none;
+}
+.dialog__error {
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: var(--radius);
+  color: var(--danger);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-word;
+}
+.dialog__test-result {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-word;
+}
+.dialog__test-result--ok {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: var(--success, #16a34a);
+}
+.dialog__profile-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+.dialog__profile-row select {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.dialog__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.dialog__actions .btn[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

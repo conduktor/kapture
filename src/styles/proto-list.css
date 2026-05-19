@@ -1,0 +1,566 @@
+/* ---------- Protocol list (reuses .msglist__head/row container) ---------- */
+.proto__col {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proto__ts-delta,
+.proto__api-ver,
+.proto__rtt-unit,
+.proto__corr-suffix {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: 4px;
+}
+/* Request|Response suffix on the API column. Slightly muted so the
+ * api name itself stays the primary signal, but readable enough that
+ * the direction is legible even when scanning fast. */
+.proto__api-suffix {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+/* Match grid template to the columns in ProtoList. The ts column needs
+ * room for HH:MM:SS.ffffff (15 mono glyphs ≈ 130 px) so the dropped
+ * suffix from `slice(11, 26)` actually fits without an ellipsis. The
+ * `api` column flexes (1fr) and absorbs spare width; everything else
+ * uses `minmax(0, …)` so cells can shrink below their content width
+ * (combined with `min-width: 0` on grid children, eg the FilterableCell
+ * inline-flex wrapper) when the horizontal splitter narrows the pane.
+ * Without `minmax(0, …)` the rightmost rtt column would bleed past the
+ * pane edge and overlap the detail panel header. */
+section.msglist[aria-label="Protocol frames"] .msglist__head,
+section.msglist[aria-label="Protocol frames"] .msglist__row {
+  /* Order: dir(30) | ts(FIXED 260) | api(flex) | size | conn | corr | rtt.
+   * The Timestamp column is fixed-width — never shrinks — because the
+   * full µs timestamp + the dim '+Δ' suffix must always be readable.
+   * size sits right after api so byte-magnitude tracks the verb that
+   * carried it. */
+  grid-template-columns:
+    20px 180px minmax(180px, 1fr) minmax(0, 70px)
+    minmax(0, 110px) minmax(0, 70px);
+}
+/* Grid children need `min-width: 0` to shrink below content size. The
+ * `proto__col` already declares `overflow: hidden` (ellipsis), but the
+ * FilterableCell wrapper uses `inline-flex` which defaults to
+ * `min-width: auto` and would prevent that shrink. */
+section.msglist[aria-label="Protocol frames"] .proto__col {
+  min-width: 0;
+}
+.proto__col--dir {
+  text-align: center;
+  font-weight: 700;
+}
+.proto__dir--send {
+  color: var(--accent);
+}
+.proto__dir--recv {
+  color: var(--success);
+}
+.proto__col--api {
+  font-weight: 500;
+}
+.proto__col--rtt,
+.proto__col--size {
+  text-align: right;
+}
+.proto__col--broker {
+  text-align: center;
+}
+/* When the column is wrapped by a FilterableField, the default
+ * inline-flex container shrinks to fit content and lands at the start
+ * of the 110 px grid track — `text-align: center` doesn't reach the
+ * tuple inside. Promote to block-level flex so the wrapper fills the
+ * track and `justify-content: center` actually centers conn·corr. */
+.proto__col--broker.filterable-field {
+  /* Override the base `.filterable-field { justify-self: start }` so
+   * the wrapper actually fills the 110 px grid track; without this it
+   * stays content-sized and pinned left. */
+  justify-self: stretch;
+  justify-content: center;
+}
+
+/* Hover-revealed ⊕/⊖ filter button on proto list cells. The icon sits
+ * inline next to the cell content and only turns visible when the cell
+ * is hovered — same affordance pattern as the message list, but scoped
+ * to the proto row container so it doesn't pick up unrelated styles. */
+.proto-cell--filterable {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.proto-cell__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.proto-cell__filter {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  height: 14px;
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 0.12s,
+    color 0.12s,
+    border-color 0.12s,
+    opacity 0.12s;
+}
+/* Float the filter button cluster absolutely against the cell's
+ * right edge so it never participates in the wrapper's inline-flex
+ * sizing — earlier `display: none ↔ inline-flex` toggling still
+ * shifted the cell content sideways on hover. The cell wrapper has
+ * `position: relative`. Hidden via opacity + pointer-events idle
+ * so it stays a real clickable target on hover/focus or when a
+ * predicate is active (the `:has()` chain pins it visible so the
+ * user sees which cell is currently filtered). */
+.proto-cell__filters {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.proto-cell--filterable:hover .proto-cell__filters,
+.proto-cell--filterable:focus-within .proto-cell__filters,
+.proto-cell--filterable:has(.proto-cell__filter.is-active) .proto-cell__filters {
+  opacity: 1;
+  pointer-events: auto;
+}
+/* Active include filter — accent (indigo) highlight to mirror the
+ * "filter chip" colour used in the top filter bar. */
+.proto-cell__filter--include.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+/* Active exclude filter — danger (red) highlight; same ADHD-friendly
+ * convention as the chip bar. */
+.proto-cell__filter--exclude.is-active {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.proto-cell__filter--include:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.proto-cell__filter--exclude:hover {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* Filter popover anchored under the ⊕ button. Two-row menu with an
+ * "Include" / "Exclude" pair plus a header showing the kind+value
+ * being filtered, so the action is unambiguous before clicking. */
+.proto-cell__popover {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  font-size: 12px;
+}
+.proto-cell__popover-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.proto-cell__popover-kind {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.proto-cell__popover-value {
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+.proto-cell__popover-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-size: 12px;
+  transition: background 0.12s;
+}
+.proto-cell__popover-item:first-of-type {
+  border-top: 0;
+}
+.proto-cell__popover-item:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+.proto-cell__popover-icon {
+  width: 18px;
+  display: inline-flex;
+  justify-content: center;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+.proto-cell__popover-item--include:hover .proto-cell__popover-icon {
+  color: var(--accent);
+}
+.proto-cell__popover-item--exclude:hover .proto-cell__popover-icon {
+  color: var(--danger);
+}
+
+/* Decoded-tree leaf value variant: same affordance, but the surrounding
+ * container is a grid cell of `.tree-node__summary` / `.field` so the
+ * hover trigger has to live on the row, not just on the value span. */
+.field__value--filterable {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.field__value-text {
+  word-break: break-all;
+}
+.tree-node__summary .proto-cell__filter,
+.field .proto-cell__filter {
+  visibility: hidden;
+}
+.tree-node__summary:hover .proto-cell__filter,
+.field:hover .proto-cell__filter {
+  visibility: visible;
+}
+
+/* Active filter chip bar above the proto list. */
+.proto-filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  font-size: 11px;
+}
+.proto-filterbar__label {
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+.proto-filterbar__count {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.proto-filterbar__clear {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.proto-filterbar__clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.proto-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.12s;
+}
+.proto-chip--include {
+  background: rgba(79, 70, 229, 0.1);
+  color: var(--accent);
+  border-color: rgba(79, 70, 229, 0.25);
+}
+.proto-chip--include:hover {
+  background: rgba(79, 70, 229, 0.18);
+}
+.proto-chip--exclude {
+  background: rgba(220, 38, 38, 0.08);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.25);
+}
+.proto-chip--exclude:hover {
+  background: rgba(220, 38, 38, 0.16);
+}
+.proto-chip__x {
+  opacity: 0.7;
+  font-weight: 600;
+}
+.proto-chip:hover .proto-chip__x {
+  opacity: 1;
+}
+
+/* Pair highlight: when a frame is selected, its request/response
+ * partner (same corrId+connectionId, opposite dir) gets a dashed accent
+ * border on the left so the eye can pair them across rows. */
+/* Live-tail flash. ::after overlay so it composes on top of the row's
+ * own background (transparent / hover / selected / paired stripe) and
+ * doesn't fight with them. pointer-events: none so the overlay never
+ * eats clicks meant for the row. */
+.msglist__row {
+  position: relative;
+}
+.msglist__row--fresh::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  opacity: 0.1;
+  pointer-events: none;
+  animation: msglist-row-flash 700ms ease-out forwards;
+}
+@keyframes msglist-row-flash {
+  from {
+    opacity: 0.16;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.msglist__row.is-paired {
+  background: rgba(79, 70, 229, 0.04);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.msglist__row.is-selected {
+  /* Override `is-paired` left-border so the selected row keeps a solid
+   * fill instead of competing with the pair accent. */
+  box-shadow: none;
+}
+.msglist__row--error {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+.msglist__row--error.is-selected {
+  /* Selected wins over the inset bar but keep the warm error tint so
+   * the user doesn't lose the cue when navigating. */
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-selected));
+  box-shadow: none;
+}
+.msglist__row--error .proto__dir--send,
+.msglist__row--error .proto__dir--recv {
+  color: var(--danger);
+}
+
+/* Tree node inside the decoded body — flat indented disclosure, no
+ * boxed card. Mirrors the `frame` Field grid (160 px name + 1 fr value)
+ * so column alignment carries through every nesting level. The chevron
+ * is absolutely positioned so it doesn't become a third grid item and
+ * shift the name/value columns. */
+.tree-node {
+  margin: 0;
+}
+.tree-node__summary {
+  position: relative;
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.tree-node__summary::-webkit-details-marker {
+  display: none;
+}
+.tree-node__summary::before {
+  content: "▸";
+  position: absolute;
+  left: -12px;
+  top: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  transition: transform 0.12s;
+}
+.tree-node[open] > .tree-node__summary::before {
+  transform: rotate(90deg);
+}
+.tree-node__summary:hover {
+  background: var(--bg-hover);
+  border-radius: 2px;
+}
+.tree-node__children {
+  margin-left: 16px;
+  padding-left: 4px;
+  border-left: 1px dashed var(--border);
+}
+
+/* Wider name column inside the decoded tree — kafka-protocol field
+ * names are routinely ~30+ chars (e.g. include_cluster_authorized_-
+ * operations) and overflow the .field default 160 px column.  */
+.proto-decoded-tree .field,
+.proto-decoded-tree .tree-node__summary {
+  grid-template-columns: 280px 1fr;
+}
+
+/* Pretty-printed Debug output of the decoded frame body (kafka-protocol). */
+.proto-decoded {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.4;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre;
+}
+
+/* Hex view inside the protocol detail panel */
+.proto-hex {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+.proto-hex__row {
+  display: grid;
+  grid-template-columns: 60px 1fr 180px;
+  gap: 12px;
+  align-items: baseline;
+}
+.proto-hex__off {
+  color: var(--text-faint);
+}
+.proto-hex__hex {
+  color: var(--text);
+}
+.proto-hex__ascii {
+  color: var(--text-muted);
+  white-space: pre;
+}
+.msglist__head {
+  padding: 6px 12px;
+}
+.msglist__head {
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10.5px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+}
+.msglist__body {
+  overflow: auto;
+  flex: 1;
+}
+.msglist__row {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+.msglist__row:hover {
+  background: var(--bg-hover);
+}
+.msglist__row.is-selected {
+  background: var(--bg-selected);
+}
+/* Suppress the default browser focus ring on row click — the row has
+ * `tabIndex={0}` for keyboard nav, so clicks would leave a leftover
+ * outline that looks like selection state. Keep an accessible indicator
+ * for keyboard users via :focus-visible only. */
+.msglist__row:focus {
+  outline: none;
+}
+.msglist__row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+/* Keyboard focus on a row that's also paired: layer the pair-accent
+ * left bar with the focus ring so neither is lost. */
+.msglist__row.is-paired:focus-visible {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 0 0 1px var(--accent);
+}
+.msglist__col {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msglist__col--paroff {
+  text-align: center;
+  color: var(--text-muted);
+}
+.msglist__offset-suffix {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-left: 2px;
+}
+.msglist__col--size {
+  text-align: right;
+  color: var(--text-muted);
+}
+.msglist__col--topic {
+  color: var(--accent);
+  font-weight: 500;
+}
+.msglist__empty {
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+}

@@ -1,0 +1,98 @@
+/* ---------- ConnectionDialog ---------- */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(2px);
+}
+.dialog {
+  width: min(440px, 92vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 22px;
+  box-shadow:
+    0 10px 30px rgba(0, 0, 0, 0.15),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.dialog__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.dialog__hint {
+  margin: 0;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.dialog__hint code {
+  font-family: var(--mono);
+  background: var(--bg-subtle);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+.dialog__hint-inline {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 11px;
+  margin-left: 6px;
+}
+.dialog__disclosure {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: left;
+  padding: 4px 0;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.dialog__disclosure:hover {
+  color: var(--accent);
+}
+.dialog__warn {
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+}
+.dialog__test {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  margin: 0;
+  border-left: 3px solid var(--border);
+}
+.dialog__test--ok {
+  background: rgba(16, 185, 129, 0.08);
+  color: var(--success);
+  border-left-color: var(--success);
+}
+.dialog__test--fail {
+  background: rgba(239, 68, 68, 0.08);
+  color: var(--danger);
+  border-left-color: var(--danger);
+}
+.dialog__test--pending {
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+}

@@ -1,0 +1,62 @@
+/* ---------- Layout ---------- */
+.layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.layout__main {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+/* Per-tab pane container, fills the remaining height under .tabs.
+   Grid template rows/columns are set inline from React state so the
+   splitter handles can drive them on drag. The default (Messages tab)
+   is a vertical stack of three rows; the protocol tab opts into a
+   horizontal split via the `--horizontal` modifier. */
+.layout__panes {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+}
+/* Side-by-side variant (Protocol tab). Three columns: list | handle |
+   detail. Each grid cell needs `min-width: 0` so child content with
+   long mono lines (decoded tree, hex dump) shrinks instead of blowing
+   the column out and triggering horizontal scroll on the wrapper. */
+.layout__panes--horizontal {
+  min-width: 0;
+}
+.layout__panes--horizontal > * {
+  min-width: 0;
+  min-height: 0;
+}
+/* Right pane of the Messages tab: stacks LayerTree above HexDump with
+   a draggable splitter between them. Inline `gridTemplateRows` carries
+   the user-resizable ratio. */
+.layout__msg-detail {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+.layout__msg-detail > * {
+  min-width: 0;
+  min-height: 0;
+}
+.splitter {
+  background: var(--border);
+  transition: background 0.1s;
+}
+.splitter--vertical {
+  height: 6px;
+  cursor: row-resize;
+}
+.splitter--horizontal {
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+}
+.splitter:hover,
+.splitter:active {
+  background: var(--accent);
+}

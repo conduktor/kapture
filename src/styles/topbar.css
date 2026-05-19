@@ -1,0 +1,190 @@
+/* ---------- TopBar ---------- */
+.topbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.topbar__cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.topbar__cluster:hover {
+  background: var(--bg-hover);
+  border-color: var(--accent);
+}
+.topbar__cluster-edit {
+  margin-left: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.topbar__cluster-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.topbar__cluster-dot[data-status="live"] {
+  background: var(--success);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.15);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.topbar__filter-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.topbar__filter {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  /* Trailing right-padding leaves room for the absolute-positioned
+     clear button so a long filter expression doesn't slide under it. */
+  padding: 8px 28px 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  color: var(--text);
+  outline: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+  width: 100%;
+}
+.topbar__filter-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+.topbar__filter-clear:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.topbar__filter-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.topbar__filter:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.topbar__filter--invalid {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+}
+.topbar__filter--invalid:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.2);
+}
+.topbar__filter-error {
+  position: absolute;
+  top: 100%;
+  margin-top: 4px;
+  left: 0;
+  right: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--danger);
+  background: var(--bg-elevated);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius);
+  padding: 4px 8px;
+  z-index: 10;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar__controls {
+  display: inline-flex;
+  gap: 6px;
+}
+.btn {
+  cursor: pointer;
+  font: inherit;
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s;
+}
+.btn:hover {
+  background: var(--bg-subtle);
+}
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.btn--primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.btn--primary[aria-pressed="true"] {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.btn--paused {
+  background: var(--warning);
+  color: white;
+  border-color: var(--warning);
+}
+/* Higher-specificity selector (`.btn.btn--paused:hover` = 0/3/0) so we
+ * dominate `.btn:hover` (0/2/0) which would otherwise repaint the bg
+ * to `var(--bg-subtle)` and hide the white label. The chained class
+ * is intentional — earlier `.btn--paused:hover` (0/2/0, same as
+ * `.btn:hover`) was tying on specificity and source-order resolution
+ * wasn't reliable through HMR. */
+.btn.btn--paused:hover,
+.btn.btn--paused:focus-visible {
+  background: var(--warning);
+  color: white;
+  border-color: var(--warning);
+  filter: brightness(1.08);
+}

@@ -1,0 +1,72 @@
+/* ---------- MessageList ---------- */
+.msglist {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  /* The section is `tabIndex=0` so arrow nav works (focus is funneled
+   * here on row click — see ProtoList/MessageList). The default focus
+   * ring on the whole section is noisy: row selection is already
+   * conveyed by `.msglist__row.is-selected`'s bg. Drop the outline. */
+  outline: none;
+  /* Enable container-query-driven progressive column hiding. The
+   * Protocol tab can be made very narrow via the horizontal splitter;
+   * we hide RTT → size → v → ts → conn/corr in priority order so the
+   * API and direction columns stay visible. */
+  container-type: inline-size;
+}
+/* Progressive disclosure for the Protocol tab grid. Order of removal
+ * (least useful first when space is tight): rtt, size, ts, v. We
+ * always keep dir + api + conn + corr visible because those are how
+ * users find what they're looking for. */
+section.msglist[aria-label="Protocol frames"] {
+  /* Tighten gap to claw back room before we start hiding. */
+}
+@container (max-width: 720px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--rtt {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      20px 180px minmax(180px, 1fr) minmax(0, 70px)
+      minmax(0, 80px);
+  }
+}
+@container (max-width: 620px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--size {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      20px 180px minmax(180px, 1fr)
+      minmax(0, 80px);
+  }
+}
+@container (max-width: 500px) {
+  section.msglist[aria-label="Protocol frames"] .proto__col--ts {
+    display: none;
+  }
+  section.msglist[aria-label="Protocol frames"] .msglist__row,
+  section.msglist[aria-label="Protocol frames"] .msglist__head {
+    grid-template-columns:
+      20px minmax(140px, 1fr)
+      minmax(0, 80px);
+  }
+}
+.msglist__virtual {
+  height: 100% !important;
+  width: 100% !important;
+}
+.msglist__head,
+.msglist__row {
+  display: grid;
+  grid-template-columns: 110px 1fr 140px 100px 80px;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  font-family: var(--mono);
+  font-size: 12px;
+}

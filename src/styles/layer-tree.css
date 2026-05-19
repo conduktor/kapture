@@ -1,0 +1,167 @@
+/* ---------- LayerTree ---------- */
+.layers {
+  overflow: auto;
+  padding: 12px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.layers--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.layer {
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.layer__title {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.layer__title-text {
+  flex: 1;
+  min-width: 0;
+}
+.layer__copy {
+  /* Pinned right of the summary, hover-revealed so the chrome stays
+   * quiet at rest. Click does NOT toggle the <details>. */
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.12s,
+    color 0.12s,
+    border-color 0.12s;
+}
+.layer:hover > .layer__title > .layer__copy,
+.layer__title:focus-within > .layer__copy,
+.layer__copy:focus-visible {
+  opacity: 1;
+}
+.layer__copy:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.layer__title::-webkit-details-marker {
+  display: none;
+}
+.layer__title::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+.layer[open] > .layer__title::before {
+  transform: rotate(90deg);
+}
+.layer__body {
+  padding: 6px 10px 10px 22px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.field {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+  align-items: center;
+}
+.field__name {
+  color: var(--text-muted);
+}
+.field__value {
+  color: var(--text);
+  word-break: break-all;
+}
+.field__name--with-icon,
+.field__value--with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.field__filter {
+  /* Idle: faint hint of an affordance. Hover: fully visible. Matches
+     the ⌄ chevron style used in the message list so the same pattern
+     reads consistently across the app. */
+  opacity: 0.35;
+  transition:
+    opacity 0.12s,
+    background 0.12s,
+    color 0.12s;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  height: 16px;
+  width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.field:hover .field__filter,
+.token-row:hover .field__filter {
+  opacity: 1;
+}
+.field:hover {
+  background: var(--bg-hover);
+  border-radius: 3px;
+}
+.field__filter:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.token-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.object__entry,
+.array__entry {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  padding: 2px 0;
+}
+.object__key,
+.array__idx {
+  color: var(--accent);
+}
+.token--string {
+  color: #047857;
+}
+.token--number {
+  color: #b45309;
+}
+.token--boolean {
+  color: #6d28d9;
+}
+.token--null {
+  color: var(--text-faint);
+}
+.token--bytes {
+  color: var(--text-muted);
+}

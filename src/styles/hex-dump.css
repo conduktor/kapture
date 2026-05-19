@@ -1,0 +1,29 @@
+/* ---------- HexDump ---------- */
+.hex {
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 10px 14px;
+  background: var(--bg-subtle);
+}
+.hex--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hex__row {
+  display: grid;
+  grid-template-columns: 80px 1fr 200px;
+  gap: 16px;
+  padding: 1px 0;
+}
+.hex__offset {
+  color: var(--text-faint);
+}
+.hex__bytes {
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+.hex__ascii {
+  color: var(--text-muted);
+}
