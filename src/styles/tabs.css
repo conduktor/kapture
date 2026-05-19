@@ -34,3 +34,7 @@
   font-size: 11px;
   margin-left: 4px;
 }
+.tabs__count--warn {
+  color: var(--warn, #c46a1e);
+  font-weight: 600;
+}

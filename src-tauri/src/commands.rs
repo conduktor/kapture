@@ -7,6 +7,7 @@ use tracing::info;
 
 use serde::Deserialize;
 
+use crate::anti_patterns::AntiPatternsSnapshot;
 use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
@@ -667,6 +668,17 @@ pub fn session_stats(state: State<'_, AppState>) -> SessionStats {
     state
         .correlator()
         .map(|c| c.session_stats())
+        .unwrap_or_default()
+}
+
+/// Detector output for the Expert tab. Same fold lifetime as
+/// `session_stats` — each detection is keyed by `(kind, scope)` and
+/// updated in place as new contributing frames arrive.
+#[tauri::command]
+pub fn anti_patterns(state: State<'_, AppState>) -> AntiPatternsSnapshot {
+    state
+        .correlator()
+        .map(|c| c.anti_patterns())
         .unwrap_or_default()
 }
 

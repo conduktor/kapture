@@ -50,16 +50,67 @@ pub enum FrameSummary {
         client_software_name: String,
         client_software_version: String,
     },
-    /// Topics + broker count advertised by a `MetadataResponse`. Used
-    /// to populate the "topics seen" set from the cluster's own view.
+    /// Broker-advertised max version per api key — drives the
+    /// "mixed `api_version` across brokers in rolling upgrade"
+    /// anti-pattern. We surface every (key, `max_version`) pair so
+    /// the detector can spot two upstream brokers advertising
+    /// different `max_version` for the same key.
+    ApiVersionsResponse {
+        error_code: i16,
+        /// `(api_key, max_version)` pairs.
+        max_versions: Vec<(i16, i16)>,
+    },
+    /// Topics + broker count advertised by a `MetadataResponse`,
+    /// plus the per-partition leader map needed for stale-leader
+    /// detection.
     MetadataResponse {
         topics: Vec<String>,
         brokers: u32,
+        /// `topic → [(partition_index, leader_id)]`. Empty when no
+        /// topics are returned. Used by the stale-leader detector
+        /// to compare leader hints against where Produce/Fetch
+        /// actually go.
+        leaders: Vec<TopicLeaders>,
+        /// `broker_id → "host:port"`. Lets the UI render meaningful
+        /// broker identities and the detector cross-check upstream
+        /// host attribution.
+        brokers_map: Vec<BrokerEndpoint>,
     },
-    /// Topic names a client wrote to. Record batches are *not*
-    /// decoded — payload values stay opaque.
+    /// Topic names + record-batch shape a client wrote to. Record
+    /// values stay opaque — we only crack the `RecordBatch` v2 header
+    /// to lift `record_count` (offset 57) and the per-batch length.
     ProduceRequest {
         topics: Vec<String>,
+        /// `(topic, partition_index)` pairs that the request
+        /// targets — feeds the stale-leader detector.
+        partitions: Vec<TopicPartition>,
+        /// Total number of records summed across every partition in
+        /// the request. `0` when records were truncated past the
+        /// captured prefix.
+        record_count: u32,
+        /// Total bytes of record payloads (`PartitionProduceData.records`
+        /// length, summed). Approximates `batch.size` consumption.
+        batch_bytes: u64,
+        /// Number of partition entries in the request. With
+        /// `record_count` this gives "records per batch", the key
+        /// signal for the tiny-batch detector.
+        batch_count: u32,
+        /// `true` when the request carries a non-empty
+        /// `transactional_id` — informational, not a detector input.
+        transactional: bool,
+    },
+    /// Per-partition error codes from a `ProduceResponse`. We surface
+    /// only entries with non-zero `error_code` and an optional
+    /// `current_leader` hint — those are the signals for the
+    /// stale-leader detector.
+    ProduceResponse {
+        errors: Vec<ProducePartitionError>,
+    },
+    /// Re-init handshake. The producer-per-record anti-pattern is
+    /// detectable from `InitProducerIdRequest` rate vs `ProduceRequest`
+    /// rate — every fresh-producer instance issues one.
+    InitProducerIdRequest {
+        transactional: bool,
     },
     /// Topic names a client read from. Same opacity rule for records.
     FetchRequest {
@@ -122,6 +173,52 @@ pub enum FrameSummary {
         /// nested partition results.
         max_error_code: i16,
     },
+    /// SASL re-auth result. `session_lifetime_ms` is the broker-grant
+    /// window the client is expected to schedule its next
+    /// `SaslAuthenticate` within. A sudden drop on re-auth ("Session
+    /// too short" in MSK IAM auth) shows up here as a tiny lifetime
+    /// or a non-zero `error_code`.
+    SaslAuthenticateResponse {
+        error_code: i16,
+        error_message: Option<String>,
+        session_lifetime_ms: i64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TopicLeaders {
+    pub topic: String,
+    /// `(partition_index, leader_id)`.
+    pub partitions: Vec<(i32, i32)>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerEndpoint {
+    pub node_id: i32,
+    pub host: String,
+    pub port: i32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TopicPartition {
+    pub topic: String,
+    pub partition: i32,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProducePartitionError {
+    pub topic: String,
+    pub partition: i32,
+    pub error_code: i16,
+    /// Set on v10+ Produce when the broker hints at the *new* leader
+    /// the producer should retry against. Useful context for the
+    /// stale-leader detector — the broker is telling us exactly
+    /// where the truth lies.
+    pub current_leader_id: Option<i32>,
 }
 
 /// Extract a [`FrameSummary`] from the raw wire bytes of a single
@@ -176,14 +273,46 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
         }
         ApiKey::Produce => {
             let req = ProduceRequest::decode(buf, version).ok()?;
+            let transactional = req
+                .transactional_id
+                .as_ref()
+                .is_some_and(|tid| !tid.0.is_empty());
+            let mut topics: Vec<String> = Vec::with_capacity(req.topic_data.len());
+            let mut partitions: Vec<TopicPartition> = Vec::new();
+            let mut record_count: u32 = 0;
+            let mut batch_bytes: u64 = 0;
+            let mut batch_count: u32 = 0;
+            for t in &req.topic_data {
+                let name = t.name.0.to_string();
+                if !name.is_empty() {
+                    topics.push(name.clone());
+                }
+                for p in &t.partition_data {
+                    partitions.push(TopicPartition {
+                        topic: name.clone(),
+                        partition: p.index,
+                    });
+                    batch_count = batch_count.saturating_add(1);
+                    if let Some(records) = &p.records {
+                        batch_bytes = batch_bytes.saturating_add(records.len() as u64);
+                        record_count =
+                            record_count.saturating_add(record_count_in_batches(records));
+                    }
+                }
+            }
             Some(FrameSummary::ProduceRequest {
-                topics: req
-                    .topic_data
-                    .into_iter()
-                    .map(|t| t.name.0.to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect(),
+                topics,
+                partitions,
+                record_count,
+                batch_bytes,
+                batch_count,
+                transactional,
             })
+        }
+        ApiKey::InitProducerId => {
+            let req = InitProducerIdRequest::decode(buf, version).ok()?;
+            let transactional = req.transactional_id.as_ref().is_some_and(|t| !t.is_empty());
+            Some(FrameSummary::InitProducerIdRequest { transactional })
         }
         ApiKey::Fetch => {
             let req = FetchRequest::decode(buf, version).ok()?;
@@ -255,18 +384,97 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSummary> {
     match api {
         ApiKey::Metadata => {
             let resp = MetadataResponse::decode(buf, version).ok()?;
+            let brokers = u32::try_from(resp.brokers.len()).unwrap_or(0);
+            let brokers_map: Vec<BrokerEndpoint> = resp
+                .brokers
+                .iter()
+                .map(|b| BrokerEndpoint {
+                    node_id: b.node_id.0,
+                    host: b.host.to_string(),
+                    port: b.port,
+                })
+                .collect();
+            let mut topic_names: Vec<String> = Vec::with_capacity(resp.topics.len());
+            let mut leaders: Vec<TopicLeaders> = Vec::with_capacity(resp.topics.len());
+            for t in resp.topics {
+                let Some(name) = t.name.map(|n| n.0.to_string()) else {
+                    continue;
+                };
+                if name.is_empty() {
+                    continue;
+                }
+                topic_names.push(name.clone());
+                let partitions: Vec<(i32, i32)> = t
+                    .partitions
+                    .iter()
+                    .map(|p| (p.partition_index, p.leader_id.0))
+                    .collect();
+                if !partitions.is_empty() {
+                    leaders.push(TopicLeaders {
+                        topic: name,
+                        partitions,
+                    });
+                }
+            }
             Some(FrameSummary::MetadataResponse {
-                topics: resp
-                    .topics
-                    .into_iter()
-                    .filter_map(|t| t.name.map(|n| n.0.to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect(),
-                brokers: u32::try_from(resp.brokers.len()).unwrap_or(0),
+                topics: topic_names,
+                brokers,
+                leaders,
+                brokers_map,
+            })
+        }
+        ApiKey::ApiVersions => {
+            let resp = ApiVersionsResponse::decode(buf, version).ok()?;
+            let max_versions: Vec<(i16, i16)> = resp
+                .api_keys
+                .iter()
+                .map(|k| (k.api_key, k.max_version))
+                .collect();
+            Some(FrameSummary::ApiVersionsResponse {
+                error_code: resp.error_code,
+                max_versions,
+            })
+        }
+        ApiKey::Produce => {
+            let resp = ProduceResponse::decode(buf, version).ok()?;
+            let mut errors: Vec<ProducePartitionError> = Vec::new();
+            for t in &resp.responses {
+                let topic = t.name.0.to_string();
+                for p in &t.partition_responses {
+                    if p.error_code == 0 {
+                        continue;
+                    }
+                    let current_leader_id = if p.current_leader.leader_id.0 >= 0 {
+                        Some(p.current_leader.leader_id.0)
+                    } else {
+                        None
+                    };
+                    errors.push(ProducePartitionError {
+                        topic: topic.clone(),
+                        partition: p.index,
+                        error_code: p.error_code,
+                        current_leader_id,
+                    });
+                }
+            }
+            Some(FrameSummary::ProduceResponse { errors })
+        }
+        ApiKey::SaslAuthenticate => {
+            let resp = SaslAuthenticateResponse::decode(buf, version).ok()?;
+            let error_message = resp
+                .error_message
+                .as_ref()
+                .map(std::string::ToString::to_string)
+                .filter(|s| !s.is_empty());
+            Some(FrameSummary::SaslAuthenticateResponse {
+                error_code: resp.error_code,
+                error_message,
+                session_lifetime_ms: resp.session_lifetime_ms,
             })
         }
         ApiKey::FindCoordinator => {
@@ -327,4 +535,71 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
         }
         _ => None,
     }
+}
+
+/// Walk one or more concatenated Kafka `RecordBatch` v2 frames and sum
+/// their `record_count` fields. Stops cleanly on truncation — the
+/// captured prefix may slice through a batch and we'd rather under-count
+/// than panic.
+///
+/// `RecordBatch` v2 wire layout (per Kafka protocol):
+/// ```text
+///   0..8    baseOffset                 i64
+///   8..12   batchLength                i32  (bytes after this field)
+///  12..16   partitionLeaderEpoch       i32
+///  16..17   magic                      i8   (== 2 for v2)
+///  17..21   crc                        i32
+///  21..23   attributes                 i16
+///  23..27   lastOffsetDelta            i32
+///  27..35   baseTimestamp              i64
+///  35..43   maxTimestamp               i64
+///  43..51   producerId                 i64
+///  51..53   producerEpoch              i16
+///  53..57   baseSequence               i32
+///  57..61   recordCount                i32
+///  61..     records[]
+/// ```
+fn record_count_in_batches(bytes: &[u8]) -> u32 {
+    const HEADER_LEN: usize = 61;
+    const BATCH_LENGTH_OFFSET: usize = 8;
+    const MAGIC_OFFSET: usize = 16;
+    const RECORD_COUNT_OFFSET: usize = 57;
+
+    let mut total: u32 = 0;
+    let mut cursor = 0_usize;
+    while cursor + HEADER_LEN <= bytes.len() {
+        // batchLength = bytes following this field. Total batch size
+        // on the wire is `12 + batchLength` (8 base offset + 4
+        // batchLength prefix).
+        let batch_length = u32::from_be_bytes([
+            bytes[cursor + BATCH_LENGTH_OFFSET],
+            bytes[cursor + BATCH_LENGTH_OFFSET + 1],
+            bytes[cursor + BATCH_LENGTH_OFFSET + 2],
+            bytes[cursor + BATCH_LENGTH_OFFSET + 3],
+        ]);
+        // Magic is a signed byte on the wire. We only care that
+        // it equals the v2 marker (2); a wrap-around to negative
+        // would still fail the `!= 2` check below.
+        let magic = i8::from_le_bytes([bytes[cursor + MAGIC_OFFSET]]);
+        if magic != 2 {
+            // v0/v1 message sets aren't aggregated — we'd need a
+            // different parser. Defensive default: stop walking.
+            break;
+        }
+        let count = i32::from_be_bytes([
+            bytes[cursor + RECORD_COUNT_OFFSET],
+            bytes[cursor + RECORD_COUNT_OFFSET + 1],
+            bytes[cursor + RECORD_COUNT_OFFSET + 2],
+            bytes[cursor + RECORD_COUNT_OFFSET + 3],
+        ]);
+        if count > 0 {
+            total = total.saturating_add(u32::try_from(count).unwrap_or(0));
+        }
+        let advance = 12_usize.saturating_add(batch_length as usize);
+        if advance == 0 {
+            break;
+        }
+        cursor = cursor.saturating_add(advance);
+    }
+    total
 }

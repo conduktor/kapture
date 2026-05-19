@@ -25,6 +25,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::anti_patterns::{AntiPatternsFold, AntiPatternsSnapshot};
 use crate::proto_decode;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proto_summary::{self, FrameSummary};
@@ -182,6 +183,9 @@ pub struct ProtoCorrelator {
     /// active are A, B" even after the originating frames scrolled
     /// out of `frames`.
     session: Mutex<SessionFold>,
+    /// Anti-pattern detectors — folded next to `session` and
+    /// surfaced to the Expert tab. Same eviction-survival logic.
+    anti_patterns: Mutex<AntiPatternsFold>,
 }
 
 #[derive(Debug, Default)]
@@ -263,6 +267,9 @@ impl ProtoCorrelator {
             // pushing — the frame may evict before the user opens
             // the Session Activity tab, but the aggregate persists.
             self.session.lock().absorb(&frame, frame.summary.as_ref());
+            self.anti_patterns
+                .lock()
+                .absorb(&frame, frame.summary.as_ref());
             let mut frames = self.frames.lock();
             frames.push_back(frame);
             // Trim in a single batch when we exceed the cap by the
@@ -342,6 +349,7 @@ impl ProtoCorrelator {
     pub fn clear(&self) {
         self.frames.lock().clear();
         self.session.lock().clear();
+        self.anti_patterns.lock().clear();
         let mut state = self.state.write();
         state.by_connection.clear();
         state.latest = None;
@@ -353,6 +361,14 @@ impl ProtoCorrelator {
     #[must_use]
     pub fn session_stats(&self) -> SessionStats {
         self.session.lock().snapshot()
+    }
+
+    /// Snapshot of the anti-pattern detector fold. Returned to the
+    /// GUI by the `anti_patterns` Tauri command, polled by the
+    /// Expert tab.
+    #[must_use]
+    pub fn anti_patterns(&self) -> AntiPatternsSnapshot {
+        self.anti_patterns.lock().snapshot()
     }
 
     /// Approximation: returns the most-recent `Fetch` response across

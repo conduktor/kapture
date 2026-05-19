@@ -1,3 +1,4 @@
+mod anti_patterns;
 mod avro;
 mod commands;
 mod correlator;
@@ -33,6 +34,7 @@ mod state;
 /// pedantic-clippy doc rewrites on a lot of internal code that isn't
 /// part of any external contract.
 pub mod example_api {
+    pub use crate::anti_patterns::{AntiPatternKind, AntiPatternsSnapshot, Detection, Severity};
     pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
     pub use crate::message::CapturedMessage;
     pub use crate::proto_event::ProtoDirection;
@@ -106,6 +108,7 @@ pub fn run() {
             commands::inspect_message_by_id,
             commands::proto_frames,
             commands::session_stats,
+            commands::anti_patterns,
             commands::proto_frame_detail,
             commands::stats,
             commands::clear_buffer,

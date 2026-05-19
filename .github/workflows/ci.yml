@@ -85,3 +85,86 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
+
+  anti-patterns-integration:
+    name: Anti-patterns integration (7/7 real brokers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The 7 detectors need different broker shapes:
+    #  - overcommit / producer-per-record / tiny-batches / rebalance-loop
+    #    → any single broker (we use the kafka:latest from the `kafka` profile)
+    #  - stale-leader-producing → 3-broker KRaft cluster (`mb` profile, ports 39092/93/94)
+    #    so RF=2 spreads leadership and we can target a non-leader.
+    #  - mixed-api-version → two brokers of different Kafka versions
+    #    (`kafka` profile latest + `legacy` profile 3.7.0).
+    #  - sasl-session-too-short → SASL_PLAINTEXT broker (`sasl` profile, port 49092)
+    #    so a wrong-password SaslAuthenticate produces error_code=58.
+    # We bring up all profiles via docker compose rather than GHA service
+    # containers because the latter don't support per-service profiles +
+    # custom commands cleanly.
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Tauri system deps (cached)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          version: "1"
+
+      - name: Bring up Kafka cluster zoo (kafka + mb + legacy + sasl)
+        run: |
+          docker compose --profile kafka --profile mb --profile legacy --profile sasl up -d
+          docker compose ps
+
+      - name: Wait for every bootstrap port
+        # docker compose healthchecks guarantee broker readiness but
+        # don't all map to a TCP-ready external listener — wait for
+        # each one explicitly so test start is deterministic.
+        run: |
+          for port in 29092 39092 39093 39094 39096 49092; do
+            ok=""
+            for _ in $(seq 1 60); do
+              if (echo > /dev/tcp/localhost/$port) >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            if [ -z "$ok" ]; then
+              echo "broker port $port never came up"
+              docker compose logs --tail=200
+              exit 1
+            fi
+            echo "$port ready"
+          done
+        shell: bash
+
+      - name: Run all 7 anti-pattern detector tests against real brokers
+        env:
+          # `kafka` profile (single-broker, latest)
+          KAPTURE_KAFKA_BOOTSTRAP: localhost:29092
+          # `mb` profile (3-broker, RF=2-capable)
+          KAPTURE_KAFKA_MB_BROKERS: localhost:39092,localhost:39093,localhost:39094
+          # `legacy` profile (Apache Kafka 3.7.0)
+          KAPTURE_KAFKA_LEGACY: localhost:39096
+          # `sasl` profile (SASL_PLAINTEXT, PLAIN)
+          KAPTURE_KAFKA_SASL: localhost:49092
+        # `--test-threads=1` because each test owns its own proxy +
+        # correlator and races would mix detections across the shared
+        # fold otherwise.
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --test anti_patterns_integration --all-features -- --test-threads=1
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: docker compose logs --tail=300

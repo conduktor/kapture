@@ -30,7 +30,9 @@ import {
 } from "./lib/protoFilter";
 import { BrokersTab } from "./components/BrokersTab";
 import { SessionActivityTab } from "./components/SessionActivityTab";
+import { ExpertTab } from "./components/ExpertTab";
 import type { SessionStats } from "./lib/sessionStats";
+import { EMPTY_ANTI_PATTERNS, type AntiPatternsSnapshot } from "./lib/antiPatterns";
 import type {
   CaptureStats,
   ConnectionState,
@@ -120,7 +122,9 @@ function App(): JSX.Element {
   // the disconnected workspace; the user re-opens via the cluster pill.
   const [editing, setEditing] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
-  const [tab, setTab] = useState<"messages" | "protocol" | "brokers" | "session">("messages");
+  const [tab, setTab] = useState<"messages" | "protocol" | "brokers" | "session" | "expert">(
+    "messages",
+  );
   // Lifted from StatusBar so the Brokers tab can read the same snapshot
   // without a second 1Hz poll. Null when no proxy is up (or before the
   // first tick lands).
@@ -133,6 +137,7 @@ function App(): JSX.Element {
     groups: [],
     errors: [],
   });
+  const [antiPatterns, setAntiPatterns] = useState<AntiPatternsSnapshot>(EMPTY_ANTI_PATTERNS);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
   const [selectedFrameDetail, setSelectedFrameDetail] = useState<ProtoFrameDetail | null>(null);
   // Top-textbox-driven filter for the protocol tab. The textbox is
@@ -289,13 +294,15 @@ function App(): JSX.Element {
         return;
       }
       try {
-        const [frames, stats] = await Promise.all([
+        const [frames, stats, ap] = await Promise.all([
           invoke<ProtoFrame[]>("proto_frames", { limit: 5000 }),
           invoke<SessionStats>("session_stats"),
+          invoke<AntiPatternsSnapshot>("anti_patterns"),
         ]);
         if (!cancelled) {
           setProtoFrames(frames);
           setSessionStats(stats);
+          setAntiPatterns(ap);
         }
       } catch (err) {
         if (!cancelled) {
@@ -770,6 +777,23 @@ function App(): JSX.Element {
             >
               Session
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === "expert"}
+              className={`tabs__tab${tab === "expert" ? " is-active" : ""}`}
+              onClick={() => {
+                setTab("expert");
+              }}
+              title="Wireshark-style Expert Info — detected client anti-patterns"
+            >
+              Expert
+              {antiPatterns.detections.length > 0 ? (
+                <span className="tabs__count tabs__count--warn">
+                  ({antiPatterns.detections.length})
+                </span>
+              ) : null}
+            </button>
           </div>
           {tab === "session" ? (
             <SessionActivityTab
@@ -783,6 +807,15 @@ function App(): JSX.Element {
                 if (frameId !== undefined) {
                   setSelectedFrameId(frameId);
                 }
+                setTab("protocol");
+              }}
+            />
+          ) : tab === "expert" ? (
+            <ExpertTab
+              snapshot={antiPatterns}
+              onJumpToFrame={(frameId) => {
+                setProtoFilterText("");
+                setSelectedFrameId(frameId);
                 setTab("protocol");
               }}
             />

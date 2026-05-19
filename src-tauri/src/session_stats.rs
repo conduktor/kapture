@@ -158,11 +158,18 @@ impl SessionFold {
                     self.topics.entry(name.clone()).or_default().metadata = true;
                 }
             }
-            FrameSummary::ProduceRequest { topics } => {
+            FrameSummary::ProduceRequest { topics, .. } => {
                 for name in topics {
                     self.topics.entry(name.clone()).or_default().produced = true;
                 }
             }
+            // New summaries surfaced only for the anti-pattern detector.
+            // SessionFold doesn't aggregate these — they intentionally
+            // fall through with no work.
+            FrameSummary::ApiVersionsResponse { .. }
+            | FrameSummary::ProduceResponse { .. }
+            | FrameSummary::InitProducerIdRequest { .. }
+            | FrameSummary::SaslAuthenticateResponse { .. } => {}
             FrameSummary::FetchRequest { topics } => {
                 for name in topics {
                     self.topics.entry(name.clone()).or_default().consumed = true;
