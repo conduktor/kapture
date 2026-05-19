@@ -149,7 +149,7 @@ jobs:
           done
         shell: bash
 
-      - name: Run all 7 anti-pattern detector tests against real brokers
+      - name: Run all 18 anti-pattern detector tests against real brokers
         env:
           # `kafka` profile (single-broker, latest)
           KAPTURE_KAFKA_BOOTSTRAP: localhost:29092
@@ -161,9 +161,13 @@ jobs:
           KAPTURE_KAFKA_SASL: localhost:49092
         # `--test-threads=1` because each test owns its own proxy +
         # correlator and races would mix detections across the shared
-        # fold otherwise.
+        # fold otherwise. We run both the original-7 integration file
+        # and the extended-11 file in sequence.
         run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --test anti_patterns_integration --all-features -- --test-threads=1
+          cargo test --manifest-path src-tauri/Cargo.toml \
+            --test anti_patterns_integration \
+            --test anti_patterns_extended \
+            --all-features -- --test-threads=1
 
       - name: Dump broker logs on failure
         if: failure()

@@ -24,7 +24,7 @@
 //! the local-dev debug session needs aren't there yet. Top-level
 //! `error_code`s on the small group RPCs cover the common cases.
 
-#![allow(clippy::wildcard_imports)]
+#![allow(clippy::wildcard_imports, clippy::doc_markdown)]
 
 use bytes::{Buf, Bytes};
 use kafka_protocol::messages::*;
@@ -75,10 +75,14 @@ pub enum FrameSummary {
         /// broker identities and the detector cross-check upstream
         /// host attribution.
         brokers_map: Vec<BrokerEndpoint>,
+        /// `throttle_time_ms > 0` indicates the broker delayed this
+        /// response due to a request-time quota.
+        throttle_time_ms: i32,
     },
     /// Topic names + record-batch shape a client wrote to. Record
     /// values stay opaque — we only crack the `RecordBatch` v2 header
-    /// to lift `record_count` (offset 57) and the per-batch length.
+    /// to lift `record_count` (offset 57), `attributes` (offset 21) and
+    /// `producerId` (offset 43) for the first batch in the request.
     ProduceRequest {
         topics: Vec<String>,
         /// `(topic, partition_index)` pairs that the request
@@ -98,6 +102,19 @@ pub enum FrameSummary {
         /// `true` when the request carries a non-empty
         /// `transactional_id` — informational, not a detector input.
         transactional: bool,
+        /// Durability ack mode requested by the client. `0` = fire-and-forget
+        /// (silent data loss on broker crash), `1` = leader-only, `-1`/`all`
+        /// = full ISR. Feeds the `acks=0` detector.
+        acks: i16,
+        /// Compression codec from the first `RecordBatch` v2 attributes
+        /// byte (lower 3 bits): 0=none, 1=gzip, 2=snappy, 3=lz4, 4=zstd.
+        /// `None` when no record batch was captured. Feeds the
+        /// compression-off detector.
+        first_batch_compression: Option<u8>,
+        /// `producerId` from the first captured RecordBatch v2 header.
+        /// `-1` indicates a non-idempotent producer (no exactly-once
+        /// guarantee on retries). Feeds the non-idempotent detector.
+        first_batch_producer_id: Option<i64>,
     },
     /// Per-partition error codes from a `ProduceResponse`. We surface
     /// only entries with non-zero `error_code` and an optional
@@ -105,16 +122,60 @@ pub enum FrameSummary {
     /// stale-leader detector.
     ProduceResponse {
         errors: Vec<ProducePartitionError>,
+        /// `throttle_time_ms > 0` indicates the broker delayed this
+        /// response due to a quota (byte-rate / request-time). KIP-219.
+        throttle_time_ms: i32,
     },
     /// Re-init handshake. The producer-per-record anti-pattern is
     /// detectable from `InitProducerIdRequest` rate vs `ProduceRequest`
     /// rate — every fresh-producer instance issues one.
     InitProducerIdRequest {
         transactional: bool,
+        /// Empty when the request is non-transactional. Used by the
+        /// transactional-zombie detector to track txn lifecycle.
+        transactional_id: Option<String>,
     },
-    /// Topic names a client read from. Same opacity rule for records.
+    /// Begin a transactional segment by registering partitions with the
+    /// coordinator. Detector uses presence + transactional_id to
+    /// distinguish in-flight vs abandoned txns.
+    AddPartitionsToTxnRequest {
+        transactional_id: String,
+    },
+    /// Commit / abort a txn. `committed=true` is commit, `false` is abort.
+    EndTxnRequest {
+        transactional_id: String,
+        committed: bool,
+    },
+    /// Topic + fetch-shape parameters a client read from. `min_bytes`
+    /// and `max_wait_ms` drive the tight-polling detector; `session_*`
+    /// fields feed the incremental-fetch-session-error detector.
     FetchRequest {
         topics: Vec<String>,
+        min_bytes: i32,
+        max_wait_ms: i32,
+        /// `0` = read_uncommitted, `1` = read_committed.
+        isolation_level: i8,
+        session_id: i32,
+        session_epoch: i32,
+    },
+    /// Top-level fields from a `FetchResponse`. `error_code` covers
+    /// `INVALID_FETCH_SESSION_EPOCH` (70) and `INVALID_SESSION_ID` (71)
+    /// for the cascade detector; `throttle_time_ms` for quota; `size`
+    /// for the tight-polling detector.
+    FetchResponse {
+        error_code: i16,
+        session_id: i32,
+        throttle_time_ms: i32,
+        /// Total payload bytes returned across all topics + partitions.
+        /// Lets the tight-polling detector compute avg response size
+        /// per connection.
+        response_size: u64,
+    },
+    /// Topics + flags advertised in a `MetadataRequest`. Feeds the
+    /// metadata-storm detector (rate per connection).
+    MetadataRequest {
+        topics: Vec<String>,
+        allow_auto_topic_creation: bool,
     },
     /// Group / transactional-id keys whose coordinator the client is
     /// asking for. v0..=3 carry a single `key`; v4+ a `coordinator_keys`
@@ -172,6 +233,7 @@ pub enum FrameSummary {
         /// for the Errors list without forcing the frontend to walk
         /// nested partition results.
         max_error_code: i16,
+        throttle_time_ms: i32,
     },
     /// SASL re-auth result. `session_lifetime_ms` is the broker-grant
     /// window the client is expected to schedule its next
@@ -277,11 +339,14 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
                 .transactional_id
                 .as_ref()
                 .is_some_and(|tid| !tid.0.is_empty());
+            let acks = req.acks;
             let mut topics: Vec<String> = Vec::with_capacity(req.topic_data.len());
             let mut partitions: Vec<TopicPartition> = Vec::new();
             let mut record_count: u32 = 0;
             let mut batch_bytes: u64 = 0;
             let mut batch_count: u32 = 0;
+            let mut first_batch_compression: Option<u8> = None;
+            let mut first_batch_producer_id: Option<i64> = None;
             for t in &req.topic_data {
                 let name = t.name.0.to_string();
                 if !name.is_empty() {
@@ -295,8 +360,14 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
                     batch_count = batch_count.saturating_add(1);
                     if let Some(records) = &p.records {
                         batch_bytes = batch_bytes.saturating_add(records.len() as u64);
-                        record_count =
-                            record_count.saturating_add(record_count_in_batches(records));
+                        let (rc, attr, pid) = first_batch_meta(records);
+                        record_count = record_count.saturating_add(rc);
+                        if first_batch_compression.is_none() {
+                            first_batch_compression = attr;
+                        }
+                        if first_batch_producer_id.is_none() {
+                            first_batch_producer_id = pid;
+                        }
                     }
                 }
             }
@@ -307,22 +378,77 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
                 batch_bytes,
                 batch_count,
                 transactional,
+                acks,
+                first_batch_compression,
+                first_batch_producer_id,
             })
         }
         ApiKey::InitProducerId => {
             let req = InitProducerIdRequest::decode(buf, version).ok()?;
-            let transactional = req.transactional_id.as_ref().is_some_and(|t| !t.is_empty());
-            Some(FrameSummary::InitProducerIdRequest { transactional })
+            let transactional_id = req
+                .transactional_id
+                .as_ref()
+                .map(|tid| tid.0.to_string())
+                .filter(|s| !s.is_empty());
+            let transactional = transactional_id.is_some();
+            Some(FrameSummary::InitProducerIdRequest {
+                transactional,
+                transactional_id,
+            })
+        }
+        ApiKey::AddPartitionsToTxn => {
+            let req = AddPartitionsToTxnRequest::decode(buf, version).ok()?;
+            // v0..=3 carries a top-level `transactional_id`; v4+ uses
+            // a `transactions` array. Prefer the first transaction's
+            // id when the array is non-empty.
+            let from_array = req
+                .transactions
+                .first()
+                .map(|t| t.transactional_id.0.to_string())
+                .filter(|s| !s.is_empty());
+            let transactional_id =
+                from_array.unwrap_or_else(|| req.v3_and_below_transactional_id.0.to_string());
+            if transactional_id.is_empty() {
+                return None;
+            }
+            Some(FrameSummary::AddPartitionsToTxnRequest { transactional_id })
+        }
+        ApiKey::EndTxn => {
+            let req = EndTxnRequest::decode(buf, version).ok()?;
+            let transactional_id = req.transactional_id.0.to_string();
+            Some(FrameSummary::EndTxnRequest {
+                transactional_id,
+                committed: req.committed,
+            })
         }
         ApiKey::Fetch => {
             let req = FetchRequest::decode(buf, version).ok()?;
             Some(FrameSummary::FetchRequest {
                 topics: req
                     .topics
-                    .into_iter()
+                    .iter()
                     .map(|t| t.topic.0.to_string())
                     .filter(|s| !s.is_empty())
                     .collect(),
+                min_bytes: req.min_bytes,
+                max_wait_ms: req.max_wait_ms,
+                isolation_level: req.isolation_level,
+                session_id: req.session_id,
+                session_epoch: req.session_epoch,
+            })
+        }
+        ApiKey::Metadata => {
+            let req = MetadataRequest::decode(buf, version).ok()?;
+            let topics: Vec<String> = req
+                .topics
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| t.name.map(|n| n.0.to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            Some(FrameSummary::MetadataRequest {
+                topics,
+                allow_auto_topic_creation: req.allow_auto_topic_creation,
             })
         }
         ApiKey::FindCoordinator => {
@@ -426,6 +552,22 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 brokers,
                 leaders,
                 brokers_map,
+                throttle_time_ms: resp.throttle_time_ms,
+            })
+        }
+        ApiKey::Fetch => {
+            let resp = FetchResponse::decode(buf, version).ok()?;
+            let response_size: u64 = resp
+                .responses
+                .iter()
+                .flat_map(|t| t.partitions.iter())
+                .map(|p| p.records.as_ref().map_or(0_u64, |r| r.len() as u64))
+                .sum();
+            Some(FrameSummary::FetchResponse {
+                error_code: resp.error_code,
+                session_id: resp.session_id,
+                throttle_time_ms: resp.throttle_time_ms,
+                response_size,
             })
         }
         ApiKey::ApiVersions => {
@@ -462,7 +604,10 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                     });
                 }
             }
-            Some(FrameSummary::ProduceResponse { errors })
+            Some(FrameSummary::ProduceResponse {
+                errors,
+                throttle_time_ms: resp.throttle_time_ms,
+            })
         }
         ApiKey::SaslAuthenticate => {
             let resp = SaslAuthenticateResponse::decode(buf, version).ok()?;
@@ -531,7 +676,10 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 .map(|p| p.error_code)
                 .max()
                 .unwrap_or(0);
-            Some(FrameSummary::OffsetCommitResponse { max_error_code })
+            Some(FrameSummary::OffsetCommitResponse {
+                max_error_code,
+                throttle_time_ms: resp.throttle_time_ms,
+            })
         }
         _ => None,
     }
@@ -559,32 +707,47 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
 ///  57..61   recordCount                i32
 ///  61..     records[]
 /// ```
-fn record_count_in_batches(bytes: &[u8]) -> u32 {
+/// Walk concatenated `RecordBatch` v2 frames and extract:
+///  * total `record_count` summed across all batches in the prefix;
+///  * `attributes & 0b111` (compression codec) of the *first* batch;
+///  * `producerId` of the *first* batch (for idempotence detection).
+///
+/// Returns `(0, None, None)` if no v2 batch is parseable (e.g. v0/v1
+/// message set, truncated buffer, or empty).
+fn first_batch_meta(bytes: &[u8]) -> (u32, Option<u8>, Option<i64>) {
     const HEADER_LEN: usize = 61;
     const BATCH_LENGTH_OFFSET: usize = 8;
     const MAGIC_OFFSET: usize = 16;
+    const ATTRIBUTES_OFFSET: usize = 21;
+    const PRODUCER_ID_OFFSET: usize = 43;
     const RECORD_COUNT_OFFSET: usize = 57;
 
     let mut total: u32 = 0;
+    let mut first_attr: Option<u8> = None;
+    let mut first_pid: Option<i64> = None;
     let mut cursor = 0_usize;
     while cursor + HEADER_LEN <= bytes.len() {
-        // batchLength = bytes following this field. Total batch size
-        // on the wire is `12 + batchLength` (8 base offset + 4
-        // batchLength prefix).
         let batch_length = u32::from_be_bytes([
             bytes[cursor + BATCH_LENGTH_OFFSET],
             bytes[cursor + BATCH_LENGTH_OFFSET + 1],
             bytes[cursor + BATCH_LENGTH_OFFSET + 2],
             bytes[cursor + BATCH_LENGTH_OFFSET + 3],
         ]);
-        // Magic is a signed byte on the wire. We only care that
-        // it equals the v2 marker (2); a wrap-around to negative
-        // would still fail the `!= 2` check below.
         let magic = i8::from_le_bytes([bytes[cursor + MAGIC_OFFSET]]);
         if magic != 2 {
-            // v0/v1 message sets aren't aggregated — we'd need a
-            // different parser. Defensive default: stop walking.
             break;
+        }
+        if first_attr.is_none() {
+            // attributes is i16 big-endian; we only need the compression
+            // codec in the lower 3 bits.
+            first_attr = Some(bytes[cursor + ATTRIBUTES_OFFSET + 1] & 0b0000_0111);
+        }
+        if first_pid.is_none() {
+            let mut pid_bytes = [0_u8; 8];
+            pid_bytes.copy_from_slice(
+                &bytes[cursor + PRODUCER_ID_OFFSET..cursor + PRODUCER_ID_OFFSET + 8],
+            );
+            first_pid = Some(i64::from_be_bytes(pid_bytes));
         }
         let count = i32::from_be_bytes([
             bytes[cursor + RECORD_COUNT_OFFSET],
@@ -601,5 +764,5 @@ fn record_count_in_batches(bytes: &[u8]) -> u32 {
         }
         cursor = cursor.saturating_add(advance);
     }
-    total
+    (total, first_attr, first_pid)
 }

@@ -138,6 +138,7 @@ impl SessionFold {
     // `max_error_code` not `error_code`. Collapsing via OR-pattern
     // would either reorder the match or special-case OffsetCommit —
     // both worse than keeping the table flat.
+    #[allow(clippy::too_many_lines)]
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
         *self.connections.entry(frame.local_port).or_insert(0) += 1;
         let Some(s) = summary else { return };
@@ -169,8 +170,12 @@ impl SessionFold {
             FrameSummary::ApiVersionsResponse { .. }
             | FrameSummary::ProduceResponse { .. }
             | FrameSummary::InitProducerIdRequest { .. }
+            | FrameSummary::AddPartitionsToTxnRequest { .. }
+            | FrameSummary::EndTxnRequest { .. }
+            | FrameSummary::FetchResponse { .. }
+            | FrameSummary::MetadataRequest { .. }
             | FrameSummary::SaslAuthenticateResponse { .. } => {}
-            FrameSummary::FetchRequest { topics } => {
+            FrameSummary::FetchRequest { topics, .. } => {
                 for name in topics {
                     self.topics.entry(name.clone()).or_default().consumed = true;
                 }
@@ -238,7 +243,7 @@ impl SessionFold {
                     self.topics.entry(t.clone()).or_default();
                 }
             }
-            FrameSummary::OffsetCommitResponse { max_error_code } => {
+            FrameSummary::OffsetCommitResponse { max_error_code, .. } => {
                 self.push_error_if_nonzero(*max_error_code, frame, None);
             }
         }

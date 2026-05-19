@@ -15,7 +15,18 @@ export type AntiPatternKind =
   | "rebalanceLoop"
   | "staleLeaderProducing"
   | "mixedApiVersion"
-  | "saslSessionTooShort";
+  | "saslSessionTooShort"
+  | "acks0"
+  | "compressionOff"
+  | "nonIdempotentProducer"
+  | "producerInstanceLeak"
+  | "transactionalZombie"
+  | "autoCommitCadence"
+  | "tightFetchPolling"
+  | "fetchSessionErrorCascade"
+  | "throttlePressure"
+  | "metadataStorm"
+  | "classicRebalanceOnModernCluster";
 
 export type Severity = "warn" | "note";
 
@@ -56,5 +67,27 @@ export function kindLabel(kind: AntiPatternKind): string {
       return "Mixed api_version across brokers";
     case "saslSessionTooShort":
       return "SASL session too short on re-auth";
+    case "acks0":
+      return "acks=0 (silent durability loss)";
+    case "compressionOff":
+      return "Compression off on bursty producer";
+    case "nonIdempotentProducer":
+      return "Non-idempotent producer";
+    case "producerInstanceLeak":
+      return "Producer-instance leak";
+    case "transactionalZombie":
+      return "Transactional zombie";
+    case "autoCommitCadence":
+      return "Auto-commit cadence";
+    case "tightFetchPolling":
+      return "Tight fetch polling";
+    case "fetchSessionErrorCascade":
+      return "Fetch-session error cascade";
+    case "throttlePressure":
+      return "Throttle pressure";
+    case "metadataStorm":
+      return "Metadata storm";
+    case "classicRebalanceOnModernCluster":
+      return "Classic rebalance on KIP-848 cluster";
   }
 }
