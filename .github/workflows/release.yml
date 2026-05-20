@@ -237,7 +237,7 @@ jobs:
             '{platform: $platform, basename: $basename, signature: $sig}' \
             > manifest-out/darwin-aarch64.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: manifest-darwin-aarch64
           path: manifest-out/darwin-aarch64.json
@@ -255,7 +255,7 @@ jobs:
             '{version: $version, sha256: $sha256}' \
             > cask-out/cask.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cask-meta
           path: cask-out/cask.json
@@ -362,7 +362,7 @@ jobs:
             '{platform: $platform, basename: $basename, signature: $sig}' \
             > manifest-out/linux-x86_64.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: manifest-linux-x86_64
           path: manifest-out/linux-x86_64.json
@@ -465,7 +465,7 @@ jobs:
             '{platform: $platform, basename: $basename, signature: $sig}' \
             > manifest-out/windows-x86_64.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: manifest-windows-x86_64
           path: manifest-out/windows-x86_64.json
