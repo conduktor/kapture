@@ -24,10 +24,14 @@ export function ExpertTab({ snapshot, onJumpToFrame }: Props): JSX.Element {
     return (
       <div className="expert expert--empty">
         <div className="expert__empty">
-          No anti-patterns detected yet. The detector watches the wire for the seven canonical
-          client-side bugs: overcommit, producer-per-record, tiny batches, rebalance loop,
-          stale-leader producing, mixed api_version, and SASL session-too-short. Run some traffic
-          through the proxy and they&apos;ll surface here.
+          No anti-patterns detected yet. The detector watches the wire for 25 client + cluster
+          patterns — overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader
+          producing, mixed api_version, SASL drift, acks=0, compression-off, non-idempotent
+          producer, producer-instance leak, transactional zombie, auto-commit cadence, tight fetch
+          polling, fetch-session error cascade, throttle pressure, metadata storm, KIP-848 holdouts,
+          message-too-large, offset-out-of-range, cooperative-sticky churn, commit-during-rebalance,
+          ACL deny, unknown-topic poll loop, and coordinator churn. Run some traffic through the
+          proxy and findings will surface here.
         </div>
       </div>
     );

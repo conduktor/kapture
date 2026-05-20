@@ -41,6 +41,7 @@ No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's 
 - **Messages tab.** Decoded records flattened from Produce requests and Fetch responses. Each record back-links to the frame it rode on so you jump from the message to the wire in one click.
 - **Filter DSL.** Wireshark-style: `topic == "orders" && envelope.size > 1024 && headers.tenant == "acme"`. Compose, autocomplete, save.
 - **Connection profiles.** Bootstrap, TLS, SASL — saved locally; passwords in the OS keychain. Last-used profile is pre-selected on launch.
+- **Expert info — 25 detectors.** Kapture flags client + cluster anti-patterns on the wire as you go: overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader producing, mixed `api_version`, SASL session-too-short, `acks=0`, compression-off, non-idempotent producer, producer-instance leak (PagerDuty 2025 shape), transactional zombie, auto-commit cadence, tight fetch polling, `INVALID_FETCH_SESSION_EPOCH` cascade, throttle pressure (KIP-219), metadata storm, classic rebalance on a KIP-848-ready cluster, `MESSAGE_TOO_LARGE`, `OFFSET_OUT_OF_RANGE`, cooperative-sticky churn, commit-during-rebalance, ACL deny storm, `UNKNOWN_TOPIC_OR_PARTITION` poll loop, coordinator churn.
 - **Bonus: agent-driven.** A local MCP server (`http://127.0.0.1:7878/mcp`) exposes capture / filter / inspect tools so an IDE agent (Claude Code, Cursor, Windsurf) can drive Kapture for you. SASL frames redacted before they cross the boundary.
 
 ## Install
@@ -72,8 +73,6 @@ Building from source: `pnpm install && pnpm tauri dev`.
 
 ## Roadmap
 
-- **Pattern detector.** Spot the anti-patterns above (overcommit, producer-per-record, tiny batches, rebalance loop) and surface them as Wireshark-style "Expert info".
-- **SDK drift detector.** Flag wire-level contradictions where the client and the broker's authoritative state disagree (stale-leader producing, mixed-version `api_version`, missing `LeaveGroup`, scheduled SASL re-auth breaks).
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
 
