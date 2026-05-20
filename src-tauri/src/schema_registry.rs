@@ -5,11 +5,12 @@
 //! Older registries omit `schemaType`; the protocol convention is that a
 //! missing field means AVRO.
 //!
-//! Currently unused at runtime — client (rdkafka) capture mode owned the
-//! only call site. Kept for proxy-mode wiring (the proxy could decode
-//! captured records' Confluent envelopes here once we expose the SR
-//! URL through `start_proxy`).
-#![allow(dead_code)]
+//! `ConfluentEnvelope::try_parse` is wired through `proxy_records` to
+//! detect Confluent's magic-byte framing on Produce/Fetch records.
+//! The HTTP client (`SchemaRegistry`) is dormant — kept here for the
+//! eventual proxy-mode SR integration once `start_proxy` plumbs a
+//! Schema Registry URL through. Live code paths warn-on-unused
+//! without the module-wide allow.
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -187,6 +188,11 @@ impl SchemaRegistryClient {
 #[derive(Debug, Clone, Copy)]
 pub struct ConfluentEnvelope<'a> {
     pub schema_id: u32,
+    /// Bytes after the 5-byte envelope header. Read in tests + reserved
+    /// for the future Schema Registry integration that decodes records
+    /// in-process (today only `schema_id` is surfaced through
+    /// `proxy_records`).
+    #[allow(dead_code)]
     pub payload: &'a [u8],
 }
 

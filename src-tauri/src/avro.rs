@@ -10,7 +10,6 @@
 //! resulting `DecodedValue` tree replaces the raw-bytes payload on
 //! the captured message so the inspector renders a JSON-ish view
 //! instead of hex.
-#![allow(dead_code)] // SchemaKind variants we don't decode (Protobuf path) live next door
 
 use apache_avro::types::Value as AvroValue;
 use apache_avro::Schema;
