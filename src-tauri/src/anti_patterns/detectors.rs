@@ -10,6 +10,7 @@
 use std::time::Instant;
 
 use crate::anti_patterns::fold::AntiPatternsFold;
+use crate::anti_patterns::kafka_errors as kerr;
 use crate::anti_patterns::state::{
     ACL_DENY_THRESHOLD, AUTOCOMMIT_INTERVAL_MS, AUTOCOMMIT_INTERVAL_TOLERANCE,
     AUTOCOMMIT_MIN_SAMPLES, COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES,
@@ -343,7 +344,7 @@ impl AntiPatternsFold {
         for e in errors {
             // MessageTooLargeRejected (#19): broker rejected the
             // produce because it exceeded `message.max.bytes`.
-            if e.error_code == 10 {
+            if e.error_code == kerr::MESSAGE_TOO_LARGE {
                 self.upsert(
                     AntiPatternKind::MessageTooLargeRejected,
                     format!("{}:{}", e.topic, e.partition),
@@ -354,22 +355,18 @@ impl AntiPatternsFold {
                 );
                 continue;
             }
-            if matches!(e.error_code, 29..=31) {
+            if kerr::is_auth_error(e.error_code) {
                 self.fire_acl_deny(frame, "Produce", e.error_code, now);
                 continue;
             }
-            if !matches!(e.error_code, 6 | 47) {
+            if !kerr::is_stale_leader_error(e.error_code) {
                 continue;
             }
             let leader_hint = match e.current_leader_id {
                 Some(id) => format!(" — current leader is broker {id}"),
                 None => String::new(),
             };
-            let err_name = match e.error_code {
-                6 => "NOT_LEADER_OR_FOLLOWER",
-                47 => "FENCED_LEADER_EPOCH",
-                _ => "STALE_LEADER",
-            };
+            let err_name = kerr::name(e.error_code);
             self.upsert(
                 AntiPatternKind::StaleLeaderProducing,
                 format!("{}:{}", e.topic, e.partition),
@@ -469,15 +466,11 @@ impl AntiPatternsFold {
             .iter()
             .any(|p| p.eq_ignore_ascii_case("cooperative-sticky"))
         {
-            let count = {
-                let w = self
-                    .cooperative_sticky_joins
-                    .entry(group_id.to_owned())
-                    .or_default();
-                w.push(now);
-                w.trim(now);
-                w.len()
-            };
+            let count = self
+                .cooperative_sticky_joins
+                .entry(group_id.to_owned())
+                .or_default()
+                .push_and_count(now);
             if count >= COOPERATIVE_STICKY_CHURN_THRESHOLD {
                 self.upsert(
                     AntiPatternKind::CooperativeStickyChurn,
@@ -508,12 +501,11 @@ impl AntiPatternsFold {
             );
         }
         // Existing rebalance-loop detector.
-        let samples = {
-            let w = self.joins_per_group.entry(group_id.to_owned()).or_default();
-            w.push(now);
-            w.trim(now);
-            w.len()
-        };
+        let samples = self
+            .joins_per_group
+            .entry(group_id.to_owned())
+            .or_default()
+            .push_and_count(now);
         if u32::try_from(samples).unwrap_or(u32::MAX) >= REBALANCE_JOINS_IN_WINDOW {
             self.upsert(
                 AntiPatternKind::RebalanceLoop,
@@ -554,18 +546,17 @@ impl AntiPatternsFold {
         // UnknownTopicPollLoop (3), AclDeny (29/30/31).
         for e in errors {
             match e.error_code {
-                1 => {
+                kerr::OFFSET_OUT_OF_RANGE => {
                     // Rate-threshold to avoid flagging benign single-seek
                     // cases (auto.offset.reset triggers one OFFSET_OUT_OF_RANGE
                     // on a healthy consumer). The bug is repeated polling
                     // at an out-of-range offset.
                     let key = (e.topic.clone(), e.partition);
-                    let count = {
-                        let w = self.oor_per_partition.entry(key).or_default();
-                        w.push(now);
-                        w.trim(now);
-                        w.len()
-                    };
+                    let count = self
+                        .oor_per_partition
+                        .entry(key)
+                        .or_default()
+                        .push_and_count(now);
                     if count >= OFFSET_OUT_OF_RANGE_THRESHOLD {
                         self.upsert(
                             AntiPatternKind::OffsetOutOfRangeOnFetch,
@@ -579,14 +570,13 @@ impl AntiPatternsFold {
                         );
                     }
                 }
-                3 => {
+                kerr::UNKNOWN_TOPIC_OR_PARTITION => {
                     let key = (frame.connection_id, e.topic.clone(), e.partition);
-                    let count = {
-                        let w = self.utop_per_partition.entry(key).or_default();
-                        w.push(now);
-                        w.trim(now);
-                        w.len()
-                    };
+                    let count = self
+                        .utop_per_partition
+                        .entry(key)
+                        .or_default()
+                        .push_and_count(now);
                     if count >= UNKNOWN_TOPIC_POLL_THRESHOLD {
                         self.upsert(
                             AntiPatternKind::UnknownTopicPollLoop,
@@ -600,22 +590,18 @@ impl AntiPatternsFold {
                         );
                     }
                 }
-                29..=31 => self.fire_acl_deny(frame, "Fetch", e.error_code, now),
+                c if kerr::is_auth_error(c) => self.fire_acl_deny(frame, "Fetch", c, now),
                 _ => {}
             }
         }
 
         // Fetch-session error cascade.
-        if matches!(error_code, 70 | 71) {
-            let count = {
-                let w = self
-                    .fetch_session_errors
-                    .entry(frame.connection_id)
-                    .or_default();
-                w.push(now);
-                w.trim(now);
-                w.len()
-            };
+        if kerr::is_fetch_session_error(error_code) {
+            let count = self
+                .fetch_session_errors
+                .entry(frame.connection_id)
+                .or_default()
+                .push_and_count(now);
             if count >= FETCH_SESSION_ERRORS_THRESHOLD {
                 self.upsert(
                     AntiPatternKind::FetchSessionErrorCascade,
@@ -831,7 +817,7 @@ impl AntiPatternsFold {
             .unwrap_or_else(|| "?".into());
         for e in errors {
             match e.error_code {
-                27 => self.upsert(
+                kerr::REBALANCE_IN_PROGRESS => self.upsert(
                     AntiPatternKind::CommitDuringRebalance,
                     format!("group={group_id}|{}:{}", e.topic, e.partition),
                     Severity::Warn,
@@ -842,7 +828,7 @@ impl AntiPatternsFold {
                     "OffsetCommitResponse partition error_code=27 (REBALANCE_IN_PROGRESS) — commit dropped. Consumer can re-process the records after the rebalance settles (at-least-once duplicate window).".into(),
                     frame,
                 ),
-                29..=31 => self.fire_acl_deny(frame, "OffsetCommit", e.error_code, now),
+                c if kerr::is_auth_error(c) => self.fire_acl_deny(frame, "OffsetCommit", c, now),
                 _ => {}
             }
         }
@@ -855,12 +841,11 @@ impl AntiPatternsFold {
         now: Instant,
     ) {
         for key in keys {
-            let count = {
-                let w = self.coordinator_requests.entry(key.clone()).or_default();
-                w.push(now);
-                w.trim(now);
-                w.len()
-            };
+            let count = self
+                .coordinator_requests
+                .entry(key.clone())
+                .or_default()
+                .push_and_count(now);
             if count >= COORDINATOR_CHURN_THRESHOLD {
                 self.upsert(
                     AntiPatternKind::CoordinatorChurn,
@@ -886,25 +871,19 @@ impl AntiPatternsFold {
         error_code: i16,
         now: Instant,
     ) {
-        if matches!(error_code, 29..=31) {
+        if kerr::is_auth_error(error_code) {
             self.fire_acl_deny(frame, api_name, error_code, now);
         }
     }
 
     fn fire_acl_deny(&mut self, frame: &ProtoFrame, api_name: &str, error_code: i16, now: Instant) {
-        let count = {
-            let w = self.acl_deny_window.entry(frame.connection_id).or_default();
-            w.push(now);
-            w.trim(now);
-            w.len()
-        };
+        let count = self
+            .acl_deny_window
+            .entry(frame.connection_id)
+            .or_default()
+            .push_and_count(now);
         if count >= ACL_DENY_THRESHOLD {
-            let name = match error_code {
-                29 => "TOPIC_AUTHORIZATION_FAILED",
-                30 => "GROUP_AUTHORIZATION_FAILED",
-                31 => "CLUSTER_AUTHORIZATION_FAILED",
-                _ => "AUTHORIZATION_FAILED",
-            };
+            let name = kerr::name(error_code);
             self.upsert(
                 AntiPatternKind::AclDeny,
                 format!("conn={}", frame.connection_id),

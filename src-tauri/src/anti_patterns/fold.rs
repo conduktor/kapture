@@ -127,16 +127,22 @@ impl AntiPatternsFold {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     fn dispatch(&mut self, frame: &ProtoFrame, s: &FrameSummary, now: Instant) {
         // Throttle pressure detector runs on every response that carries
         // the field — kept out of the per-variant match for brevity.
         self.check_throttle(frame, s);
+        // Each `dispatch_*` only matches the variants in its category
+        // and returns silently otherwise. Splitting this way keeps
+        // each function under the clippy::too_many_lines threshold and
+        // makes the per-category surface obvious.
+        self.dispatch_producer(frame, s, now);
+        self.dispatch_consumer(frame, s, now);
+        self.dispatch_cluster(frame, s, now);
+        self.dispatch_sasl(frame, s);
+    }
 
+    fn dispatch_producer(&mut self, frame: &ProtoFrame, s: &FrameSummary, now: Instant) {
         match s {
-            FrameSummary::OffsetCommitRequest { group_id, .. } => {
-                self.on_offset_commit(frame, group_id, now);
-            }
             FrameSummary::InitProducerIdRequest {
                 transactional_id, ..
             } => {
@@ -144,13 +150,6 @@ impl AntiPatternsFold {
             }
             FrameSummary::AddPartitionsToTxnRequest { transactional_id } => {
                 self.on_add_partitions_to_txn(frame, transactional_id);
-            }
-            FrameSummary::JoinGroupRequest {
-                group_id,
-                protocols,
-                ..
-            } => {
-                self.on_join_group_request(frame, group_id, protocols, now);
             }
             FrameSummary::EndTxnRequest {
                 transactional_id,
@@ -181,6 +180,22 @@ impl AntiPatternsFold {
             FrameSummary::ProduceResponse { errors, .. } => {
                 self.on_produce_response(frame, errors);
             }
+            _ => {}
+        }
+    }
+
+    fn dispatch_consumer(&mut self, frame: &ProtoFrame, s: &FrameSummary, now: Instant) {
+        match s {
+            FrameSummary::OffsetCommitRequest { group_id, .. } => {
+                self.on_offset_commit(frame, group_id, now);
+            }
+            FrameSummary::JoinGroupRequest {
+                group_id,
+                protocols,
+                ..
+            } => {
+                self.on_join_group_request(frame, group_id, protocols, now);
+            }
             FrameSummary::OffsetCommitResponse { errors, .. } => {
                 self.on_offset_commit_response(frame, errors, now);
             }
@@ -202,15 +217,6 @@ impl AntiPatternsFold {
             FrameSummary::LeaveGroupResponse { error_code, .. } => {
                 self.on_auth_error_response(frame, "LeaveGroup", *error_code, now);
             }
-            FrameSummary::ApiVersionsResponse { max_versions, .. } => {
-                self.on_api_versions_response(frame, max_versions);
-            }
-            FrameSummary::MetadataRequest { .. } => {
-                self.on_metadata_request(frame, now);
-            }
-            FrameSummary::MetadataResponse { .. } => {
-                self.on_metadata_response(frame);
-            }
             FrameSummary::FetchRequest {
                 min_bytes,
                 session_epoch,
@@ -226,19 +232,38 @@ impl AntiPatternsFold {
             } => {
                 self.on_fetch_response(frame, *error_code, *response_size, errors, now);
             }
-            FrameSummary::SaslAuthenticateResponse {
-                error_code,
-                error_message,
-                session_lifetime_ms,
-            } => {
-                self.on_sasl_authenticate_response(
-                    frame,
-                    *error_code,
-                    error_message.as_deref(),
-                    *session_lifetime_ms,
-                );
+            _ => {}
+        }
+    }
+
+    fn dispatch_cluster(&mut self, frame: &ProtoFrame, s: &FrameSummary, now: Instant) {
+        match s {
+            FrameSummary::ApiVersionsResponse { max_versions, .. } => {
+                self.on_api_versions_response(frame, max_versions);
+            }
+            FrameSummary::MetadataRequest { .. } => {
+                self.on_metadata_request(frame, now);
+            }
+            FrameSummary::MetadataResponse { .. } => {
+                self.on_metadata_response(frame);
             }
             _ => {}
+        }
+    }
+
+    fn dispatch_sasl(&mut self, frame: &ProtoFrame, s: &FrameSummary) {
+        if let FrameSummary::SaslAuthenticateResponse {
+            error_code,
+            error_message,
+            session_lifetime_ms,
+        } = s
+        {
+            self.on_sasl_authenticate_response(
+                frame,
+                *error_code,
+                error_message.as_deref(),
+                *session_lifetime_ms,
+            );
         }
     }
 

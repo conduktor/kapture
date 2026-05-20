@@ -33,6 +33,7 @@
 
 mod detectors;
 mod fold;
+mod kafka_errors;
 mod state;
 
 #[cfg(test)]

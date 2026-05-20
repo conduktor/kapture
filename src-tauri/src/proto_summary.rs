@@ -345,6 +345,67 @@ pub fn extract_summary(
     }
 }
 
+/// `ProduceRequest` summary extraction — split out of
+/// `extract_request` because it carries the bulk of the per-batch
+/// inspection (record count, first-batch attributes, first-batch
+/// producer id) and would otherwise blow the host function's line
+/// budget.
+fn extract_produce_request(buf: &mut Bytes, version: i16) -> Option<FrameSummary> {
+    let req = ProduceRequest::decode(buf, version).ok()?;
+    let transactional = req
+        .transactional_id
+        .as_ref()
+        .is_some_and(|tid| !tid.0.is_empty());
+    let acks = req.acks;
+    let mut topics: Vec<String> = Vec::with_capacity(req.topic_data.len());
+    let mut partitions: Vec<TopicPartition> = Vec::new();
+    let mut record_count: u32 = 0;
+    let mut batch_bytes: u64 = 0;
+    let mut batch_count: u32 = 0;
+    let mut first_batch_compression: Option<u8> = None;
+    let mut first_batch_producer_id: Option<i64> = None;
+    for t in &req.topic_data {
+        let name = t.name.0.to_string();
+        if !name.is_empty() {
+            topics.push(name.clone());
+        }
+        for p in &t.partition_data {
+            partitions.push(TopicPartition {
+                topic: name.clone(),
+                partition: p.index,
+            });
+            batch_count = batch_count.saturating_add(1);
+            if let Some(records) = &p.records {
+                batch_bytes = batch_bytes.saturating_add(records.len() as u64);
+                let (rc, attr, pid) = first_batch_meta(records);
+                record_count = record_count.saturating_add(rc);
+                if first_batch_compression.is_none() {
+                    first_batch_compression = attr;
+                }
+                if first_batch_producer_id.is_none() {
+                    first_batch_producer_id = pid;
+                }
+            }
+        }
+    }
+    Some(FrameSummary::ProduceRequest {
+        topics,
+        partitions,
+        record_count,
+        batch_bytes,
+        batch_count,
+        transactional,
+        acks,
+        first_batch_compression,
+        first_batch_producer_id,
+    })
+}
+
+// Wide switch on `ApiKey` — each arm is small (5-15 lines) but the
+// number of arms (12+) pushes us past clippy's 100-line cap.
+// Splitting further would fragment closely related code without
+// improving readability — the long arms (Produce) are already
+// extracted into dedicated helpers above.
 #[allow(clippy::too_many_lines)]
 fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSummary> {
     match api {
@@ -361,56 +422,7 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
                 client_software_version: req.client_software_version.to_string(),
             })
         }
-        ApiKey::Produce => {
-            let req = ProduceRequest::decode(buf, version).ok()?;
-            let transactional = req
-                .transactional_id
-                .as_ref()
-                .is_some_and(|tid| !tid.0.is_empty());
-            let acks = req.acks;
-            let mut topics: Vec<String> = Vec::with_capacity(req.topic_data.len());
-            let mut partitions: Vec<TopicPartition> = Vec::new();
-            let mut record_count: u32 = 0;
-            let mut batch_bytes: u64 = 0;
-            let mut batch_count: u32 = 0;
-            let mut first_batch_compression: Option<u8> = None;
-            let mut first_batch_producer_id: Option<i64> = None;
-            for t in &req.topic_data {
-                let name = t.name.0.to_string();
-                if !name.is_empty() {
-                    topics.push(name.clone());
-                }
-                for p in &t.partition_data {
-                    partitions.push(TopicPartition {
-                        topic: name.clone(),
-                        partition: p.index,
-                    });
-                    batch_count = batch_count.saturating_add(1);
-                    if let Some(records) = &p.records {
-                        batch_bytes = batch_bytes.saturating_add(records.len() as u64);
-                        let (rc, attr, pid) = first_batch_meta(records);
-                        record_count = record_count.saturating_add(rc);
-                        if first_batch_compression.is_none() {
-                            first_batch_compression = attr;
-                        }
-                        if first_batch_producer_id.is_none() {
-                            first_batch_producer_id = pid;
-                        }
-                    }
-                }
-            }
-            Some(FrameSummary::ProduceRequest {
-                topics,
-                partitions,
-                record_count,
-                batch_bytes,
-                batch_count,
-                transactional,
-                acks,
-                first_batch_compression,
-                first_batch_producer_id,
-            })
-        }
+        ApiKey::Produce => extract_produce_request(buf, version),
         ApiKey::InitProducerId => {
             let req = InitProducerIdRequest::decode(buf, version).ok()?;
             let transactional_id = req
@@ -545,51 +557,98 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
     }
 }
 
+/// `MetadataResponse` summary extraction — split out of
+/// `extract_response`. Walks topics → partitions to build the
+/// `leaders` map (used by the stale-leader detector) and the brokers
+/// map (used by the UI's broker tab).
+fn extract_metadata_response(buf: &mut Bytes, version: i16) -> Option<FrameSummary> {
+    let resp = MetadataResponse::decode(buf, version).ok()?;
+    let brokers = u32::try_from(resp.brokers.len()).unwrap_or(0);
+    let brokers_map: Vec<BrokerEndpoint> = resp
+        .brokers
+        .iter()
+        .map(|b| BrokerEndpoint {
+            node_id: b.node_id.0,
+            host: b.host.to_string(),
+            port: b.port,
+        })
+        .collect();
+    let mut topic_names: Vec<String> = Vec::with_capacity(resp.topics.len());
+    let mut leaders: Vec<TopicLeaders> = Vec::with_capacity(resp.topics.len());
+    for t in resp.topics {
+        let Some(name) = t.name.map(|n| n.0.to_string()) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        topic_names.push(name.clone());
+        let partitions: Vec<(i32, i32)> = t
+            .partitions
+            .iter()
+            .map(|p| (p.partition_index, p.leader_id.0))
+            .collect();
+        if !partitions.is_empty() {
+            leaders.push(TopicLeaders {
+                topic: name,
+                partitions,
+            });
+        }
+    }
+    Some(FrameSummary::MetadataResponse {
+        topics: topic_names,
+        brokers,
+        leaders,
+        brokers_map,
+        throttle_time_ms: resp.throttle_time_ms,
+    })
+}
+
+/// `ProduceResponse` summary extraction — split out of
+/// `extract_response` for the same readability reasons as
+/// [`extract_produce_request`]. Lifts per-partition errors + the
+/// `current_leader` hint (gated on v10+ to avoid the
+/// `BrokerId(0)` default-value trap on older versions).
+fn extract_produce_response(buf: &mut Bytes, version: i16) -> Option<FrameSummary> {
+    let resp = ProduceResponse::decode(buf, version).ok()?;
+    let mut errors: Vec<ProducePartitionError> = Vec::new();
+    for t in &resp.responses {
+        let topic = t.name.0.to_string();
+        for p in &t.partition_responses {
+            if p.error_code == 0 {
+                continue;
+            }
+            // `current_leader` field only exists on Produce v10+
+            // (KIP-951). On older versions the kafka-protocol
+            // decoder fills it with the default `BrokerId(0)` —
+            // checking `>= 0` would falsely report broker 0 as
+            // the new leader. Gate on the version explicitly.
+            let current_leader_id = if version >= 10 && p.current_leader.leader_id.0 >= 0 {
+                Some(p.current_leader.leader_id.0)
+            } else {
+                None
+            };
+            errors.push(ProducePartitionError {
+                topic: topic.clone(),
+                partition: p.index,
+                error_code: p.error_code,
+                current_leader_id,
+            });
+        }
+    }
+    Some(FrameSummary::ProduceResponse {
+        errors,
+        throttle_time_ms: resp.throttle_time_ms,
+    })
+}
+
+// Same rationale as `extract_request` — wide-switch helper. Long
+// arms (Produce, Metadata) are already extracted into dedicated
+// functions above.
 #[allow(clippy::too_many_lines)]
 fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSummary> {
     match api {
-        ApiKey::Metadata => {
-            let resp = MetadataResponse::decode(buf, version).ok()?;
-            let brokers = u32::try_from(resp.brokers.len()).unwrap_or(0);
-            let brokers_map: Vec<BrokerEndpoint> = resp
-                .brokers
-                .iter()
-                .map(|b| BrokerEndpoint {
-                    node_id: b.node_id.0,
-                    host: b.host.to_string(),
-                    port: b.port,
-                })
-                .collect();
-            let mut topic_names: Vec<String> = Vec::with_capacity(resp.topics.len());
-            let mut leaders: Vec<TopicLeaders> = Vec::with_capacity(resp.topics.len());
-            for t in resp.topics {
-                let Some(name) = t.name.map(|n| n.0.to_string()) else {
-                    continue;
-                };
-                if name.is_empty() {
-                    continue;
-                }
-                topic_names.push(name.clone());
-                let partitions: Vec<(i32, i32)> = t
-                    .partitions
-                    .iter()
-                    .map(|p| (p.partition_index, p.leader_id.0))
-                    .collect();
-                if !partitions.is_empty() {
-                    leaders.push(TopicLeaders {
-                        topic: name,
-                        partitions,
-                    });
-                }
-            }
-            Some(FrameSummary::MetadataResponse {
-                topics: topic_names,
-                brokers,
-                leaders,
-                brokers_map,
-                throttle_time_ms: resp.throttle_time_ms,
-            })
-        }
+        ApiKey::Metadata => extract_metadata_response(buf, version),
         ApiKey::Fetch => {
             let resp = FetchResponse::decode(buf, version).ok()?;
             let response_size: u64 = resp
@@ -631,38 +690,7 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 max_versions,
             })
         }
-        ApiKey::Produce => {
-            let resp = ProduceResponse::decode(buf, version).ok()?;
-            let mut errors: Vec<ProducePartitionError> = Vec::new();
-            for t in &resp.responses {
-                let topic = t.name.0.to_string();
-                for p in &t.partition_responses {
-                    if p.error_code == 0 {
-                        continue;
-                    }
-                    // `current_leader` field only exists on Produce v10+
-                    // (KIP-951). On older versions the kafka-protocol
-                    // decoder fills it with the default `BrokerId(0)` —
-                    // checking `>= 0` would falsely report broker 0 as
-                    // the new leader. Gate on the version explicitly.
-                    let current_leader_id = if version >= 10 && p.current_leader.leader_id.0 >= 0 {
-                        Some(p.current_leader.leader_id.0)
-                    } else {
-                        None
-                    };
-                    errors.push(ProducePartitionError {
-                        topic: topic.clone(),
-                        partition: p.index,
-                        error_code: p.error_code,
-                        current_leader_id,
-                    });
-                }
-            }
-            Some(FrameSummary::ProduceResponse {
-                errors,
-                throttle_time_ms: resp.throttle_time_ms,
-            })
-        }
+        ApiKey::Produce => extract_produce_response(buf, version),
         ApiKey::SaslAuthenticate => {
             let resp = SaslAuthenticateResponse::decode(buf, version).ok()?;
             let error_message = resp

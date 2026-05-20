@@ -201,6 +201,16 @@ impl RollingWindow {
             }
         }
     }
+    /// One-shot helper that combines the three steps every detector
+    /// did inline: push `now`, trim the window, return the resulting
+    /// length. Cuts 5 LOC × 8 call sites of duplication and centralises
+    /// the ordering contract (push *then* trim — the other way around
+    /// drops the just-added sample).
+    pub fn push_and_count(&mut self, now: Instant) -> usize {
+        self.push(now);
+        self.trim(now);
+        self.len()
+    }
     pub fn rate_per_sec(&self) -> f64 {
         if self.instants.is_empty() {
             return 0.0;
