@@ -205,7 +205,7 @@ impl SessionFold {
                 }
                 g.generation = Some(*generation_id);
             }
-            FrameSummary::SyncGroupResponse { error_code } => {
+            FrameSummary::SyncGroupResponse { error_code, .. } => {
                 self.push_error_if_nonzero(*error_code, frame, None);
             }
             FrameSummary::HeartbeatRequest {
@@ -220,13 +220,13 @@ impl SessionFold {
                 }
                 g.generation = Some(*generation_id);
             }
-            FrameSummary::HeartbeatResponse { error_code } => {
+            FrameSummary::HeartbeatResponse { error_code, .. } => {
                 self.push_error_if_nonzero(*error_code, frame, None);
             }
             FrameSummary::LeaveGroupRequest { group_id } => {
                 self.groups.entry(group_id.clone()).or_default();
             }
-            FrameSummary::LeaveGroupResponse { error_code } => {
+            FrameSummary::LeaveGroupResponse { error_code, .. } => {
                 self.push_error_if_nonzero(*error_code, frame, None);
             }
             FrameSummary::OffsetCommitRequest {

@@ -15,8 +15,8 @@ use crate::anti_patterns::state::{
     AUTOCOMMIT_MIN_SAMPLES, COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES,
     COOPERATIVE_STICKY_CHURN_THRESHOLD, COORDINATOR_CHURN_THRESHOLD,
     FETCH_SESSION_ERRORS_THRESHOLD, METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC,
-    NON_IDEMPOTENT_MIN_SAMPLES, OVERCOMMIT_MIN_SAMPLES, OVERCOMMIT_RATE_PER_SEC,
-    PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
+    NON_IDEMPOTENT_MIN_SAMPLES, OFFSET_OUT_OF_RANGE_THRESHOLD, OVERCOMMIT_MIN_SAMPLES,
+    OVERCOMMIT_RATE_PER_SEC, PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
     PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS, RATE_QUEUE_CAP, RATE_WINDOW,
     REBALANCE_JOINS_IN_WINDOW, SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES,
     TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE,
@@ -384,6 +384,11 @@ impl AntiPatternsFold {
     // ---------- Consumer-side detectors ----------
 
     pub(super) fn on_offset_commit(&mut self, frame: &ProtoFrame, group_id: &str, now: Instant) {
+        // Remember the group_id for this connection so the
+        // CommitDuringRebalance detector (which only sees the
+        // *response*) can attribute its scope to the right group.
+        self.last_commit_group
+            .insert(frame.connection_id, group_id.to_owned());
         // Overcommit rate detector.
         let (samples, rate) = {
             let w = self
@@ -536,6 +541,7 @@ impl AntiPatternsFold {
         // dispatch table.
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(super) fn on_fetch_response(
         &mut self,
         frame: &ProtoFrame,
@@ -548,14 +554,31 @@ impl AntiPatternsFold {
         // UnknownTopicPollLoop (3), AclDeny (29/30/31).
         for e in errors {
             match e.error_code {
-                1 => self.upsert(
-                    AntiPatternKind::OffsetOutOfRangeOnFetch,
-                    format!("{}:{}", e.topic, e.partition),
-                    Severity::Warn,
-                    format!("Offset out of range on {}:{}", e.topic, e.partition),
-                    "FetchResponse partition error_code=1 (OFFSET_OUT_OF_RANGE) — consumer position past the broker's log end. auto.offset.reset may mask this but the drift is real.".into(),
-                    frame,
-                ),
+                1 => {
+                    // Rate-threshold to avoid flagging benign single-seek
+                    // cases (auto.offset.reset triggers one OFFSET_OUT_OF_RANGE
+                    // on a healthy consumer). The bug is repeated polling
+                    // at an out-of-range offset.
+                    let key = (e.topic.clone(), e.partition);
+                    let count = {
+                        let w = self.oor_per_partition.entry(key).or_default();
+                        w.push(now);
+                        w.trim(now);
+                        w.len()
+                    };
+                    if count >= OFFSET_OUT_OF_RANGE_THRESHOLD {
+                        self.upsert(
+                            AntiPatternKind::OffsetOutOfRangeOnFetch,
+                            format!("{}:{}", e.topic, e.partition),
+                            Severity::Warn,
+                            format!("Offset out of range on {}:{}", e.topic, e.partition),
+                            format!(
+                                "{count} FetchResponse partition errors OFFSET_OUT_OF_RANGE in the rolling window — consumer position past the broker's log end.",
+                            ),
+                            frame,
+                        );
+                    }
+                }
                 3 => {
                     let key = (frame.connection_id, e.topic.clone(), e.partition);
                     let count = {
@@ -798,13 +821,24 @@ impl AntiPatternsFold {
         errors: &[TopicPartitionError],
         now: Instant,
     ) {
+        // Scope: include the group_id we captured from the matching
+        // request — different groups committing to the same partition
+        // should NOT collide on the same detection row.
+        let group_id = self
+            .last_commit_group
+            .get(&frame.connection_id)
+            .cloned()
+            .unwrap_or_else(|| "?".into());
         for e in errors {
             match e.error_code {
                 27 => self.upsert(
                     AntiPatternKind::CommitDuringRebalance,
-                    format!("{}:{}", e.topic, e.partition),
+                    format!("group={group_id}|{}:{}", e.topic, e.partition),
                     Severity::Warn,
-                    format!("Commit during rebalance on {}:{}", e.topic, e.partition),
+                    format!(
+                        "Commit during rebalance — group '{group_id}' on {}:{}",
+                        e.topic, e.partition
+                    ),
                     "OffsetCommitResponse partition error_code=27 (REBALANCE_IN_PROGRESS) — commit dropped. Consumer can re-process the records after the rebalance settles (at-least-once duplicate window).".into(),
                     frame,
                 ),
@@ -901,6 +935,21 @@ impl AntiPatternsFold {
             FrameSummary::OffsetCommitResponse {
                 throttle_time_ms, ..
             } => ("OffsetCommit", *throttle_time_ms),
+            FrameSummary::FindCoordinatorResponse {
+                throttle_time_ms, ..
+            } => ("FindCoordinator", *throttle_time_ms),
+            FrameSummary::JoinGroupResponse {
+                throttle_time_ms, ..
+            } => ("JoinGroup", *throttle_time_ms),
+            FrameSummary::SyncGroupResponse {
+                throttle_time_ms, ..
+            } => ("SyncGroup", *throttle_time_ms),
+            FrameSummary::HeartbeatResponse {
+                throttle_time_ms, ..
+            } => ("Heartbeat", *throttle_time_ms),
+            FrameSummary::LeaveGroupResponse {
+                throttle_time_ms, ..
+            } => ("LeaveGroup", *throttle_time_ms),
             _ => return,
         };
         if throttle_ms <= 0 {

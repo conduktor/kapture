@@ -160,24 +160,28 @@ async fn offset_out_of_range_detected_through_proxy() {
     let _ = client.recv_raw().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let req = FetchRequest::default()
-        .with_max_wait_ms(100)
-        .with_min_bytes(1)
-        .with_max_bytes(1_048_576)
-        .with_isolation_level(0)
-        .with_session_id(0)
-        .with_session_epoch(0)
-        .with_topics(vec![FetchTopic::default()
-            .with_topic(TopicName(StrBytes::from_string(topic.clone())))
-            .with_partitions(vec![FetchPartition::default()
-                .with_partition(0)
-                .with_fetch_offset(999_999_999)
-                .with_partition_max_bytes(1_048_576)])]);
-    client
-        .send(ApiKey::Fetch, 12, &req)
-        .await
-        .expect("send fetch");
-    let _ = client.recv_raw().await;
+    // 3+ to clear the bug-fix rate threshold (single occurrence is
+    // benign — `auto.offset.reset` legitimately triggers one).
+    for _ in 0..4 {
+        let req = FetchRequest::default()
+            .with_max_wait_ms(100)
+            .with_min_bytes(1)
+            .with_max_bytes(1_048_576)
+            .with_isolation_level(0)
+            .with_session_id(0)
+            .with_session_epoch(0)
+            .with_topics(vec![FetchTopic::default()
+                .with_topic(TopicName(StrBytes::from_string(topic.clone())))
+                .with_partitions(vec![FetchPartition::default()
+                    .with_partition(0)
+                    .with_fetch_offset(999_999_999)
+                    .with_partition_max_bytes(1_048_576)])]);
+        client
+            .send(ApiKey::Fetch, 12, &req)
+            .await
+            .expect("send fetch");
+        let _ = client.recv_raw().await;
+    }
 
     assert!(
         wait_for_kind(

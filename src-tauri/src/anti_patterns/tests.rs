@@ -499,7 +499,36 @@ fn message_too_large_rejected_fires() {
 }
 
 #[test]
-fn offset_out_of_range_on_fetch_fires() {
+fn offset_out_of_range_on_fetch_fires_after_threshold() {
+    let mut fold = AntiPatternsFold::default();
+    // Threshold = 3: a single OOR is benign (auto.offset.reset on seek);
+    // ≥3 in window is the actual stuck-consumer signature.
+    for i in 0..3 {
+        let f = frame(&format!("oor{i}"), "t", 1, 9092);
+        fold.absorb(
+            &f,
+            Some(&FrameSummary::FetchResponse {
+                error_code: 0,
+                session_id: 0,
+                throttle_time_ms: 0,
+                response_size: 0,
+                errors: vec![TopicPartitionError {
+                    topic: "t1".into(),
+                    partition: 5,
+                    error_code: 1,
+                }],
+            }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch && d.scope == "t1:5"));
+}
+
+#[test]
+fn offset_out_of_range_single_occurrence_does_not_fire() {
     let mut fold = AntiPatternsFold::default();
     let f = frame("oor", "t", 1, 9092);
     fold.absorb(
@@ -516,11 +545,11 @@ fn offset_out_of_range_on_fetch_fires() {
             }],
         }),
     );
-    assert!(fold
+    assert!(!fold
         .snapshot()
         .detections
         .iter()
-        .any(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch && d.scope == "t1:5"));
+        .any(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch));
 }
 
 #[test]
@@ -545,8 +574,19 @@ fn cooperative_sticky_churn_fires() {
 }
 
 #[test]
-fn commit_during_rebalance_fires() {
+fn commit_during_rebalance_fires_with_group_in_scope() {
     let mut fold = AntiPatternsFold::default();
+    // First, the request — establishes group_id for this connection
+    // so the response detector can attribute its scope correctly.
+    let req_frame = frame("cdr-req", "t", 1, 9092);
+    fold.absorb(
+        &req_frame,
+        Some(&FrameSummary::OffsetCommitRequest {
+            group_id: "g-cdr".into(),
+            member_id: String::new(),
+            topics: vec!["t1".into()],
+        }),
+    );
     let f = frame("cdr", "t", 1, 9092);
     fold.absorb(
         &f,
@@ -560,11 +600,11 @@ fn commit_during_rebalance_fires() {
             }],
         }),
     );
-    assert!(fold
-        .snapshot()
-        .detections
-        .iter()
-        .any(|d| d.kind == AntiPatternKind::CommitDuringRebalance && d.scope == "t1:0"));
+    // Scope must include the group so concurrent groups committing
+    // to the same partition don't collide.
+    assert!(fold.snapshot().detections.iter().any(|d| {
+        d.kind == AntiPatternKind::CommitDuringRebalance && d.scope == "group=g-cdr|t1:0"
+    }));
 }
 
 #[test]
@@ -638,4 +678,88 @@ fn coordinator_churn_fires_after_threshold() {
         .detections
         .iter()
         .any(|d| d.kind == AntiPatternKind::CoordinatorChurn && d.scope == "key=g-churn"));
+}
+
+// ---------- Bug-fix regression tests ----------
+
+#[test]
+fn throttle_pressure_fires_on_join_group_response_too() {
+    // Regression for bug #3: ThrottlePressure used to miss
+    // JoinGroupResponse and the other group-protocol responses
+    // even though they all carry `throttle_time_ms` (KIP-219).
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("th-jg", "t", 1, 9092);
+    fold.absorb(
+        &f,
+        Some(&FrameSummary::JoinGroupResponse {
+            error_code: 0,
+            generation_id: 1,
+            member_id: "m".into(),
+            throttle_time_ms: 200,
+        }),
+    );
+    assert!(fold.snapshot().detections.iter().any(|d| {
+        d.kind == AntiPatternKind::ThrottlePressure && d.scope == "conn=1|api=JoinGroup"
+    }));
+}
+
+#[test]
+fn stale_leader_does_not_invent_broker_zero_on_old_produce() {
+    // Regression for bug #2: on Produce v3-v9 the `current_leader`
+    // field doesn't exist on the wire and kafka-protocol fills it
+    // with `BrokerId(0)`. The detector used to report
+    // "current leader is broker 0" as if it were a real hint.
+    //
+    // The fix gates the field on api_version >= 10, so the
+    // extraction code in proto_summary returns `None`. We assert
+    // here that when `current_leader_id` is `None`, the detail
+    // line does not falsely claim a current leader.
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("sl-old", "t", 1, 9092);
+    fold.absorb(
+        &f,
+        Some(&FrameSummary::ProduceResponse {
+            errors: vec![ProducePartitionError {
+                topic: "t1".into(),
+                partition: 0,
+                error_code: 6,           // NOT_LEADER_OR_FOLLOWER
+                current_leader_id: None, // produce v3..=v9 path
+            }],
+            throttle_time_ms: 0,
+        }),
+    );
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::StaleLeaderProducing)
+        .expect("stale leader should fire");
+    assert!(
+        !det.detail.contains("current leader is broker 0"),
+        "regression: detail unexpectedly invented broker 0: {}",
+        det.detail
+    );
+}
+
+#[test]
+fn gc_drops_stale_per_connection_state() {
+    // Regression for bug #1: per-connection maps used to grow
+    // unboundedly because there was no idle expiry.
+    use std::time::Duration;
+    let mut fold = AntiPatternsFold::default();
+    // Seed state for connection 42 by absorbing a Produce frame.
+    let f = frame("seed", "t", 42, 9092);
+    fold.absorb(&f, Some(&produce(1, 1, Some(0), Some(-1), false)));
+    assert!(fold.per_connection.contains_key(&42));
+    assert!(fold.last_seen.contains_key(&42));
+    // Backdate last-seen well past the idle expiry, then run the GC
+    // sweep with a synthetic `now`.
+    let now = std::time::Instant::now();
+    fold.last_seen
+        .insert(42, now.checked_sub(Duration::from_secs(60 * 60)).unwrap());
+    fold.gc_idle_connections(now);
+    assert!(!fold.per_connection.contains_key(&42));
+    assert!(!fold.produce_codec.contains_key(&42));
+    assert!(!fold.produce_shape.contains_key(&42));
+    assert!(!fold.last_seen.contains_key(&42));
 }

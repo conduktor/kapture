@@ -9,6 +9,7 @@ use std::time::Instant;
 use crate::anti_patterns::state::{
     severity_rank, ConnectionCounters, DetectionKey, DetectionState, FetchShape, HandshakeState,
     LeakWindow, ProduceCodecStats, ProduceShape, RollingWindow, SaslState, TxnState,
+    CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
 };
 use crate::anti_patterns::{AntiPatternKind, AntiPatternsSnapshot, Detection, Severity};
 use crate::correlator::ProtoFrame;
@@ -59,6 +60,20 @@ pub struct AntiPatternsFold {
     pub(super) acl_deny_window: HashMap<i32, RollingWindow>,
     /// Per-group `JoinGroup` events that advertised `cooperative-sticky`.
     pub(super) cooperative_sticky_joins: HashMap<String, RollingWindow>,
+    /// Per-(topic, partition) timestamps of `OFFSET_OUT_OF_RANGE` fetch
+    /// errors. Rate-thresholded to avoid flagging benign single-seek.
+    pub(super) oor_per_partition: HashMap<(String, i32), RollingWindow>,
+    /// Per-connection last seen `OffsetCommitRequest.group_id`. Lets
+    /// the commit-during-rebalance detector attribute its scope to a
+    /// group (the response itself doesn't carry the id).
+    pub(super) last_commit_group: HashMap<i32, String>,
+    /// Per-connection last-touched timestamp. Drives GC of stale
+    /// per-connection maps so memory doesn't grow unboundedly with
+    /// short-lived TCP connections — the exact shape of the
+    /// producer-instance leak this crate is meant to detect.
+    pub(super) last_seen: HashMap<i32, Instant>,
+    /// Frame counter for the GC sweep cadence.
+    pub(super) frames_absorbed: u64,
 }
 
 impl AntiPatternsFold {
@@ -67,7 +82,49 @@ impl AntiPatternsFold {
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
         let Some(s) = summary else { return };
         let now = Instant::now();
+        // Touch the per-connection last-seen so the GC knows this
+        // connection is still active. Done before dispatch so even
+        // frames that fall through the dispatch (variants we ignore)
+        // keep the connection alive.
+        self.last_seen.insert(frame.connection_id, now);
+        self.frames_absorbed = self.frames_absorbed.wrapping_add(1);
+        if self.frames_absorbed % GC_SWEEP_EVERY == 0 {
+            self.gc_idle_connections(now);
+        }
         self.dispatch(frame, s, now);
+    }
+
+    /// Drop per-connection state for connections that haven't been
+    /// touched in `CONNECTION_IDLE_EXPIRY`. Caps memory so the
+    /// producer-instance-leak shape can't make Kapture itself leak.
+    pub(super) fn gc_idle_connections(&mut self, now: Instant) {
+        let mut stale: Vec<i32> = Vec::new();
+        for (conn, last) in &self.last_seen {
+            if now.duration_since(*last) > CONNECTION_IDLE_EXPIRY {
+                stale.push(*conn);
+            }
+        }
+        for conn in &stale {
+            self.last_seen.remove(conn);
+            self.per_connection.remove(conn);
+            self.produce_codec.remove(conn);
+            self.produce_shape.remove(conn);
+            self.in_flight_handshakes.remove(conn);
+            self.txn_state.remove(conn);
+            self.sasl_state.remove(conn);
+            self.fetch_shape.remove(conn);
+            self.fetch_session_errors.remove(conn);
+            self.metadata_requests.remove(conn);
+            self.acl_deny_window.remove(conn);
+            self.last_commit_group.remove(conn);
+        }
+        // utop_per_partition is keyed on (conn, topic, partition) —
+        // drop any entry whose conn just expired.
+        if !stale.is_empty() {
+            let drop_set: std::collections::HashSet<i32> = stale.into_iter().collect();
+            self.utop_per_partition
+                .retain(|(c, _, _), _| !drop_set.contains(c));
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -271,5 +328,9 @@ impl AntiPatternsFold {
         self.utop_per_partition.clear();
         self.acl_deny_window.clear();
         self.cooperative_sticky_joins.clear();
+        self.oor_per_partition.clear();
+        self.last_commit_group.clear();
+        self.last_seen.clear();
+        self.frames_absorbed = 0;
     }
 }

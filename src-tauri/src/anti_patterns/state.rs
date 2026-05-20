@@ -81,6 +81,23 @@ pub(super) const COORDINATOR_CHURN_THRESHOLD: usize = 4;
 /// errors on the same partition in the rolling window.
 pub(super) const UNKNOWN_TOPIC_POLL_THRESHOLD: usize = 3;
 
+/// Offset out of range: rate-threshold to avoid flagging benign
+/// auto.offset.reset single-seek cases. The actual bug is when a
+/// consumer keeps polling an out-of-range offset.
+pub(super) const OFFSET_OUT_OF_RANGE_THRESHOLD: usize = 3;
+
+/// Per-connection state idle expiry. Connections that haven't been
+/// observed for this long are GCed from every per-connection map
+/// (counters, rolling windows, handshake state, …). Bounds memory
+/// against the producer-instance leak we're meant to detect — without
+/// it Kapture itself leaks state proportionally to the bug.
+pub(super) const CONNECTION_IDLE_EXPIRY: Duration = Duration::from_secs(10 * 60);
+
+/// How often (in absorb calls) we run the GC sweep. A small constant
+/// keeps the amortised cost negligible while still catching leaks
+/// promptly under realistic frame rates.
+pub(super) const GC_SWEEP_EVERY: u64 = 1_000;
+
 /// ACL deny storm: at least this many auth errors (29/30/31) in the
 /// rolling window on the same scope.
 pub(super) const ACL_DENY_THRESHOLD: usize = 3;

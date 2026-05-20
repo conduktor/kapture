@@ -194,6 +194,7 @@ pub enum FrameSummary {
     FindCoordinatorResponse {
         error_code: i16,
         node_id: i32,
+        throttle_time_ms: i32,
     },
     JoinGroupRequest {
         group_id: String,
@@ -207,6 +208,7 @@ pub enum FrameSummary {
         error_code: i16,
         generation_id: i32,
         member_id: String,
+        throttle_time_ms: i32,
     },
     SyncGroupRequest {
         group_id: String,
@@ -215,6 +217,7 @@ pub enum FrameSummary {
     },
     SyncGroupResponse {
         error_code: i16,
+        throttle_time_ms: i32,
     },
     HeartbeatRequest {
         group_id: String,
@@ -223,12 +226,14 @@ pub enum FrameSummary {
     },
     HeartbeatResponse {
         error_code: i16,
+        throttle_time_ms: i32,
     },
     LeaveGroupRequest {
         group_id: String,
     },
     LeaveGroupResponse {
         error_code: i16,
+        throttle_time_ms: i32,
     },
     OffsetCommitRequest {
         group_id: String,
@@ -635,7 +640,12 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                     if p.error_code == 0 {
                         continue;
                     }
-                    let current_leader_id = if p.current_leader.leader_id.0 >= 0 {
+                    // `current_leader` field only exists on Produce v10+
+                    // (KIP-951). On older versions the kafka-protocol
+                    // decoder fills it with the default `BrokerId(0)` —
+                    // checking `>= 0` would falsely report broker 0 as
+                    // the new leader. Gate on the version explicitly.
+                    let current_leader_id = if version >= 10 && p.current_leader.leader_id.0 >= 0 {
                         Some(p.current_leader.leader_id.0)
                     } else {
                         None
@@ -680,6 +690,7 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
             Some(FrameSummary::FindCoordinatorResponse {
                 error_code,
                 node_id,
+                throttle_time_ms: resp.throttle_time_ms,
             })
         }
         ApiKey::JoinGroup => {
@@ -688,24 +699,28 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 error_code: resp.error_code,
                 generation_id: resp.generation_id,
                 member_id: resp.member_id.to_string(),
+                throttle_time_ms: resp.throttle_time_ms,
             })
         }
         ApiKey::SyncGroup => {
             let resp = SyncGroupResponse::decode(buf, version).ok()?;
             Some(FrameSummary::SyncGroupResponse {
                 error_code: resp.error_code,
+                throttle_time_ms: resp.throttle_time_ms,
             })
         }
         ApiKey::Heartbeat => {
             let resp = HeartbeatResponse::decode(buf, version).ok()?;
             Some(FrameSummary::HeartbeatResponse {
                 error_code: resp.error_code,
+                throttle_time_ms: resp.throttle_time_ms,
             })
         }
         ApiKey::LeaveGroup => {
             let resp = LeaveGroupResponse::decode(buf, version).ok()?;
             Some(FrameSummary::LeaveGroupResponse {
                 error_code: resp.error_code,
+                throttle_time_ms: resp.throttle_time_ms,
             })
         }
         ApiKey::OffsetCommit => {
