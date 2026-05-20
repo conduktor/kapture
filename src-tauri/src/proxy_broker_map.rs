@@ -43,7 +43,6 @@ impl BrokerListener {
 /// Bidirectional: `ensure_bound_listener(host, port)` allocates (or
 /// returns the cached) local port. `upstream_for_local(local)` is used
 /// by the per-listener pump to know where to forward bytes to.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct BrokerMap {
     inner: RwLock<BrokerMapInner>,
@@ -55,7 +54,6 @@ struct BrokerMapInner {
     by_local: HashMap<u16, (String, u16)>,
 }
 
-#[allow(dead_code)]
 impl BrokerMap {
     #[must_use]
     pub fn new() -> Self {

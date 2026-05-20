@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+#[cfg(test)]
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -45,10 +46,6 @@ pub const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
 /// map unboundedly.
 pub const MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: usize = 8192;
 
-// Skeleton type for Phase 1 — wired into AppState/commands in later tasks
-// of the proxy-mode plan (Tasks 6–8). Allowing dead_code locally so the
-// `-D warnings` gate passes while the module is still inert.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
     /// `host:port` of the upstream Kafka broker we forward to.
@@ -68,7 +65,6 @@ pub struct ProxyConfig {
     pub upstream_sasl: Option<UpstreamSaslConfig>,
 }
 
-#[allow(dead_code)] // see note on `ProxyConfig`
 impl ProxyConfig {
     #[must_use]
     pub const fn new(upstream: String, listen_port: u16) -> Self {
@@ -112,7 +108,6 @@ impl ProxyConfig {
 /// Max frame is 100 MiB — Kafka's default `socket.request.max.bytes`
 /// and the effective wire ceiling. Bounds memory against malicious
 /// peers sending a 4 GiB `len` field.
-#[allow(dead_code)] // see note on `ProxyConfig`
 pub fn framed_kafka<S: AsyncRead + AsyncWrite + Unpin>(
     socket: S,
 ) -> Framed<S, LengthDelimitedCodec> {
@@ -131,7 +126,6 @@ pub fn framed_kafka<S: AsyncRead + AsyncWrite + Unpin>(
 /// varies by version and we don't need it for routing / correlation.
 const REQUEST_HEADER_PREFIX_LEN: usize = 8;
 
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Clone, Copy)]
 pub struct RequestHeaderPeek {
     pub api_key: i16,
@@ -141,7 +135,6 @@ pub struct RequestHeaderPeek {
 
 /// Read the fixed-shape request header prefix without consuming the
 /// buffer. Returns `None` if the buffer is too short.
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[must_use]
 pub fn peek_request_header(frame: &[u8]) -> Option<RequestHeaderPeek> {
     if frame.len() < REQUEST_HEADER_PREFIX_LEN {
@@ -161,14 +154,12 @@ pub fn peek_request_header(frame: &[u8]) -> Option<RequestHeaderPeek> {
 /// TCP connection. The `sent_at` timestamp powers RTT measurement —
 /// strictly per-connection, not per-broker, since `corr_id` uniqueness
 /// is only guaranteed within one TCP connection (Kafka spec).
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Clone, Copy)]
 pub struct PendingRequest {
     pub header: RequestHeaderPeek,
     pub sent_at: Instant,
 }
 
-#[allow(dead_code)] // see note on `ProxyConfig`
 impl PendingRequest {
     #[must_use]
     pub fn rtt_at(&self, now: Instant) -> f64 {
@@ -184,13 +175,11 @@ impl PendingRequest {
 /// cannot send unlimited unique correlation IDs without reading
 /// responses. If a connection drops mid-flight any leftovers are
 /// released when the owning task exits and drops the map.
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Default)]
 pub struct CorrelationMap {
     inner: Mutex<HashMap<i32, PendingRequest>>,
 }
 
-#[allow(dead_code)] // see note on `ProxyConfig`
 impl CorrelationMap {
     pub fn record_request(&self, corr_id: i32, header: RequestHeaderPeek) -> io::Result<()> {
         let mut inner = self.inner.lock();
@@ -219,12 +208,10 @@ impl CorrelationMap {
 /// key for `(corr_id, connection_id)` in the inspector — same field
 /// as the rdkafka-client mode's `connection_id` (which forwards the
 /// librdkafka `broker_id`).
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionId(pub u64);
 
 /// Direction of a tapped frame, from the proxy's point of view.
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyDirection {
     /// Frame came in from the connecting Kafka client → going to upstream.
@@ -237,7 +224,6 @@ pub enum ProxyDirection {
 /// is fine — these are session-scoped and never persisted.
 static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
-#[allow(dead_code)] // see note on `ProxyConfig`
 #[must_use]
 pub fn next_connection_id() -> ConnectionId {
     ConnectionId(NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
@@ -251,7 +237,11 @@ pub fn next_connection_id() -> ConnectionId {
 /// the inspector observes frames in arrival order. The callback must
 /// not block: in production it just pushes into the correlator's
 /// ring-buffer mutex (~µs).
-#[allow(dead_code)] // see note on `ProxyConfig`
+///
+/// Test-only: production runs `run_pump_with_rewrite`, which also
+/// drives `ProtoCorrelator` + per-API rewriting. This minimal pump is
+/// retained as a wire-loop sanity fixture in `proxy_tests`.
+#[cfg(test)]
 pub async fn run_pump<U, F>(
     conn_id: ConnectionId,
     client: TcpStream,
@@ -300,7 +290,6 @@ where
 ///
 /// # Errors
 /// Bubbles up `io::Error` from the underlying TCP read/write.
-#[allow(dead_code)] // wired into ProxyHandle::start in Task 16
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -481,7 +470,6 @@ where
 /// owned the pump that produced this frame — stamped on the event so
 /// downstream views can aggregate per-broker without a connection→
 /// listener side-table.
-#[allow(dead_code)] // wired into the pump tap in Task 6
 pub fn build_proto_event(
     dir: ProxyDirection,
     conn_id: ConnectionId,

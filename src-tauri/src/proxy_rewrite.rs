@@ -21,9 +21,6 @@
 //! via the (already-rewritten) Metadata cache.
 
 #![allow(clippy::wildcard_imports)]
-// Wired up by Task 15 (pump integration). Until then, the module
-// is reachable only from its own tests.
-#![allow(dead_code)]
 
 use bytes::{Bytes, BytesMut};
 use kafka_protocol::messages::{
