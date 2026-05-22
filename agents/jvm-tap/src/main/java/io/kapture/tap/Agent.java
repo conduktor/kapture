@@ -9,9 +9,16 @@ import java.lang.instrument.Instrumentation;
 /**
  * Kapture JVM tap agent.
  *
- * Hooks {@code org.apache.kafka.common.network.SslTransportLayer}:
- *   - read(ByteBuffer dst)        — OnMethodExit  → captures plaintext just decrypted into dst
- *   - write(ByteBuffer[] srcs)    — OnMethodEnter → captures plaintext before encryption
+ * Hooks both Kafka client transport layers:
+ *   {@code org.apache.kafka.common.network.SslTransportLayer}        (TLS path)
+ *   {@code org.apache.kafka.common.network.PlaintextTransportLayer}  (PLAINTEXT path)
+ *
+ * Same advice for both — the read(ByteBuffer)/write(ByteBuffer[], int, int)
+ * signatures come from the shared TransportLayer interface (extends
+ * GatheringByteChannel + ScatteringByteChannel). For SSL the read buffer
+ * contains freshly-decrypted plaintext; for plaintext it contains the
+ * wire bytes directly. The Rust listener reassembles either stream the
+ * same way.
  *
  * Each captured chunk is enqueued on {@link TapPublisher}, which a single writer
  * thread drains over a Unix Domain Socket at /tmp/kapture-tap.sock.
@@ -61,20 +68,41 @@ public final class Agent {
                 })
                 .ignore(ElementMatchers.nameStartsWith("net.bytebuddy."))
                 .ignore(ElementMatchers.nameStartsWith("io.kapture.tap."))
+                // Two transport layers, two transforms — different
+                // bytecode shapes mean the right write-overload to hook
+                // is per-class:
+                //   * SslTransportLayer.write(BB[]) delegates to
+                //     .write(BB[], int, int); hooking the 3-arg form
+                //     dedups (we'd see 2x otherwise via the bridge).
+                //   * PlaintextTransportLayer.write(BB[]) calls
+                //     socketChannel.write() directly — bypassing the
+                //     3-arg form entirely — so we MUST hook the 1-arg
+                //     form there. Verified by reading kafka-clients
+                //     3.x bytecode.
                 .type(ElementMatchers.named("org.apache.kafka.common.network.SslTransportLayer"))
                 .transform((builder, typeDescription, classLoader, module, pd) ->
                         builder
-                                // read(ByteBuffer dst) — exactly one frame per actual byte movement
                                 .visit(Advice.to(ReadAdvice.class)
                                         .on(ElementMatchers.named("read")
                                                 .and(ElementMatchers.takesArguments(java.nio.ByteBuffer.class))))
-                                // write(ByteBuffer[], int, int) — the gathering-channel inner impl;
-                                // the (BB[]) and (BB) overloads in SslTransportLayer ultimately
-                                // delegate here, so matching only this signature avoids 2-3x duplicates.
                                 .visit(Advice.to(WriteAdvice.class)
                                         .on(ElementMatchers.named("write")
                                                 .and(ElementMatchers.takesArgument(0, java.nio.ByteBuffer[].class))
                                                 .and(ElementMatchers.takesArguments(3))))
+                )
+                .type(ElementMatchers.named("org.apache.kafka.common.network.PlaintextTransportLayer"))
+                .transform((builder, typeDescription, classLoader, module, pd) ->
+                        builder
+                                .visit(Advice.to(ReadAdvice.class)
+                                        .on(ElementMatchers.named("read")
+                                                .and(ElementMatchers.takesArguments(java.nio.ByteBuffer.class))))
+                                // PlaintextTransportLayer.write(BB[]) is the actual
+                                // entry point Kafka's NetworkSend uses. Hooking the
+                                // 1-arg form catches it; the 3-arg form is never
+                                // called on plaintext.
+                                .visit(Advice.to(WriteAdviceOneArg.class)
+                                        .on(ElementMatchers.named("write")
+                                                .and(ElementMatchers.takesArguments(java.nio.ByteBuffer[].class))))
                 )
                 .installOn(inst);
 

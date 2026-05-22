@@ -221,21 +221,24 @@ jobs:
       - name: Build the JVM test client
         run: mvn -B -q -DskipTests -f src-tauri/tests/fixtures/jvm-test-client/pom.xml package
 
-      - name: Bring up SSL Kafka broker
+      - name: Bring up SSL + plaintext Kafka brokers
         run: |
-          docker compose --profile ssl up -d kafka-ssl
-          for _ in $(seq 1 60); do
-            if (echo > /dev/tcp/localhost/39093) >/dev/null 2>&1; then
-              echo "ssl broker ready"
-              break
-            fi
-            sleep 2
+          docker compose --profile ssl --profile kafka up -d kafka-ssl kafka
+          for port in 39093 29092; do
+            for _ in $(seq 1 60); do
+              if (echo > /dev/tcp/localhost/$port) >/dev/null 2>&1; then
+                echo "broker on $port ready"
+                break
+              fi
+              sleep 2
+            done
           done
 
-      - name: Run JVM tap end-to-end test
+      - name: Run JVM tap end-to-end tests (SSL + plaintext)
         env:
           KAPTURE_JVM_TAP_E2E: "1"
           KAPTURE_KAFKA_SSL_BOOTSTRAP: "localhost:39093"
+          KAPTURE_KAFKA_BOOTSTRAP: "localhost:29092"
         run: |
           cargo test --manifest-path src-tauri/Cargo.toml \
             --test jvm_tap_e2e \
@@ -243,4 +246,4 @@ jobs:
 
       - name: Dump broker logs on failure
         if: failure()
-        run: docker compose --profile ssl logs --tail=300
+        run: docker compose --profile ssl --profile kafka logs --tail=300

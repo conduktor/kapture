@@ -36,6 +36,8 @@ public final class Producer {
                 .normalize().toString());
     String truststorePass = System.getProperty("truststore.password", "kapture");
 
+    String securityProtocol = System.getProperty("security.protocol", "SSL");
+
     Properties props = new Properties();
     props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP);
     props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
@@ -43,15 +45,17 @@ public final class Producer {
     props.put(ProducerConfig.CLIENT_ID_CONFIG, "jvm-tap-producer");
     props.put(ProducerConfig.ACKS_CONFIG, "all");
     props.put(ProducerConfig.LINGER_MS_CONFIG, 0);
+    props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, securityProtocol);
 
-    // SSL — one-way auth, the broker presents a self-signed cert that the
-    // truststore vouches for. No client cert (ssl.client.auth=none broker-side).
-    props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SSL");
-    props.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, truststore);
-    props.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, truststorePass);
-    props.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, "JKS");
-    // The broker cert SAN includes `localhost`, so HTTPS-style endpoint ID works.
-    props.put(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
+    if ("SSL".equals(securityProtocol)) {
+      // SSL — one-way auth, the broker presents a self-signed cert that the
+      // truststore vouches for. No client cert (ssl.client.auth=none broker-side).
+      props.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, truststore);
+      props.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, truststorePass);
+      props.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, "JKS");
+      // The broker cert SAN includes `localhost`, so HTTPS-style endpoint ID works.
+      props.put(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
+    }
 
     System.out.println("[producer] bootstrap=" + BOOTSTRAP + " truststore=" + truststore);
 

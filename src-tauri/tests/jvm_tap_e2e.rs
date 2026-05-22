@@ -1,18 +1,28 @@
-//! End-to-end test for the JVM tap mode.
+//! End-to-end tests for the JVM tap mode.
 //!
 //! Walks the full pipeline: a Java Kafka producer (under
 //! `tests/fixtures/jvm-test-client/`) attaches the Kapture JVM agent
 //! (`agents/jvm-tap/target/kapture-jvm-agent.jar`), produces 10
-//! messages to a real SSL-listener Apache Kafka broker, and the test
-//! asserts that the JVM-tap listener captured the matching Kafka
-//! request/response frames through `ProtoCorrelator`.
+//! messages to a real Apache Kafka broker, and the test asserts that
+//! the JVM-tap listener captured the matching Kafka request/response
+//! frames through `ProtoCorrelator`.
+//!
+//! Two variants:
+//!   * `jvm_tap_captures_produce_and_fetch_frames_ssl` — TLS listener,
+//!     hooks `SslTransportLayer`.
+//!   * `jvm_tap_captures_produce_and_fetch_frames_plaintext` — plain
+//!     listener, hooks `PlaintextTransportLayer`. Both transport
+//!     layers share the same Kafka client read/write boundary and
+//!     the same advice classes — the matcher in `Agent.java` covers
+//!     both.
 //!
 //! Gating
 //! ------
-//! Two env vars must be set, otherwise the test prints a notice and
-//! returns early (so `cargo test` on a vanilla checkout is green):
-//!   * `KAPTURE_JVM_TAP_E2E=1`
-//!   * `KAPTURE_KAFKA_SSL_BOOTSTRAP=localhost:39093`
+//! Each variant skips cleanly (so `cargo test` on a vanilla checkout
+//! stays green) unless `KAPTURE_JVM_TAP_E2E=1` AND the variant's
+//! bootstrap env var is set:
+//!   * SSL variant     → `KAPTURE_KAFKA_SSL_BOOTSTRAP=localhost:39093`
+//!   * plaintext one   → `KAPTURE_KAFKA_BOOTSTRAP=localhost:29092`
 //!
 //! Prerequisites the test does NOT install for you (CI provisions
 //! these in a previous step; a clear panic message tells you what's
@@ -67,29 +77,26 @@ fn require_file(path: &Path, hint: &str) {
     );
 }
 
-fn ensure_topic_exists(bootstrap: &str) {
+fn ensure_topic_exists(container_name: &str, bootstrap: &str) {
     // Best-effort: pre-create the topic via `docker exec` so the
     // producer's first Produce doesn't race the controller's initial
     // metadata propagation on a freshly-restarted broker. We've seen
     // `auto-create-topics-enable=true` still return `Topic tap-test
     // not present in metadata after 60000 ms` in that race window.
     //
-    // The docker-exec path is OPTIONAL. The test must also work
-    // against a non-docker SSL broker (CI matrix expansion, a remote
-    // dev cluster, etc.). If `docker` is not on PATH, or the
-    // container `kapture-kafka-ssl` is not running, we print a
-    // notice and let the producer rely on the broker's
-    // auto-create-topics-enable or pre-existing topic. The producer
-    // will fail with a clear "topic not in metadata" timeout if
-    // neither is true.
+    // OPTIONAL: if `docker` is not on PATH, or the container isn't
+    // running, we print a notice and let the producer rely on the
+    // broker's auto-create-topics-enable or a pre-existing topic.
+    // The producer will fail with a clear "topic not in metadata"
+    // timeout if neither is true.
     let _ = bootstrap; // bootstrap is for diagnostics in panics below
     let output = match Command::new("docker")
         .args([
             "exec",
-            "kapture-kafka-ssl",
+            container_name,
             "/opt/kafka/bin/kafka-topics.sh",
             "--bootstrap-server",
-            "kafka-ssl:9092",
+            "localhost:9092",
             "--create",
             "--topic",
             "tap-test",
@@ -121,25 +128,18 @@ fn ensure_topic_exists(bootstrap: &str) {
     }
 }
 
-#[tokio::test]
-async fn jvm_tap_captures_produce_and_fetch_frames() {
-    let Some(_flag) = env_or_skip(
-        "jvm_tap_captures_produce_and_fetch_frames",
-        "KAPTURE_JVM_TAP_E2E",
-    ) else {
-        return;
-    };
-    let Some(bootstrap) = env_or_skip(
-        "jvm_tap_captures_produce_and_fetch_frames",
-        "KAPTURE_KAFKA_SSL_BOOTSTRAP",
-    ) else {
-        return;
-    };
-
+/// Shared body for every transport-layer variant. `truststore`
+/// is `Some(path)` for SSL brokers (the Java client is told to
+/// configure SSL via that JKS); `None` for plaintext brokers.
+async fn run_e2e(
+    test_name: &str,
+    bootstrap: &str,
+    container_name: &str,
+    truststore: Option<&Path>,
+) {
     let root = repo_root();
     let agent_jar = root.join("agents/jvm-tap/target/kapture-jvm-agent.jar");
     let client_jar = root.join("src-tauri/tests/fixtures/jvm-test-client/target/jvm-tap-app.jar");
-    let truststore = root.join("src-tauri/tests/fixtures/certs/client.truststore.jks");
     require_file(
         &agent_jar,
         "build with: (cd agents/jvm-tap && mvn -q -DskipTests package)",
@@ -148,11 +148,13 @@ async fn jvm_tap_captures_produce_and_fetch_frames() {
         &client_jar,
         "build with: (cd src-tauri/tests/fixtures/jvm-test-client && mvn -q -DskipTests package)",
     );
-    require_file(
-        &truststore,
-        "generate with: src-tauri/tests/fixtures/certs/gen-certs.sh",
-    );
-    ensure_topic_exists(&bootstrap);
+    if let Some(ts) = truststore {
+        require_file(
+            ts,
+            "generate with: src-tauri/tests/fixtures/certs/gen-certs.sh",
+        );
+    }
+    ensure_topic_exists(container_name, bootstrap);
 
     // Use a per-test UDS path so two parallel runs don't fight over
     // /tmp/kapture-tap.sock.
@@ -167,52 +169,43 @@ async fn jvm_tap_captures_produce_and_fetch_frames() {
     .await
     .expect("jvm-tap listener starts");
 
-    // ------- producer pass -------
-    let producer_status = Command::new("java")
-        .args([
-            &format!("-javaagent:{}", agent_jar.display()),
-            "-Dio.kapture.tap.shaded.bytebuddy.experimental=true",
-            &format!("-Dkapture.tap.socket={}", socket_path.display()),
-            "--add-opens",
-            "java.base/java.nio=ALL-UNNAMED",
-            &format!("-Dtruststore={}", truststore.display()),
-            &format!("-Dbootstrap={bootstrap}"),
-            "-jar",
-        ])
-        .arg(&client_jar)
-        .arg("producer")
-        .status()
-        .expect("spawn java producer");
+    let run_client_role = |role: &'static str| -> std::process::ExitStatus {
+        let mut args: Vec<String> = vec![
+            format!("-javaagent:{}", agent_jar.display()),
+            "-Dio.kapture.tap.shaded.bytebuddy.experimental=true".to_owned(),
+            format!("-Dkapture.tap.socket={}", socket_path.display()),
+            "--add-opens".to_owned(),
+            "java.base/java.nio=ALL-UNNAMED".to_owned(),
+            format!("-Dbootstrap={bootstrap}"),
+        ];
+        if let Some(ts) = truststore {
+            args.push(format!("-Dtruststore={}", ts.display()));
+        } else {
+            args.push("-Dsecurity.protocol=PLAINTEXT".to_owned());
+        }
+        args.push("-jar".to_owned());
+        Command::new("java")
+            .args(&args)
+            .arg(&client_jar)
+            .arg(role)
+            .status()
+            .unwrap_or_else(|err| panic!("spawn java {role}: {err}"))
+    };
+
+    let producer_status = run_client_role("producer");
     assert!(
         producer_status.success(),
-        "producer exited with {producer_status}; is the SSL broker reachable on {bootstrap}?"
+        "{test_name}: producer exited with {producer_status}; broker reachable on {bootstrap}?"
     );
-
-    // ------- consumer pass -------
-    let consumer_status = Command::new("java")
-        .args([
-            &format!("-javaagent:{}", agent_jar.display()),
-            "-Dio.kapture.tap.shaded.bytebuddy.experimental=true",
-            &format!("-Dkapture.tap.socket={}", socket_path.display()),
-            "--add-opens",
-            "java.base/java.nio=ALL-UNNAMED",
-            &format!("-Dtruststore={}", truststore.display()),
-            &format!("-Dbootstrap={bootstrap}"),
-            "-jar",
-        ])
-        .arg(&client_jar)
-        .arg("consumer")
-        .status()
-        .expect("spawn java consumer");
+    let consumer_status = run_client_role("consumer");
     assert!(
         consumer_status.success(),
-        "consumer exited with {consumer_status}"
+        "{test_name}: consumer exited with {consumer_status}"
     );
 
     // Give the tap publisher's shutdown drain a moment to flush.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // ------- assert -------
     let summaries = correlator.summaries(10_000);
     let api_names: std::collections::HashSet<String> =
         summaries.iter().map(|s| s.api_name.clone()).collect();
@@ -222,25 +215,19 @@ async fn jvm_tap_captures_produce_and_fetch_frames() {
     // missing the tap didn't capture the bootstrap connection at all.
     assert!(
         api_names.contains("ApiVersionsRequest"),
-        "expected at least one ApiVersionsRequest, got: {api_names:?}"
+        "{test_name}: expected ApiVersionsRequest, got: {api_names:?}"
     );
     assert!(
         api_names.contains("MetadataRequest"),
-        "expected at least one MetadataRequest, got: {api_names:?}"
+        "{test_name}: expected MetadataRequest, got: {api_names:?}"
     );
-
-    // Producer side: at least one ProduceRequest (the batch carries
-    // all 10 records).
     assert!(
         api_names.contains("ProduceRequest"),
-        "expected at least one ProduceRequest, got: {api_names:?}"
+        "{test_name}: expected ProduceRequest, got: {api_names:?}"
     );
-
-    // Consumer side: at least one FetchRequest, plus the group RPCs
-    // the consumer uses to join `tap-test`.
     assert!(
         api_names.contains("FetchRequest"),
-        "expected at least one FetchRequest, got: {api_names:?}"
+        "{test_name}: expected FetchRequest, got: {api_names:?}"
     );
 
     // Per-side request/response pairing: every captured request
@@ -248,8 +235,39 @@ async fn jvm_tap_captures_produce_and_fetch_frames() {
     // wire frame, so `size > 4` is the floor — 4 bytes is the
     // length prefix alone).
     for s in &summaries {
-        assert!(s.size > 4, "captured frame too short: {s:?}");
+        assert!(s.size > 4, "{test_name}: captured frame too short: {s:?}");
     }
 
     tap.stop().await;
+}
+
+/// Tap covers SSL traffic via `SslTransportLayer` instrumentation.
+#[tokio::test]
+async fn jvm_tap_captures_produce_and_fetch_frames_ssl() {
+    let name = "jvm_tap_captures_produce_and_fetch_frames_ssl";
+    let Some(_flag) = env_or_skip(name, "KAPTURE_JVM_TAP_E2E") else {
+        return;
+    };
+    let Some(bootstrap) = env_or_skip(name, "KAPTURE_KAFKA_SSL_BOOTSTRAP") else {
+        return;
+    };
+    let truststore = repo_root().join("src-tauri/tests/fixtures/certs/client.truststore.jks");
+    run_e2e(name, &bootstrap, "kapture-kafka-ssl", Some(&truststore)).await;
+}
+
+/// Tap covers PLAINTEXT traffic via `PlaintextTransportLayer`
+/// instrumentation. Same advice classes, different bytecode target.
+/// Validates that the agent's matcher now catches both transport
+/// layers — making the tap a drop-in replacement for proxy mode on
+/// non-TLS dev clusters (docker-compose local Kafka).
+#[tokio::test]
+async fn jvm_tap_captures_produce_and_fetch_frames_plaintext() {
+    let name = "jvm_tap_captures_produce_and_fetch_frames_plaintext";
+    let Some(_flag) = env_or_skip(name, "KAPTURE_JVM_TAP_E2E") else {
+        return;
+    };
+    let Some(bootstrap) = env_or_skip(name, "KAPTURE_KAFKA_BOOTSTRAP") else {
+        return;
+    };
+    run_e2e(name, &bootstrap, "kapture-kafka", None).await;
 }

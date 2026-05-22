@@ -36,6 +36,8 @@ public final class Consumer {
                 .normalize().toString());
     String truststorePass = System.getProperty("truststore.password", "kapture");
 
+    String securityProtocol = System.getProperty("security.protocol", "SSL");
+
     Properties props = new Properties();
     props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, BOOTSTRAP);
     props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
@@ -43,12 +45,14 @@ public final class Consumer {
     props.put(ConsumerConfig.GROUP_ID_CONFIG, "jvm-tap-consumer-" + System.currentTimeMillis());
     props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
     props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+    props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, securityProtocol);
 
-    props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SSL");
-    props.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, truststore);
-    props.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, truststorePass);
-    props.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, "JKS");
-    props.put(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
+    if ("SSL".equals(securityProtocol)) {
+      props.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, truststore);
+      props.put(SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG, truststorePass);
+      props.put(SslConfigs.SSL_TRUSTSTORE_TYPE_CONFIG, "JKS");
+      props.put(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
+    }
 
     System.out.println("[consumer] bootstrap=" + BOOTSTRAP + " truststore=" + truststore);
 
