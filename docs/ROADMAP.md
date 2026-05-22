@@ -158,23 +158,14 @@ Protocol / Messages / Expert tabs render the same data with a
 posts in `docs/blog/01..05-*.md` explain the motivation and the
 design.
 
-### JVM tap [M, integrated]
+> **JVM tap** is already shipped (covers `SslTransportLayer` and
+> `PlaintextTransportLayer`, agent at `agents/jvm-tap/`, listener at
+> `src-tauri/src/jvm_tap.rs`, Tauri commands `start_jvm_tap` /
+> `stop_jvm_tap`). The items below are the remaining tap work.
 
-Java agent (`-javaagent:kapture-jvm-agent.jar`, source at
-`agents/jvm-tap/`) instruments
-`org.apache.kafka.common.network.SslTransportLayer.read /
-.write(BB[], int, int)` via ByteBuddy. Plaintext bytes are pushed
-over a Unix domain socket to `src-tauri/src/jvm_tap.rs`, which
-reassembles per-`(connection, direction)` Kafka frames and feeds
-the same `ProtoCorrelator` the proxy uses — so the Protocol /
-Messages / Expert tabs render tap-sourced and proxy-sourced
-frames identically.
+### JVM tap — follow-ups [S/M each]
 
-Tauri commands: `start_jvm_tap { socketPath? }` and `stop_jvm_tap`.
-The tap shares the single capture slot with proxy mode; calls
-return `AlreadyJvmTapping` / `NotJvmTapping` accordingly.
-
-Remaining work to harden:
+Hardening + UX items left on the JVM path:
 
 - Bump ByteBuddy to a release with Java 25 support (eliminates the
   `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
@@ -186,12 +177,8 @@ Remaining work to harden:
 - Detection that the JVM is using Conscrypt or BouncyCastle JSSE
   instead of SunJSSE → either extend the hook target or surface a
   "use proxy mode" message.
-
-_Why:_ Java is roughly two-thirds of the production Kafka client
-market. Java clients are also the ones most often shielded behind
-strict TLS (Confluent Cloud + mTLS + cert pinning), which is
-exactly where the proxy is hardest to set up. Highest demand-gen
-impact of the three tap modes.
+- Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
+  the desktop app so users don't have to build it from source.
 
 ### eBPF tap — librdkafka family [L]
 
@@ -254,7 +241,7 @@ remaining production gap. Combined with the JVM and librdkafka
 taps, Kapture observes roughly 95% of the production Kafka client
 market without breaking TLS.
 
-### Tap source picker UI [S, depends on at least one tap mode]
+### Tap source picker UI [S]
 
 Connection dialog gains a "Tap a process" entry alongside "New
 proxy". The picker lists local processes that look like Kafka
@@ -272,7 +259,7 @@ _Why:_ Without a friendly picker, the tap modes are CLI flags only.
 The picker is what makes the feature visible to users who don't
 read the docs.
 
-### Pcap / SSLKEYLOGFILE import [M, depends on tap pipeline]
+### Pcap / SSLKEYLOGFILE import [M]
 
 Fourth observation source: a `.pcap` file plus an
 `SSLKEYLOGFILE`-format key log. Kapture decrypts offline using the

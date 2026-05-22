@@ -116,12 +116,11 @@ pnpm install && pnpm tauri dev
 
 ## Roadmap
 
-- **JVM tap mode — shipped.** ByteBuddy agent on `SslTransportLayer` + `PlaintextTransportLayer` covers every TLS posture a Java Kafka client supports (SSL, plaintext, mTLS, Confluent Cloud, MSK, …). Same decoder pipeline as proxy mode. Agent at [`agents/jvm-tap/`](agents/jvm-tap/), Rust listener at `src-tauri/src/jvm_tap.rs`, e2e fixtures at [`src-tauri/tests/fixtures/`](src-tauri/tests/fixtures/). Background and design in the [five-part blog series](docs/blog/).
-- **eBPF taps — next.** `librdkafka` family (Python, Node, Ruby, .NET, C++) via `SSL_write`/`SSL_read` uprobes; Go static `crypto/tls` via RET-scan uprobes. Linux only, same observation guarantees as the JVM tap. Combined with the JVM tap, target is ~95% of the production Kafka client market observable without provisioning a cert.
+- **eBPF taps.** `librdkafka` family (Python, Node, Ruby, .NET, C++) via `SSL_write`/`SSL_read` uprobes; Go static `crypto/tls` via RET-scan uprobes. Linux only. Combined with the JVM tap already shipped, target is ~95% of the production Kafka client market observable without provisioning a cert.
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
 
-Full backlog with shirt sizes in [docs/ROADMAP.md](docs/ROADMAP.md).
+Full backlog with shirt sizes in [docs/ROADMAP.md](docs/ROADMAP.md). Background and design notes on the JVM tap in the [five-part blog series](docs/blog/).
 
 ## Changelog
 
