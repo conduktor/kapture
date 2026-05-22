@@ -146,7 +146,7 @@ upstream broker. That breaks pinning, mTLS, Confluent Cloud cert
 chains, and any client environment where "swap the cert" is not
 acceptable.
 
-Tap modes observe the Kafka wire from *inside* the client process
+Tap modes observe the Kafka wire from _inside_ the client process
 (or kernel-side via uprobes) instead of standing between client and
 broker. The TLS connection stays end-to-end with the real broker.
 Kapture sees plaintext because it reads the bytes before encrypt /
