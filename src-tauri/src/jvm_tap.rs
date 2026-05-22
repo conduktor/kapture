@@ -147,6 +147,21 @@ impl JvmTapHandle {
         }
 
         let listener = UnixListener::bind(&config.socket_path)?;
+        // Lock the socket file to owner-only (mode 0600). UnixListener
+        // creates the socket with default umask perms which on most
+        // Linuxes is 0755 — any local user could connect and inject
+        // forged Kafka frames into the inspector. This sets perms
+        // immediately after bind; the TOCTOU window between bind and
+        // chmod is tiny (no `await` in between) and an attacker would
+        // need to be already polling the parent directory to exploit
+        // it. macOS does not strictly enforce UDS file perms for
+        // connect() on all kernels, but the chmod still provides
+        // defense-in-depth and matches the user's expectation.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config.socket_path, std::fs::Permissions::from_mode(0o600))?;
+        }
         info!(path = %config.socket_path.display(), "jvm-tap listening");
 
         let (stop_tx, stop_rx) = watch::channel(false);

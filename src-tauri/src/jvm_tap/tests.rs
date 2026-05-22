@@ -508,3 +508,22 @@ async fn reassembly_buffer_capacity_shrinks_after_large_frame_drains() {
         buf.capacity()
     );
 }
+
+/// The UDS socket file must be created with owner-only permissions
+/// (mode 0600). Any wider mode would let a different local user
+/// connect to the socket and inject forged Kafka frames into the
+/// inspector — flagged by the security review as the main
+/// non-correctness risk for the tap path.
+#[cfg(unix)]
+#[tokio::test]
+async fn socket_file_is_created_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let (handle, _correlator, path) = fresh_tap().await;
+    let meta = std::fs::metadata(&path).expect("socket file should exist");
+    let mode = meta.permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "expected socket permissions 0600 (owner-only) for security, got {mode:o}"
+    );
+    handle.stop().await;
+}
