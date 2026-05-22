@@ -68,15 +68,22 @@ fn require_file(path: &Path, hint: &str) {
 }
 
 fn ensure_topic_exists(bootstrap: &str) {
-    // We've seen `auto-create-topics-enable=true` clusters still
-    // return `Topic tap-test not present in metadata after 60000 ms`
-    // when the producer's first Produce races the controller's
-    // initial metadata propagation on a freshly-restarted broker.
-    // Pre-creating the topic via `kafka-topics.sh` inside the broker
-    // container makes the test deterministic. The container name
-    // matches `docker-compose.yml`'s `kapture-kafka-ssl`.
+    // Best-effort: pre-create the topic via `docker exec` so the
+    // producer's first Produce doesn't race the controller's initial
+    // metadata propagation on a freshly-restarted broker. We've seen
+    // `auto-create-topics-enable=true` still return `Topic tap-test
+    // not present in metadata after 60000 ms` in that race window.
+    //
+    // The docker-exec path is OPTIONAL. The test must also work
+    // against a non-docker SSL broker (CI matrix expansion, a remote
+    // dev cluster, etc.). If `docker` is not on PATH, or the
+    // container `kapture-kafka-ssl` is not running, we print a
+    // notice and let the producer rely on the broker's
+    // auto-create-topics-enable or pre-existing topic. The producer
+    // will fail with a clear "topic not in metadata" timeout if
+    // neither is true.
     let _ = bootstrap; // bootstrap is for diagnostics in panics below
-    let output = Command::new("docker")
+    let output = match Command::new("docker")
         .args([
             "exec",
             "kapture-kafka-ssl",
@@ -93,11 +100,22 @@ fn ensure_topic_exists(bootstrap: &str) {
             "--if-not-exists",
         ])
         .output()
-        .expect("invoke docker exec kafka-topics.sh");
+    {
+        Ok(o) => o,
+        Err(err) => {
+            eprintln!(
+                "ensure_topic_exists: docker exec unavailable ({err}); relying on broker \
+                 auto-create-topics-enable or a pre-existing tap-test topic"
+            );
+            return;
+        }
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "failed to pre-create tap-test topic: status={}\nstderr: {stderr}",
+        eprintln!(
+            "ensure_topic_exists: docker exec returned non-zero (status={}); relying on \
+             broker auto-create-topics-enable or a pre-existing tap-test topic.\nstderr: \
+             {stderr}",
             output.status
         );
     }

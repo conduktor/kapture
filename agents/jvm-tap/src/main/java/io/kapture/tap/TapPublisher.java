@@ -32,7 +32,19 @@ public final class TapPublisher {
             System.getProperty("kapture.tap.socket", "/tmp/kapture-tap.sock");
 
     private static final int QUEUE_CAPACITY = 8192;
-    private static final int MAX_PAYLOAD = 1 << 20; // 1 MiB cap per frame
+    /**
+     * Per-payload cap in bytes. Anything bigger is DROPPED (not
+     * truncated), and the (connection, direction) reassembly stream
+     * on the Rust side is signalled as desynced — see capture() below.
+     *
+     * Matches the Rust listener's MAX_KAFKA_FRAME_LEN (16 MiB) so a
+     * legitimate single-ByteBuffer ProduceRequest up to that size goes
+     * through whole. Truncating in a length-prefixed protocol
+     * guaranteed corruption: the Rust side would read N bytes of a
+     * frame whose prefix announced N+M bytes and graft the next
+     * unrelated chunk onto the missing tail.
+     */
+    private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
 
     private static final LinkedBlockingQueue<Frame> QUEUE = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
     private static final ConcurrentHashMap<Object, Integer> CONN_IDS = new ConcurrentHashMap<>();
@@ -72,10 +84,16 @@ public final class TapPublisher {
     public static void capture(Object owner, byte direction, byte[] payload) {
         if (payload == null || payload.length == 0) return;
         if (payload.length > MAX_PAYLOAD) {
-            // Truncate huge buffers; we still want a signal.
-            byte[] trimmed = new byte[MAX_PAYLOAD];
-            System.arraycopy(payload, 0, trimmed, 0, MAX_PAYLOAD);
-            payload = trimmed;
+            // DROP the payload — do NOT truncate. The Rust listener
+            // reassembles per (connection, direction) using the Kafka
+            // 4-byte length prefix; a truncated payload would leave
+            // it expecting the missing tail and would graft the next
+            // unrelated capture onto it, corrupting all subsequent
+            // frames in that stream. Counted under DROPPED so the
+            // shutdown hook surfaces it; the (conn, direction) is
+            // now desynced and the user should re-attach the agent.
+            DROPPED.incrementAndGet();
+            return;
         }
         Integer id = CONN_IDS.get(owner);
         if (id == null) {
