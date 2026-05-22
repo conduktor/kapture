@@ -1,0 +1,6 @@
+Manifest-Version: 1.0
+Premain-Class: io.kapture.tap.Agent
+Agent-Class: io.kapture.tap.Agent
+Can-Retransform-Classes: true
+Can-Redefine-Classes: true
+
