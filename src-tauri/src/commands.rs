@@ -647,8 +647,18 @@ pub async fn start_jvm_tap(
 /// the socket file. Returns `NotJvmTapping` if no session is active.
 #[tauri::command]
 pub async fn stop_jvm_tap(state: State<'_, AppState>) -> Result<()> {
+    // Gate on is_jvm_tapping FIRST so we don't pin a snapshot when
+    // no tap is running. The earlier order always pinned, which
+    // overwrote any snapshot left by a prior `stop_proxy` /
+    // `stop_jvm_tap` with the current (possibly empty) ring.
+    // pin BEFORE take so `pin_capture_snapshot` still sees the
+    // active correlator (`take_jvm_tap` drops it).
+    if !state.is_jvm_tapping() {
+        return Err(KaptureError::NotJvmTapping);
+    }
     pin_capture_snapshot(&state);
     let Some(handle) = state.take_jvm_tap() else {
+        // Lost the race against another concurrent stop call.
         return Err(KaptureError::NotJvmTapping);
     };
     handle.stop().await;

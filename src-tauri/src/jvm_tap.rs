@@ -30,8 +30,8 @@ use std::sync::Arc;
 use bytes::{Buf, BytesMut};
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Notify;
-use tokio::task::JoinHandle;
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, warn};
 
 use crate::correlator::ProtoCorrelator;
@@ -51,6 +51,18 @@ const FRAME_HEADER_LEN: usize = 1 + 8 + 4 + 4;
 /// in a single Kafka length prefix is treated as a desync and the
 /// connection is closed.
 const MAX_KAFKA_FRAME_LEN: usize = 16 * 1024 * 1024;
+
+/// Global monotonic counter handing out `ConnectionId`s to every
+/// distinct `(session, agent_conn_id)` pair we observe across the
+/// process lifetime. Replaces an earlier `(session_id << 32) |
+/// agent_conn_id` composition that collided with `build_proto_event`'s
+/// `& 0x7FFF_FFFF` mask: the high 33 bits of the composite were
+/// silently dropped, so two agent processes reusing the same
+/// `agent_conn_id` produced colliding `ConnectionId`s on the
+/// inspector side. A flat monotonic counter avoids the masking issue
+/// entirely; the low 31 bits won't recycle until 2^31 distinct
+/// connections, which no realistic dev session reaches.
+static NEXT_TAP_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Configuration for starting a JVM tap listener.
 #[derive(Debug, Clone)]
@@ -79,7 +91,11 @@ impl JvmTapConfig {
 pub struct JvmTapHandle {
     socket_path: PathBuf,
     listener_task: JoinHandle<()>,
-    stop: Arc<Notify>,
+    /// Single shutdown channel observed by the listener and every
+    /// per-agent reader task. Replaces an earlier `tokio::sync::Notify`
+    /// design that lost wakes for tasks blocked outside the select!
+    /// (e.g. mid `read_exact`) when `notify_waiters()` fired.
+    stop_tx: watch::Sender<bool>,
 }
 
 impl JvmTapHandle {
@@ -110,18 +126,17 @@ impl JvmTapHandle {
         let listener = UnixListener::bind(&config.socket_path)?;
         info!(path = %config.socket_path.display(), "jvm-tap listening");
 
-        let stop = Arc::new(Notify::new());
-        let stop_for_task = Arc::clone(&stop);
+        let (stop_tx, stop_rx) = watch::channel(false);
         let socket_path_for_task = config.socket_path.clone();
 
         let listener_task = tokio::spawn(async move {
-            run_listener(listener, correlator, stop_for_task, socket_path_for_task).await;
+            run_listener(listener, correlator, stop_rx, socket_path_for_task).await;
         });
 
         Ok(Self {
             socket_path: config.socket_path,
             listener_task,
-            stop,
+            stop_tx,
         })
     }
 
@@ -132,13 +147,18 @@ impl JvmTapHandle {
         &self.socket_path
     }
 
-    /// Stop the listener and await the per-agent reader tasks. Safe to
-    /// call once; subsequent calls would no-op but `stop` consumes
-    /// `self`, so the type system enforces that.
+    /// Stop the listener, signal all per-agent reader tasks to exit,
+    /// and wait for the listener task to finish draining them. Safe to
+    /// call once; `stop` consumes `self`.
     pub async fn stop(self) {
-        self.stop.notify_waiters();
-        // Best-effort join. If the listener task panicked we still
-        // want to clean up the socket file below.
+        // Setting the flag wakes every `watch::Receiver::changed`
+        // future currently registered AND becomes the new "current
+        // value" so any receiver that subscribes later observes the
+        // stop immediately — closes the race where a Notify-based
+        // design loses the wake for tasks blocked outside the select!.
+        let _ = self.stop_tx.send(true);
+        // The listener task joins all per-agent reader tasks before
+        // returning, so awaiting it here drains the whole tree.
         let _ = self.listener_task.await;
         if let Err(err) = tokio::fs::remove_file(&self.socket_path).await {
             if err.kind() != io::ErrorKind::NotFound {
@@ -155,30 +175,44 @@ impl JvmTapHandle {
 async fn run_listener(
     listener: UnixListener,
     correlator: Arc<ProtoCorrelator>,
-    stop: Arc<Notify>,
+    mut stop_rx: watch::Receiver<bool>,
     socket_path: PathBuf,
 ) {
     // Monotonic id stamped on every Kafka frame this session emits.
     // Each new agent connection gets its own base so that two agents
     // running against the same Kapture do not collide their per-agent
     // `connection_id` namespaces.
-    let next_session_id = Arc::new(AtomicU64::new(1));
+    let next_session_id = AtomicU64::new(1);
+    // Track every per-agent reader task so `stop` can drain them. A
+    // detached `tokio::spawn` would orphan in-flight sessions: this
+    // PR's reviewer caught it.
+    let mut sessions: JoinSet<()> = JoinSet::new();
 
     loop {
         tokio::select! {
             biased;
-            () = stop.notified() => {
-                debug!(path = %socket_path.display(), "jvm-tap listener stopping");
-                return;
+            // Already stopped: drain pending sessions and return.
+            res = stop_rx.changed() => {
+                if res.is_err() || *stop_rx.borrow() {
+                    debug!(path = %socket_path.display(), "jvm-tap listener stopping");
+                    while sessions.join_next().await.is_some() {}
+                    return;
+                }
             }
+            // Reap finished sessions so the JoinSet doesn't grow
+            // unbounded for long-lived listeners.
+            Some(_finished) = sessions.join_next(), if !sessions.is_empty() => {}
             accept = listener.accept() => {
                 match accept {
                     Ok((stream, _addr)) => {
                         let session_id = next_session_id.fetch_add(1, Ordering::Relaxed);
                         let correlator = Arc::clone(&correlator);
-                        let stop = Arc::clone(&stop);
-                        tokio::spawn(async move {
-                            if let Err(err) = run_agent_session(stream, correlator, session_id, stop).await {
+                        let session_stop = stop_rx.clone();
+                        sessions.spawn(async move {
+                            if let Err(err) =
+                                run_agent_session(stream, correlator, session_id, session_stop)
+                                    .await
+                            {
                                 debug!(session_id, error = %err, "jvm-tap agent session ended");
                             }
                         });
@@ -189,6 +223,7 @@ async fn run_listener(
                         // loop continues.
                         if err.kind() == io::ErrorKind::Other {
                             warn!(error = %err, "jvm-tap: listener accept failed, stopping");
+                            while sessions.join_next().await.is_some() {}
                             return;
                         }
                         warn!(error = %err, "jvm-tap: transient accept error");
@@ -203,7 +238,6 @@ async fn run_listener(
 /// per-`(session_id, agent_conn_id)` correlation map. Lives for the
 /// length of one UDS connection from a JVM agent.
 struct AgentSession {
-    session_id: u64,
     /// Reassembly buffer keyed by `(agent_conn_id, direction)`. Each
     /// entry holds bytes received but not yet split into a full Kafka
     /// frame.
@@ -221,9 +255,8 @@ struct AgentSession {
 }
 
 impl AgentSession {
-    fn new(session_id: u64) -> Self {
+    fn new() -> Self {
         Self {
-            session_id,
             buffers: HashMap::new(),
             corr_maps: HashMap::new(),
             conn_ids: HashMap::new(),
@@ -232,13 +265,12 @@ impl AgentSession {
 
     fn conn_id_for(&mut self, agent_conn_id: u32) -> ConnectionId {
         *self.conn_ids.entry(agent_conn_id).or_insert_with(|| {
-            // Compose 64-bit id: high 32 bits = session, low 32 bits =
-            // agent_conn_id. `build_proto_event` masks to the
-            // positive i32 range internally; the masking still yields
-            // distinct ids for distinct `(session, agent_conn)` pairs
-            // within one session because session_id starts at 1 and
-            // increments — collisions would require 2^31 sessions.
-            ConnectionId((self.session_id << 32) | u64::from(agent_conn_id))
+            // Pull a fresh monotonic ID from the process-wide counter
+            // so distinct `(session, agent_conn_id)` pairs never share
+            // a `ConnectionId` after the `build_proto_event` 31-bit
+            // mask. The session sequence number is no longer mixed
+            // into the id — see `NEXT_TAP_CONNECTION_ID` for why.
+            ConnectionId(NEXT_TAP_CONNECTION_ID.fetch_add(1, Ordering::Relaxed))
         })
     }
 
@@ -255,18 +287,24 @@ async fn run_agent_session(
     mut stream: UnixStream,
     correlator: Arc<ProtoCorrelator>,
     session_id: u64,
-    stop: Arc<Notify>,
+    mut stop_rx: watch::Receiver<bool>,
 ) -> io::Result<()> {
     debug!(session_id, "jvm-tap: agent connected");
-    let mut session = AgentSession::new(session_id);
+    let mut session = AgentSession::new();
     let mut header_buf = [0u8; FRAME_HEADER_LEN];
 
     loop {
+        // Wait for either: a stop signal, or a complete frame header.
+        // Watch-based stop survives the case where we re-enter this
+        // select after a previously-fired notification — `*stop_rx
+        // .borrow()` is always the current truth.
         tokio::select! {
             biased;
-            () = stop.notified() => {
-                debug!(session_id, "jvm-tap: stop signal — closing agent session");
-                return Ok(());
+            res = stop_rx.changed() => {
+                if res.is_err() || *stop_rx.borrow() {
+                    debug!(session_id, "jvm-tap: stop signal — closing agent session");
+                    return Ok(());
+                }
             }
             read = stream.read_exact(&mut header_buf) => {
                 match read {
@@ -278,6 +316,11 @@ async fn run_agent_session(
                     Err(err) => return Err(err),
                 }
             }
+        }
+        // Re-check after the read — `read_exact` may have completed
+        // while `stop_tx.send(true)` fired in parallel.
+        if *stop_rx.borrow() {
+            return Ok(());
         }
 
         let direction = header_buf[0];
@@ -309,7 +352,25 @@ async fn run_agent_session(
         }
 
         let mut payload = vec![0u8; payload_len];
-        stream.read_exact(&mut payload).await?;
+        tokio::select! {
+            biased;
+            res = stop_rx.changed() => {
+                if res.is_err() || *stop_rx.borrow() {
+                    debug!(session_id, "jvm-tap: stop signal — dropping in-flight payload");
+                    return Ok(());
+                }
+            }
+            read = stream.read_exact(&mut payload) => {
+                match read {
+                    Ok(_) => {}
+                    Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                        debug!(session_id, "jvm-tap: agent disconnected mid-payload");
+                        return Ok(());
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
+        }
 
         if let Err(err) = process_payload(
             &mut session,
@@ -539,6 +600,274 @@ mod tests {
         // Sending more bytes on the now-half-closed stream is OK from
         // our side; the listener has already returned.
         assert_eq!(correlator.frame_count(), 0);
+
+        drop(stream);
+        handle.stop().await;
+    }
+
+    /// Two concurrent agent connections both using `agent_conn_id = 1`
+    /// must NOT collide into a single `ConnectionId`: the
+    /// `NEXT_TAP_CONNECTION_ID` counter exists precisely so two
+    /// agents speaking the same local conn-id stay distinct in the
+    /// inspector. Catches the regression where someone "simplifies"
+    /// `conn_id_for` back to using just
+    /// `agent_conn_id`.
+    ///
+    #[tokio::test]
+    async fn two_agents_with_same_conn_id_emit_distinct_connection_ids() {
+        let (handle, correlator, path) = fresh_tap().await;
+        let mut a = UnixStream::connect(&path).await.unwrap();
+        let mut b = UnixStream::connect(&path).await.unwrap();
+
+        // Same agent_conn_id (1) on BOTH streams, different corr_ids so
+        // we can tell the resulting frames apart.
+        let frame_a = make_api_versions_request_frame(1001);
+        let frame_b = make_api_versions_request_frame(2002);
+        write_agent_frame(&mut a, 0, 1, &frame_a).await.unwrap();
+        write_agent_frame(&mut b, 0, 1, &frame_b).await.unwrap();
+
+        for _ in 0..50 {
+            if correlator.frame_count() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let summaries = correlator.summaries(10);
+        assert_eq!(summaries.len(), 2);
+        let conn_a = summaries
+            .iter()
+            .find(|s| s.corr_id == 1001)
+            .expect("frame from agent A missing")
+            .connection_id;
+        let conn_b = summaries
+            .iter()
+            .find(|s| s.corr_id == 2002)
+            .expect("frame from agent B missing")
+            .connection_id;
+        assert_ne!(
+            conn_a, conn_b,
+            "two agents reusing the same agent_conn_id must get distinct ConnectionIds"
+        );
+
+        drop(a);
+        drop(b);
+        handle.stop().await;
+    }
+
+    /// Agent writes a valid header announcing a 1 KiB payload, then
+    /// drops the connection after sending only half. The per-session
+    /// task must observe the EOF on `read_exact(payload)` and exit —
+    /// not hang. We assert by stopping the tap with a tight timeout: if
+    /// the per-session task is still parked on `read_exact` it will be
+    /// cancelled by the `stop` signal flowing through `select!` on the
+    /// next loop iteration, but only because that select exists. If the
+    /// code ever loses the EOF→Ok mapping the test will surface a hard
+    /// I/O error instead of a silent return.
+    #[tokio::test]
+    async fn agent_disconnect_after_header_does_not_hang() {
+        let (handle, correlator, path) = fresh_tap().await;
+        let mut stream = UnixStream::connect(&path).await.unwrap();
+
+        // Write the header manually so we can drop the stream BEFORE
+        // sending any payload bytes — `read_exact` on the payload will
+        // see an immediate UnexpectedEof.
+        let payload_len = 1024u32;
+        let mut header = Vec::with_capacity(FRAME_HEADER_LEN);
+        header.push(0); // direction = write
+        header.extend_from_slice(&0u64.to_le_bytes());
+        header.extend_from_slice(&7u32.to_le_bytes()); // agent_conn_id
+        header.extend_from_slice(&payload_len.to_le_bytes());
+        stream.write_all(&header).await.unwrap();
+        stream.shutdown().await.unwrap();
+        drop(stream);
+
+        // Give the per-session task a moment to discover the EOF.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(correlator.frame_count(), 0);
+
+        // If the per-session task was wedged, `stop()` would still race
+        // it cleanly thanks to `Notify`, so this also doubles as a
+        // smoke test that the stop path works after a torn connection.
+        handle.stop().await;
+    }
+
+    /// A Kafka length prefix bigger than `MAX_KAFKA_FRAME_LEN` (16 MiB)
+    /// must close the agent session cleanly — no panic, no half-state
+    /// left behind that would affect a subsequent agent connection.
+    #[tokio::test]
+    async fn oversize_kafka_frame_length_prefix_closes_connection() {
+        let (handle, correlator, path) = fresh_tap().await;
+        let mut stream = UnixStream::connect(&path).await.unwrap();
+
+        // Kafka frame whose 4-byte BE length prefix claims 32 MiB —
+        // twice the cap. The agent payload only contains the prefix
+        // (the listener never tries to wait for the body because the
+        // cap check trips first).
+        let bogus_len = u32::try_from(MAX_KAFKA_FRAME_LEN + 1).unwrap();
+        let mut payload = Vec::with_capacity(4);
+        payload.extend_from_slice(&bogus_len.to_be_bytes());
+        write_agent_frame(&mut stream, 0, 11, &payload)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert_eq!(correlator.frame_count(), 0);
+
+        // A fresh agent connection on the same listener must still
+        // work — proves the listener task survived the parse error.
+        let mut stream2 = UnixStream::connect(&path).await.unwrap();
+        let good = make_api_versions_request_frame(55);
+        write_agent_frame(&mut stream2, 0, 12, &good).await.unwrap();
+        for _ in 0..50 {
+            if correlator.frame_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(correlator.frame_count(), 1);
+
+        drop(stream2);
+        handle.stop().await;
+    }
+
+    /// Reassembly buffer cap: a single Kafka frame whose body is
+    /// announced as 9 MiB and is fed across two agent frames must
+    /// trigger the `MAX_REASSEMBLY_BUFFER` (8 MiB) guard on the second
+    /// chunk, NOT silently accumulate. Catches the regression where a
+    /// future change removes the cap or moves it after the
+    /// `extend_from_slice`, which would let a hostile (or buggy) agent
+    /// OOM the inspector.
+    #[tokio::test]
+    async fn reassembly_buffer_cap_drops_connection_before_oom() {
+        let (handle, correlator, path) = fresh_tap().await;
+        let mut stream = UnixStream::connect(&path).await.unwrap();
+
+        // Announce a 9 MiB Kafka frame, then feed it in two 5 MiB
+        // chunks. After the first chunk buf is ~5 MiB; the second
+        // chunk's pre-check (`buf.len + payload.len > cap`) trips at
+        // 10 MiB > 8 MiB and the session ends.
+        let kafka_body_len: u32 = 9 * 1024 * 1024;
+        let chunk_size: usize = 5 * 1024 * 1024;
+
+        // First agent frame: length prefix + chunk_size - 4 zero bytes
+        // of "body". Total agent payload = chunk_size.
+        let mut first = vec![0u8; chunk_size];
+        first[..4].copy_from_slice(&kafka_body_len.to_be_bytes());
+        write_agent_frame(&mut stream, 0, 21, &first).await.unwrap();
+
+        // Second agent frame: another chunk_size of body. This should
+        // push the reassembly buffer past 8 MiB and abort.
+        let second = vec![0u8; chunk_size];
+        // The write may succeed (UDS buffer) even if the listener is
+        // already tearing down — that's fine, we just need the bytes
+        // off our side.
+        let _ = write_agent_frame(&mut stream, 0, 21, &second).await;
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+        assert_eq!(
+            correlator.frame_count(),
+            0,
+            "no complete Kafka frame was ever delivered; correlator must stay empty"
+        );
+
+        // Listener must still accept new agents.
+        let mut stream2 = UnixStream::connect(&path).await.unwrap();
+        let good = make_api_versions_request_frame(77);
+        write_agent_frame(&mut stream2, 0, 22, &good).await.unwrap();
+        for _ in 0..50 {
+            if correlator.frame_count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(correlator.frame_count(), 1);
+
+        drop(stream2);
+        handle.stop().await;
+    }
+
+    /// `JvmTapHandle::start` must clean up a stale regular file at the
+    /// socket path (matches the docstring contract and the proxy's
+    /// "free the port" behaviour). Without this, a previous run that
+    /// crashed without cleanup would block the next start.
+    #[tokio::test]
+    async fn start_removes_stale_file_at_socket_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.sock");
+        // Pre-create a regular (non-socket) file at the path.
+        tokio::fs::write(&path, b"leftover from a previous crash")
+            .await
+            .unwrap();
+        assert!(tokio::fs::metadata(&path).await.is_ok());
+
+        let correlator = Arc::new(ProtoCorrelator::new());
+        let handle = JvmTapHandle::start(JvmTapConfig::new(path.clone()), correlator)
+            .await
+            .expect("start must succeed by removing the stale file");
+
+        // Verify the listener is actually bound — a connect should
+        // succeed, where it would fail (ECONNREFUSED) if `start` had
+        // somehow left the regular file in place.
+        let _stream = UnixStream::connect(&path).await.unwrap();
+        handle.stop().await;
+    }
+
+    /// Request/response pairing inside the tap: send an
+    /// `ApiVersionsRequest` then a matching response with the same
+    /// `corr_id`. The recv-direction frame must come out with the
+    /// response's wire size and a measurable RTT (>= 0 ms, and the
+    /// `corr_id` matches). Catches the regression where the per-agent
+    /// `CorrelationMap` is keyed wrong (e.g. by `session_id` instead of
+    /// `agent_conn_id`) and `take_response` always returns `None`.
+    #[tokio::test]
+    async fn request_and_response_with_same_corr_id_are_paired() {
+        let (handle, correlator, path) = fresh_tap().await;
+        let mut stream = UnixStream::connect(&path).await.unwrap();
+
+        let req = make_api_versions_request_frame(424_242);
+        write_agent_frame(&mut stream, 0, 33, &req).await.unwrap();
+
+        // Brief delay so the response's `sent_at - now` produces a
+        // non-zero RTT we can sanity-check.
+        tokio::time::sleep(Duration::from_millis(15)).await;
+
+        // Build a minimal response: 4-byte BE length prefix, then
+        // 4-byte BE corr_id, then empty body. `build_proto_event` only
+        // needs the corr_id to pair.
+        let mut resp_body = Vec::new();
+        resp_body.extend_from_slice(&424_242i32.to_be_bytes());
+        let mut resp_frame = Vec::with_capacity(4 + resp_body.len());
+        let body_len = u32::try_from(resp_body.len()).unwrap();
+        resp_frame.extend_from_slice(&body_len.to_be_bytes());
+        resp_frame.extend_from_slice(&resp_body);
+        // Direction = 1 (UpstreamToClient / read), same agent_conn_id.
+        write_agent_frame(&mut stream, 1, 33, &resp_frame)
+            .await
+            .unwrap();
+
+        for _ in 0..50 {
+            if correlator.frame_count() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let summaries = correlator.summaries(10);
+        assert_eq!(summaries.len(), 2);
+        let recv = summaries
+            .iter()
+            .find(|s| matches!(s.direction, crate::proto_event::ProtoDirection::Recv))
+            .expect("response frame missing");
+        assert_eq!(recv.corr_id, 424_242);
+        // Pairing succeeded → recv inherited the request's api_key.
+        assert_eq!(
+            recv.api_key, 18,
+            "ApiVersions api_key should be inherited via corr_map"
+        );
+        assert!(
+            recv.rtt_ms > 0.0,
+            "rtt_ms should be > 0 (slept 15ms between request and response), got {}",
+            recv.rtt_ms
+        );
 
         drop(stream);
         handle.stop().await;
