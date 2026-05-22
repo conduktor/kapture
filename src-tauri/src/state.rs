@@ -7,6 +7,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::correlator::{ProtoCorrelator, ProtoFrame};
 use crate::filter::CompiledFilter;
+use crate::jvm_tap::JvmTapHandle;
 use crate::message::CapturedMessage;
 use crate::profiles::ProfileStore;
 use crate::ring_buffer::RingBuffer;
@@ -53,6 +54,11 @@ pub struct AppState {
 #[derive(Debug, Default)]
 struct Inner {
     proxy: Option<crate::proxy::ProxyHandle>,
+    /// Mutually exclusive with `proxy`: at most one capture source
+    /// feeds `correlator` at a time. The JVM tap path installs this
+    /// in place of `proxy`; the proxy path installs `proxy` in place
+    /// of this.
+    jvm_tap: Option<JvmTapHandle>,
     correlator: Option<Arc<ProtoCorrelator>>,
     started_at: Option<Instant>,
 }
@@ -99,9 +105,44 @@ impl AppState {
         taken
     }
 
+    /// Install (or replace) the active JVM tap session. Caller must
+    /// have verified via `try_claim_proxy_slot` that the capture slot
+    /// is free — the tap is mutually exclusive with a running proxy
+    /// because both share the single `correlator` field.
+    pub fn install_jvm_tap(&self, handle: JvmTapHandle, correlator: Arc<ProtoCorrelator>) {
+        {
+            let mut guard = self.inner.lock();
+            guard.jvm_tap = Some(handle);
+            guard.correlator = Some(correlator);
+            guard.started_at = Some(Instant::now());
+        }
+        self.proxy_pending.store(false, Ordering::Release);
+    }
+
+    /// Take ownership of the running JVM tap, if any, and clear the
+    /// associated correlator + start time. Mirrors `take_proxy()`.
+    pub fn take_jvm_tap(&self) -> Option<JvmTapHandle> {
+        let taken = {
+            let mut guard = self.inner.lock();
+            guard.started_at = None;
+            guard.correlator = None;
+            guard.jvm_tap.take()
+        };
+        self.proxy_pending.store(false, Ordering::Release);
+        taken
+    }
+
     #[allow(dead_code)] // exposed for future GUI/MCP consumers
     pub fn is_proxying(&self) -> bool {
         self.inner.lock().proxy.is_some()
+    }
+
+    /// `true` when a JVM tap session is active. Used by command
+    /// handlers to refuse a `start_proxy` while a tap is running (and
+    /// vice versa).
+    #[allow(dead_code)] // exposed for future GUI/MCP consumers
+    pub fn is_jvm_tapping(&self) -> bool {
+        self.inner.lock().jvm_tap.is_some()
     }
 
     /// Borrow the active `ProxyHandle` long enough to capture its
@@ -115,16 +156,25 @@ impl AppState {
     }
 
     pub fn is_capturing(&self) -> bool {
-        let has_proxy = self.inner.lock().proxy.is_some();
-        has_proxy || self.proxy_pending.load(Ordering::Acquire)
+        let inner = self.inner.lock();
+        let has_capture = inner.proxy.is_some() || inner.jvm_tap.is_some();
+        drop(inner);
+        has_capture || self.proxy_pending.load(Ordering::Acquire)
     }
 
-    /// Atomically reserve the proxy slot. Returns `true` if no proxy is
-    /// currently running and no other caller has reserved the slot.
-    /// The reservation MUST be cleared by `install_proxy()` on success
-    /// or `release_proxy_slot()` on failure.
+    /// Atomically reserve the capture slot. Returns `true` if no
+    /// proxy AND no JVM tap is currently running and no other caller
+    /// has reserved the slot. The reservation MUST be cleared by
+    /// `install_proxy()` / `install_jvm_tap()` on success or
+    /// `release_proxy_slot()` on failure.
+    ///
+    /// Despite the historical name, this gates both capture modes.
+    /// Renaming would ripple into MCP / Tauri command surfaces; the
+    /// shared slot is the invariant the name describes.
     pub fn try_claim_proxy_slot(&self) -> bool {
-        let already_running = self.inner.lock().proxy.is_some();
+        let inner = self.inner.lock();
+        let already_running = inner.proxy.is_some() || inner.jvm_tap.is_some();
+        drop(inner);
         if already_running {
             return false;
         }

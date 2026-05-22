@@ -17,6 +17,15 @@ pub enum KaptureError {
     #[error("proxy: {0}")]
     Proxy(String),
 
+    #[error("a JVM tap session is already running")]
+    AlreadyJvmTapping,
+
+    #[error("no JVM tap session is running")]
+    NotJvmTapping,
+
+    #[error("jvm-tap: {0}")]
+    JvmTap(String),
+
     #[error("filter: {0}")]
     Filter(#[from] FilterError),
 

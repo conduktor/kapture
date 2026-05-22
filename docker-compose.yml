@@ -315,11 +315,11 @@ services:
       - "39097:39097"
     networks: [kafka-acl]
 
-  # ──────────── Apache Kafka with SSL (JVM-tap experiment) ────────────
+  # ──────────── Apache Kafka with SSL (used by the JVM-tap e2e test) ────────────
   # Single-broker KRaft with a one-way TLS listener on 39093. The
   # broker keystore + truststore are JKS files mounted from
-  # experiments/jvm-tap/certs/ (generate via gen-certs.sh). Password
-  # is `kapture` — dev only, NEVER reuse.
+  # src-tauri/tests/fixtures/certs/ (generate via gen-certs.sh).
+  # Password is `kapture` — dev only, NEVER reuse.
   # ssl.client.auth=none → no mTLS, clients just need a truststore
   # that vouches for the broker's self-signed cert.
   kafka-ssl:
@@ -353,7 +353,7 @@ services:
       KAFKA_SSL_CLIENT_AUTH: "none"
       CLUSTER_ID: "kapture-ssl-cluster"
     volumes:
-      - ./experiments/jvm-tap/certs:/etc/kafka/secrets:ro
+      - ./src-tauri/tests/fixtures/certs:/etc/kafka/secrets:ro
     ports:
       - "39093:39093"
     healthcheck:

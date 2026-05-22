@@ -11,6 +11,7 @@ use crate::anti_patterns::AntiPatternsSnapshot;
 use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
+use crate::jvm_tap::{JvmTapConfig, JvmTapHandle};
 use crate::message::{CapturedMessage, MessageSummary};
 use crate::proxy_upstream::{
     test_upstream, UpstreamSaslConfig, UpstreamSaslMechanism, UpstreamTlsConfig,
@@ -584,6 +585,74 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
     handle.stop().await;
     state.set_schema_registry(None);
     info!("proxy stopped");
+    Ok(())
+}
+
+/// Default Unix-domain-socket path the tap listener binds to. The
+/// matching default in the Java agent's `TapPublisher.SOCKET_PATH`
+/// constant means a user can start `kapture start_jvm_tap` and then
+/// `java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar ...`
+/// with no extra wiring.
+const DEFAULT_JVM_TAP_SOCKET: &str = "/tmp/kapture-tap.sock";
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartJvmTapArgs {
+    /// Override the UDS path. `None` falls back to the agent's default
+    /// (`/tmp/kapture-tap.sock`). Useful for tests that need an
+    /// isolated socket per parallel run.
+    pub socket_path: Option<String>,
+}
+
+/// Start a JVM tap session listening on a Unix domain socket. The
+/// Kapture JVM agent (`agents/jvm-tap`) attaches inside a Java Kafka
+/// client process via `-javaagent` and streams plaintext Kafka wire
+/// bytes back through this socket. Frames are decoded into the same
+/// `ProtoCorrelator` the proxy mode populates — so Protocol /
+/// Messages / Expert tabs render identically regardless of source.
+///
+/// Returns `AlreadyProxying` if a proxy or tap is already running:
+/// the two modes share the single capture slot.
+#[tauri::command]
+pub async fn start_jvm_tap(
+    state: State<'_, AppState>,
+    args: Option<StartJvmTapArgs>,
+) -> Result<String> {
+    if !state.try_claim_proxy_slot() {
+        return Err(KaptureError::AlreadyJvmTapping);
+    }
+
+    let socket_path = args
+        .and_then(|a| a.socket_path)
+        .unwrap_or_else(|| DEFAULT_JVM_TAP_SOCKET.to_owned());
+    let config = JvmTapConfig::new(socket_path);
+    let correlator = Arc::new(ProtoCorrelator::new());
+
+    let handle = match JvmTapHandle::start(config, Arc::clone(&correlator)).await {
+        Ok(h) => h,
+        Err(err) => {
+            state.release_proxy_slot();
+            return Err(KaptureError::JvmTap(err.to_string()));
+        }
+    };
+
+    let path = handle.socket_path().display().to_string();
+    state.install_jvm_tap(handle, correlator);
+    info!(socket = %path, "jvm-tap started");
+    Ok(path)
+}
+
+/// Stop the running JVM tap session, pin the current capture so
+/// detail clicks on still-visible rows keep resolving, and remove
+/// the socket file. Returns `NotJvmTapping` if no session is active.
+#[tauri::command]
+pub async fn stop_jvm_tap(state: State<'_, AppState>) -> Result<()> {
+    pin_capture_snapshot(&state);
+    let Some(handle) = state.take_jvm_tap() else {
+        return Err(KaptureError::NotJvmTapping);
+    };
+    handle.stop().await;
+    info!("jvm-tap stopped");
     Ok(())
 }
 

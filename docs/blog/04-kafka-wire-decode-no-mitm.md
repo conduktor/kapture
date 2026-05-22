@@ -72,9 +72,9 @@ Adding a fourth mode later (a `.pcap` import, an `SSLKEYLOGFILE` consumer, a Wir
 
 ## What ships next
 
-The JVM tap POC is real code in `experiments/jvm-tap/` against a real SSL-enabled Kafka broker. Next: bump ByteBuddy to support Java 25 cleanly, wire the receiver into Kapture's decoder, surface tap sessions in the Connections sidebar. After that, eBPF tap targeting `libssl` for the librdkafka family.
+The JVM tap is integrated into Kapture proper. The agent lives at `agents/jvm-tap/`, the in-process listener is `src-tauri/src/jvm_tap.rs`, and Tauri commands `start_jvm_tap` / `stop_jvm_tap` claim the same capture slot the proxy uses. The Protocol / Messages / Expert tabs render tap-sourced frames through the existing `ProtoCorrelator`. Next: bump ByteBuddy to support Java 25 cleanly, surface tap sessions in the Connections sidebar, then eBPF tap targeting `libssl` for the librdkafka family.
 
-To play with the POC today: `run-baseline.sh` spins up an SSL broker in Docker, builds the agent, runs producer + consumer through the tap.
+To play with it today: bring up the SSL Kafka cluster with `docker compose --profile ssl up -d`, build the agent + test client (`mvn package` in `agents/jvm-tap/` and `src-tauri/tests/fixtures/jvm-test-client/`), call `start_jvm_tap`, then run the test client with `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar`. Captured frames appear in Kapture's existing tabs.
 
 ---
 

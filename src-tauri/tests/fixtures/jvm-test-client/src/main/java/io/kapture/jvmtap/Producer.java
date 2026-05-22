@@ -29,7 +29,9 @@ public final class Producer {
   public static void main(String[] args) throws ExecutionException, InterruptedException {
     String truststore =
         System.getProperty("truststore",
-            // Default: certs/ folder sitting next to java-app/
+            // Default: ../certs/ — the cert folder sitting alongside this client
+            // under src-tauri/tests/fixtures/. The Rust e2e test overrides with
+            // -Dtruststore=<abs-path> so this fallback only matters for `mvn exec`.
             Path.of(System.getProperty("user.dir")).resolve("../certs/client.truststore.jks")
                 .normalize().toString());
     String truststorePass = System.getProperty("truststore.password", "kapture");

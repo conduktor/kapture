@@ -73,7 +73,7 @@ Building from source: `pnpm install && pnpm tauri dev`.
 
 ## Roadmap
 
-- **Tap modes — observation without breaking TLS.** Read Kafka traffic from inside the client process instead of standing in front of it. JVM tap (ByteBuddy agent on `SslTransportLayer`) POC validated against SSL-enabled Apache Kafka — see [`experiments/jvm-tap/`](experiments/jvm-tap/) and [the five-part blog series](docs/blog/). librdkafka and Go static `crypto/tls` taps via eBPF uprobes are next. Goal: ~95% of the production Kafka client market observable without provisioning a cert.
+- **Tap modes — observation without breaking TLS.** Read Kafka traffic from inside the client process instead of standing in front of it. JVM tap (ByteBuddy agent on `SslTransportLayer`) integrated and validated against SSL-enabled Apache Kafka — the agent lives at [`agents/jvm-tap/`](agents/jvm-tap/), the in-process listener is `src-tauri/src/jvm_tap.rs`, e2e fixtures at [`src-tauri/tests/fixtures/`](src-tauri/tests/fixtures/). librdkafka and Go static `crypto/tls` taps via eBPF uprobes are next. Goal: ~95% of the production Kafka client market observable without provisioning a cert. See [the five-part blog series](docs/blog/).
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
 

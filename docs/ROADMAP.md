@@ -158,22 +158,28 @@ Protocol / Messages / Expert tabs render the same data with a
 posts in `docs/blog/01..05-*.md` explain the motivation and the
 design.
 
-### JVM tap [M, POC validated]
+### JVM tap [M, integrated]
 
-Java agent (`-javaagent:kapture-jvm-agent.jar`) instrumenting
+Java agent (`-javaagent:kapture-jvm-agent.jar`, source at
+`agents/jvm-tap/`) instruments
 `org.apache.kafka.common.network.SslTransportLayer.read /
-.write(BB[], int, int)` via ByteBuddy. Plaintext bytes pushed over
-a Unix domain socket to Kapture. End-to-end validated against
-Apache Kafka 3.x with SSL listener — see `experiments/jvm-tap/`.
+.write(BB[], int, int)` via ByteBuddy. Plaintext bytes are pushed
+over a Unix domain socket to `src-tauri/src/jvm_tap.rs`, which
+reassembles per-`(connection, direction)` Kafka frames and feeds
+the same `ProtoCorrelator` the proxy uses — so the Protocol /
+Messages / Expert tabs render tap-sourced and proxy-sourced
+frames identically.
 
-Remaining work to ship as a feature:
+Tauri commands: `start_jvm_tap { socketPath? }` and `stop_jvm_tap`.
+The tap shares the single capture slot with proxy mode; calls
+return `AlreadyJvmTapping` / `NotJvmTapping` accordingly.
+
+Remaining work to harden:
 
 - Bump ByteBuddy to a release with Java 25 support (eliminates the
   `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
 - Shutdown drain hook on the agent (today loses ~5% of frames at
   JVM exit).
-- Replace the toy Rust receiver with a wire decoder branch that
-  reads from the UDS and feeds `proto_summary.rs` / `correlator.rs`.
 - Picker UI in Kapture: list JVM PIDs with sockets to Kafka ports,
   one-click "Inject & tap". Confirmation modal explaining the
   agent cannot detach cleanly until the JVM exits.
