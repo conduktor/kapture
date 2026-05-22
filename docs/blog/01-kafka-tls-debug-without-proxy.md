@@ -27,7 +27,7 @@ We use the proxy every day and it earns its keep. But every senior Kafka enginee
 
 ## The alternative: hook the client, not the wire
 
-If you observe the application *before* it hands bytes to its TLS library, the bytes are still in cleartext. Same on the way back: after the TLS library decrypts, before the app sees the result. The boundary between the application code and the TLS code is where the protocol becomes readable.
+If you observe the application _before_ it hands bytes to its TLS library, the bytes are still in cleartext. Same on the way back: after the TLS library decrypts, before the app sees the result. The boundary between the application code and the TLS code is where the protocol becomes readable.
 
 For Java Kafka clients (which are roughly two-thirds of the production market), that boundary is exactly one class: `org.apache.kafka.common.network.SslTransportLayer`. Its `write(ByteBuffer[], int, int)` method receives the plaintext bytes the client is about to encrypt. Its `read(ByteBuffer)` method receives the bytes that just came out of the SSL decrypt. Two hooks, full visibility.
 
@@ -58,7 +58,7 @@ The honest tradeoffs:
 - Dynamic agent attach has warnings on Java 21+. Premain (start-time attach) does not. Plan for the start-time path in production-shaped dev environments.
 - The Java agent cannot detach cleanly. Once injected, the bytecode lives in the JVM until the next restart. The eBPF probes used by Pixie and Coroot have the same property for different reasons.
 
-What it gets you in return is real. We have used the tap mode on a Confluent Cloud bootstrap that pins the broker SAN, no cert provisioning required. We have used it on a kafka-clients build with mTLS upstream, no private key shared with the dev tool. The handshakes look like production because they *are* production.
+What it gets you in return is real. We have used the tap mode on a Confluent Cloud bootstrap that pins the broker SAN, no cert provisioning required. We have used it on a kafka-clients build with mTLS upstream, no private key shared with the dev tool. The handshakes look like production because they _are_ production.
 
 ## Why this matters for Kafka debugging
 
@@ -68,4 +68,4 @@ The boundary hook gives back the property we wanted from the start: see the prot
 
 ---
 
-*Next in this series: [Hooking SslTransportLayer via ByteBuddy](./02-hooking-ssl-transport-layer-bytebuddy.md) — the code that made this work, and the two traps that ate two hours of our day.*
+_Next in this series: [Hooking SslTransportLayer via ByteBuddy](./02-hooking-ssl-transport-layer-bytebuddy.md) — the code that made this work, and the two traps that ate two hours of our day._

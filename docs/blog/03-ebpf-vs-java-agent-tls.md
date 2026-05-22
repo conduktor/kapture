@@ -14,7 +14,7 @@ For Java Kafka clients, it is the wrong tool.
 
 ## What eBPF buys you, and what it costs
 
-eBPF earns its complexity when the target binary is *opaque*. A Go program that statically links `crypto/tls` does not expose a stable symbol you can attach to from userspace without scanning the binary. A C++ daemon using a vendored copy of BoringSSL is the same. eBPF reaches across the userspace/kernel boundary, attaches to whatever symbols the binary actually has, and observes from a privileged vantage point the application cannot block.
+eBPF earns its complexity when the target binary is _opaque_. A Go program that statically links `crypto/tls` does not expose a stable symbol you can attach to from userspace without scanning the binary. A C++ daemon using a vendored copy of BoringSSL is the same. eBPF reaches across the userspace/kernel boundary, attaches to whatever symbols the binary actually has, and observes from a privileged vantage point the application cannot block.
 
 The cost of that vantage point is real:
 
@@ -46,12 +46,12 @@ If we used eBPF here, we would attach uprobes to a JVM's `libsslJava.so`... whic
 
 We are not claiming eBPF is bad. We are claiming the tool-to-target match matters more than the tool's mindshare. Here is how we plan Kapture's coverage:
 
-| Target | Hook technique | Why |
-|---|---|---|
-| `kafka-clients` (Java) | ByteBuddy agent on `SslTransportLayer` | Native JVM trick, zero kernel ask |
-| `librdkafka` (C, used by Python / Node / Ruby / .NET / Go via bindings) | eBPF uprobe on `SSL_write` / `SSL_read` | Stable libssl symbols, target is opaque |
-| Sarama (Go, static `crypto/tls`) | eBPF uprobe with RET-scan | Go strips frame pointers, need offset scanning |
-| confluent-kafka-go (cgo over librdkafka) | Same as librdkafka | Bytes go through OpenSSL underneath |
+| Target                                                                  | Hook technique                          | Why                                            |
+| ----------------------------------------------------------------------- | --------------------------------------- | ---------------------------------------------- |
+| `kafka-clients` (Java)                                                  | ByteBuddy agent on `SslTransportLayer`  | Native JVM trick, zero kernel ask              |
+| `librdkafka` (C, used by Python / Node / Ruby / .NET / Go via bindings) | eBPF uprobe on `SSL_write` / `SSL_read` | Stable libssl symbols, target is opaque        |
+| Sarama (Go, static `crypto/tls`)                                        | eBPF uprobe with RET-scan               | Go strips frame pointers, need offset scanning |
+| confluent-kafka-go (cgo over librdkafka)                                | Same as librdkafka                      | Bytes go through OpenSSL underneath            |
 
 Roughly two-thirds of production Kafka traffic is the first row. The remaining third splits across the next three, and Linux dev environments will use eBPF for that. macOS developers will fall back to the proxy for non-JVM clients until we ship a different technique (key log import, DTrace, or LD_PRELOAD shim).
 
@@ -65,4 +65,4 @@ For Kapture, that means the Java tap mode ships first, on every OS, with no priv
 
 ---
 
-*Next: [Kafka wire decode end-to-end without MITM](./04-kafka-wire-decode-no-mitm.md) — three observation modes, one decoder, no broken TLS.*
+_Next: [Kafka wire decode end-to-end without MITM](./04-kafka-wire-decode-no-mitm.md) — three observation modes, one decoder, no broken TLS._

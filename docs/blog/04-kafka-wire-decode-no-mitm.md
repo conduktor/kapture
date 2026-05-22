@@ -18,29 +18,32 @@ The trick that holds this together is that Kapture's wire decoder doesn't care w
 
 Three modes, same downstream:
 
-| Mode | Where bytes come from | Where it runs | TLS posture |
-|---|---|---|---|
-| Proxy | TLS-terminating TCP proxy in front of the broker | Anywhere | Re-encrypts, breaks pinning |
-| JVM tap | ByteBuddy agent inside the Kafka Java client | Same host as client | Untouched, client talks to real broker |
-| eBPF tap | uprobes on `libssl` / `crypto/tls` symbols | Same host as client, Linux only | Untouched, single TLS session |
+| Mode     | Where bytes come from                            | Where it runs                   | TLS posture                            |
+| -------- | ------------------------------------------------ | ------------------------------- | -------------------------------------- |
+| Proxy    | TLS-terminating TCP proxy in front of the broker | Anywhere                        | Re-encrypts, breaks pinning            |
+| JVM tap  | ByteBuddy agent inside the Kafka Java client     | Same host as client             | Untouched, client talks to real broker |
+| eBPF tap | uprobes on `libssl` / `crypto/tls` symbols       | Same host as client, Linux only | Untouched, single TLS session          |
 
 > **Visual:** three lanes, top-down. Each lane shows a client → broker arrow. Lane 1 (Proxy): the arrow bends through a "Kapture proxy" box that re-encrypts; the box owns the cert. Lane 2 (JVM tap): the arrow goes straight client-to-broker; a dotted line branches from inside the client box to a "Kapture" box on the side. Lane 3 (eBPF tap): same straight arrow; the branch comes from a kernel layer beneath the client. Underneath all three lanes: one wide block labeled "Kafka wire decoder" with arrows in from each lane.
 
 ## Where each mode wins
 
 **Proxy mode** is best when:
+
 - You don't have access to the client process (running in someone else's container, on a different host, behind a service mesh).
 - The client refuses to use any custom JVM flags or load any agent (compliance reasons).
 - You want chaos injection — drop connections, return error codes, fake `NOT_LEADER`. Tap modes are observation-only, the proxy is a knob.
 - You want to debug TLS itself — handshake failures, cert chain errors, SASL drift. The proxy sees both sides of the handshake.
 
 **JVM tap** is best when:
+
 - The client is a Java Kafka app running on your machine.
 - The target broker uses TLS that you cannot proxy (mTLS with cert chains you don't control, pinning, restricted CA).
 - You want zero changes to the client's network config — no listener swap, no DNS rewrite, no cert install.
 - You are demoing Kapture against Confluent Cloud or MSK without provisioning anything.
 
 **eBPF tap** (planned) is best when:
+
 - The client uses `librdkafka` (Python, Node, Ruby, .NET, the C apps), Go static binaries, or any non-JVM TLS path.
 - You are on Linux with `CAP_BPF`.
 - You want a single tool that catches every process on the host that talks Kafka, regardless of language.
@@ -75,4 +78,4 @@ To play with the POC today: `run-baseline.sh` spins up an SSL broker in Docker, 
 
 ---
 
-*Next: [Building dev tools that don't break TLS](./05-dev-tools-that-dont-break-tls.md) — the broader principle this POC instances.*
+_Next: [Building dev tools that don't break TLS](./05-dev-tools-that-dont-break-tls.md) — the broader principle this POC instances._

@@ -32,7 +32,7 @@ None of these are deal-breakers individually. Together, they make the dev tool's
 
 ## What you give up to get visibility
 
-The reasoning behind the proxy is straightforward: TLS is opaque from the outside, so to read what is inside, you stand inside. That logic was correct in 2012. It is still correct *when there is no other way*. The new question is whether there is another way.
+The reasoning behind the proxy is straightforward: TLS is opaque from the outside, so to read what is inside, you stand inside. That logic was correct in 2012. It is still correct _when there is no other way_. The new question is whether there is another way.
 
 There are three.
 
@@ -62,8 +62,8 @@ Mostly when one of the other three is not available:
 
 - The client runs on a host you cannot touch.
 - The client's runtime offers no instrumentation API and is dynamically linked to a system libssl you cannot uprobe.
-- You need to *modify* the traffic, not just observe it (chaos injection, fault testing, latency simulation). Tap modes only observe.
-- The TLS bug *is* the bug you are debugging. You want to see two TLS handshakes side by side.
+- You need to _modify_ the traffic, not just observe it (chaos injection, fault testing, latency simulation). Tap modes only observe.
+- The TLS bug _is_ the bug you are debugging. You want to see two TLS handshakes side by side.
 
 For Kapture, that means we keep the proxy mode and keep recommending it for remote debugging, chaos testing, and staging-like environments where the dev tool's TLS difference doesn't matter. The tap modes ship alongside, not instead.
 
@@ -79,10 +79,10 @@ That is what we mean by a dev tool that doesn't break TLS. Not a no-TLS tool, no
 
 ---
 
-*This is the end of the five-part series on Kapture's tap mode. The whole series in order:*
+_This is the end of the five-part series on Kapture's tap mode. The whole series in order:_
 
-1. *[Decrypting Kafka TLS without a proxy](./01-kafka-tls-debug-without-proxy.md)*
-2. *[Hooking SslTransportLayer via ByteBuddy](./02-hooking-ssl-transport-layer-bytebuddy.md)*
-3. *[Why eBPF isn't needed for JVM TLS](./03-ebpf-vs-java-agent-tls.md)*
-4. *[Kafka wire decode end-to-end without MITM](./04-kafka-wire-decode-no-mitm.md)*
-5. *Building dev tools that don't break TLS (this post)*
+1. _[Decrypting Kafka TLS without a proxy](./01-kafka-tls-debug-without-proxy.md)_
+2. _[Hooking SslTransportLayer via ByteBuddy](./02-hooking-ssl-transport-layer-bytebuddy.md)_
+3. _[Why eBPF isn't needed for JVM TLS](./03-ebpf-vs-java-agent-tls.md)_
+4. _[Kafka wire decode end-to-end without MITM](./04-kafka-wire-decode-no-mitm.md)_
+5. _Building dev tools that don't break TLS (this post)_

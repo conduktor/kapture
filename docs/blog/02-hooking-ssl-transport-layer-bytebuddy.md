@@ -3,7 +3,13 @@ title: "Hooking SslTransportLayer via ByteBuddy"
 slug: hooking-ssl-transport-layer-bytebuddy
 date: 2026-05-22
 description: A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with ByteBuddy, including the two overload traps that nearly killed the POC.
-keywords: [java agent ssl interception, bytebuddy tls, kafka client instrumentation, java instrumentation api]
+keywords:
+  [
+    java agent ssl interception,
+    bytebuddy tls,
+    kafka client instrumentation,
+    java instrumentation api,
+  ]
 ---
 
 # Hooking SslTransportLayer via ByteBuddy
@@ -14,10 +20,10 @@ This post is the deep-technical companion to [Decrypting Kafka TLS without a pro
 
 There are three reasonable places to intercept Kafka client TLS:
 
-| Hook point | What you see | What you don't |
-|---|---|---|
-| `SSLEngine.wrap` / `unwrap` (JDK) | All TLS traffic from any consumer of the engine | Application-level framing context |
-| Socket layer (`SocketChannel.read/write`) | Encrypted bytes | Plaintext |
+| Hook point                                          | What you see                                           | What you don't                    |
+| --------------------------------------------------- | ------------------------------------------------------ | --------------------------------- |
+| `SSLEngine.wrap` / `unwrap` (JDK)                   | All TLS traffic from any consumer of the engine        | Application-level framing context |
+| Socket layer (`SocketChannel.read/write`)           | Encrypted bytes                                        | Plaintext                         |
 | `org.apache.kafka.common.network.SslTransportLayer` | Plaintext Kafka wire bytes, scoped to the Kafka client | Anything outside the Kafka client |
 
 We picked `SslTransportLayer`. It is the narrowest possible cut: Kafka traffic only, plaintext already, single class to instrument, stable surface across kafka-clients releases since 2.x. Hooking `SSLEngine` would have given us every TLS user in the JVM (the JMX console, the Schema Registry HTTP client, anything else), which is more visibility than we want and slower to filter.
@@ -146,4 +152,4 @@ The agent has a bounded 8192-frame queue and a dedicated writer thread, enough f
 
 ---
 
-*Next: [Why eBPF isn't needed for JVM TLS](./03-ebpf-vs-java-agent-tls.md) — and where it actually is the right tool.*
+_Next: [Why eBPF isn't needed for JVM TLS](./03-ebpf-vs-java-agent-tls.md) — and where it actually is the right tool._
