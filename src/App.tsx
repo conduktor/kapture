@@ -132,6 +132,13 @@ function App(): JSX.Element {
   const [tab, setTab] = useState<"messages" | "protocol" | "brokers" | "session" | "expert">(
     "messages",
   );
+  // Flip away from Brokers when it becomes inapplicable (tap mode or
+  // disconnected) — tabs strip hides the button but the body would
+  // otherwise render an empty BrokersTab.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- safe: only fires when capture mode changes, not in render loops
+    if (tab === "brokers" && connection.proxyStatus === null) setTab("messages");
+  }, [tab, connection.proxyStatus]);
   // Lifted from StatusBar so the Brokers tab can read the same snapshot
   // without a second 1Hz poll. Null when no proxy is up (or before the
   // first tick lands).
@@ -772,7 +779,7 @@ function App(): JSX.Element {
             >
               Protocol <span className="tabs__count">({protoFrames.length})</span>
             </button>
-            {connection.status === "connected" ? (
+            {connection.status === "connected" && connection.proxyStatus !== null ? (
               <button
                 type="button"
                 role="tab"
