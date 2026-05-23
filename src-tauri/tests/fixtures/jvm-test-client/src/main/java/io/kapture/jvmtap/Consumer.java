@@ -28,6 +28,10 @@ public final class Consumer {
   static final String BOOTSTRAP = System.getProperty("bootstrap", "localhost:39093");
   static final int N_EXPECTED = 10;
   static final Duration TOTAL_TIMEOUT = Duration.ofSeconds(10);
+  /** When `-Didle=true`, the consumer skips the 10-message exit
+   * gate and keeps polling forever (heartbeat-style). Useful as a
+   * long-lived JVM target for the Kapture tap picker demo. */
+  static final boolean IDLE_MODE = Boolean.parseBoolean(System.getProperty("idle", "false"));
 
   public static void main(String[] args) {
     String truststore =
@@ -54,13 +58,18 @@ public final class Consumer {
       props.put(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, "https");
     }
 
-    System.out.println("[consumer] bootstrap=" + BOOTSTRAP + " truststore=" + truststore);
+    System.out.println("[consumer] bootstrap=" + BOOTSTRAP + " truststore=" + truststore
+        + (IDLE_MODE ? " mode=idle" : ""));
 
     int seen = 0;
     long deadline = System.nanoTime() + TOTAL_TIMEOUT.toNanos();
     try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
       consumer.subscribe(List.of(TOPIC));
-      while (seen < N_EXPECTED && System.nanoTime() < deadline) {
+      // In idle mode: loop forever, ignoring the message-count exit
+      // gate. Used as a long-lived JVM target for the Kapture tap
+      // picker demo (the user has time to click "Inject & tap" while
+      // this consumer is in the process list).
+      while ((IDLE_MODE) || (seen < N_EXPECTED && System.nanoTime() < deadline)) {
         ConsumerRecords<String, String> batch = consumer.poll(Duration.ofMillis(500));
         for (ConsumerRecord<String, String> r : batch) {
           String tenant = headerString(r, "tenant");
@@ -70,7 +79,7 @@ public final class Consumer {
                   + " tenant=" + tenant
                   + " " + r.topic() + "-" + r.partition() + "@" + r.offset());
           seen++;
-          if (seen >= N_EXPECTED) break;
+          if (!IDLE_MODE && seen >= N_EXPECTED) break;
         }
       }
     }

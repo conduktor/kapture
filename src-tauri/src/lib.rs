@@ -5,7 +5,9 @@ mod correlator;
 mod decode;
 mod error;
 mod filter;
+mod jvm_processes;
 mod jvm_tap;
+mod jvm_tap_commands;
 mod mcp;
 mod message;
 mod profile_commands;
@@ -106,8 +108,10 @@ pub fn run() {
             commands::test_proxy_upstream,
             commands::stop_proxy,
             commands::proxy_status,
-            commands::start_jvm_tap,
-            commands::stop_jvm_tap,
+            jvm_tap_commands::start_jvm_tap,
+            jvm_tap_commands::stop_jvm_tap,
+            jvm_tap_commands::list_local_jvms,
+            jvm_tap_commands::attach_jvm_tap_agent,
             commands::snapshot,
             commands::inspect_message_by_id,
             commands::proto_frames,

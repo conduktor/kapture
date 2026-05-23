@@ -260,6 +260,27 @@ export interface ProxyStatus {
 }
 
 /**
+ * One Java process listed by `list_local_jvms` for the tap picker.
+ * `looksKafkaActive` is best-effort: `true` when we detected a TCP
+ * connection to a Kafka-shaped port. Absence does not mean "not a
+ * Kafka client", only "no live socket observed".
+ */
+export interface JvmProcess {
+  pid: number;
+  command: string;
+  looksKafkaActive: boolean;
+}
+
+/** Result of `attach_jvm_tap_agent`. `log` is the verbatim stdout +
+ * stderr from the JDK attacher — surfaced unmodified on failure so
+ * the user sees the real cause (DisableAttachMechanism, JRE-only,
+ * wrong UID, target uses Conscrypt, etc.). */
+export interface AttachResult {
+  success: boolean;
+  log: string;
+}
+
+/**
  * Result of `test_proxy_upstream` — a one-shot probe of the upstream
  * broker that runs the same handshake as `start_proxy` (TLS + SASL +
  * ApiVersionsRequest v3) and closes. `apiVersionsCount` is populated
@@ -315,6 +336,11 @@ export interface ConnectionState {
   error: string | null;
   /** Populated only when the listener is up. */
   proxyStatus: ProxyStatus | null;
+  /** When in tap mode, identifies which JVM is being observed. The
+   * cluster pill shows `tap PID X` instead of `proxy <addr> → <up>`.
+   * Mutually exclusive with `proxyStatus` — at most one is non-null
+   * because the backend's capture slot is shared. */
+  tapStatus: { pid: number; command: string; socketPath: string } | null;
 }
 
 export interface CaptureStats {

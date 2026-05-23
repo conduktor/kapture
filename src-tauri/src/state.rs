@@ -145,6 +145,18 @@ impl AppState {
         self.inner.lock().jvm_tap.is_some()
     }
 
+    /// Read the path the active JVM tap listener is bound to.
+    /// `None` when no tap is running. Used by `attach_jvm_tap_agent`
+    /// to feed the right socket path into the target JVM via
+    /// `vm.loadAgent(jar, "kapture.tap.socket=...")`.
+    pub fn jvm_tap_socket_path(&self) -> Option<std::path::PathBuf> {
+        self.inner
+            .lock()
+            .jvm_tap
+            .as_ref()
+            .map(|h| h.socket_path().to_path_buf())
+    }
+
     /// Borrow the active `ProxyHandle` long enough to capture its
     /// summary, then drop the lock. `None` when no proxy is running.
     pub fn proxy_summary(&self) -> Option<crate::proxy_handle::ProxySummary> {

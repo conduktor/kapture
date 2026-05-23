@@ -90,9 +90,9 @@
                                     <manifestEntries>
                                         <Premain-Class>io.kapture.tap.Agent</Premain-Class>
                                         <Agent-Class>io.kapture.tap.Agent</Agent-Class>
+                                        <Main-Class>io.kapture.tap.Attacher</Main-Class>
                                         <Can-Retransform-Classes>true</Can-Retransform-Classes>
                                         <Can-Redefine-Classes>true</Can-Redefine-Classes>
-                                        <Boot-Class-Path>kapture-jvm-agent.jar</Boot-Class-Path>
                                     </manifestEntries>
                                 </transformer>
                             </transformers>
