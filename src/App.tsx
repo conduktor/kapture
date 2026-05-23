@@ -10,6 +10,9 @@ import { StatusBar } from "./components/StatusBar";
 import { SnippetsModal } from "./components/SnippetsModal";
 import { McpModal } from "./components/McpModal";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { ModePickerDialog } from "./components/ModePickerDialog";
+import { TapDialog } from "./components/TapDialog";
+import { buildProxyHandlers, buildTapHandlers } from "./lib/captureLifecycle";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
 import { activeMenuKeyFor, type MenuState } from "./lib/filterMenuState";
@@ -40,7 +43,6 @@ import type {
   KafkaMessageDetail,
   ProtoFrame,
   ProtoFrameDetail,
-  ProxyStatus,
   ProxyStatusSummary,
 } from "./types";
 import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
@@ -67,6 +69,7 @@ const INITIAL_CONNECTION: ConnectionState = {
   upstream: null,
   error: null,
   proxyStatus: null,
+  tapStatus: null,
 };
 
 function App(): JSX.Element {
@@ -117,10 +120,14 @@ function App(): JSX.Element {
   // the full viewport and Escape/backdrop close work uniformly.
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
-  // Open the dialog automatically on first launch when nothing is
-  // connected. Cancelling the dialog flips this to false and we stay in
-  // the disconnected workspace; the user re-opens via the cluster pill.
-  const [editing, setEditing] = useState(true);
+  const [tapDialogOpen, setTapDialogOpen] = useState(false);
+  // Mode picker is the first-contact surface on launch: two big
+  // buttons ("Connect to my existing Java apps" / "Proxy a Kafka
+  // cluster") so the user picks tap or proxy explicitly without
+  // either being the default. Skipping the picker drops the user on
+  // the empty workspace; TopBar buttons re-open the right dialog.
+  const [modePickerOpen, setModePickerOpen] = useState(true);
+  const [editing, setEditing] = useState(false);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [tab, setTab] = useState<"messages" | "protocol" | "brokers" | "session" | "expert">(
     "messages",
@@ -496,45 +503,34 @@ function App(): JSX.Element {
   // Proxy lifecycle: ConnectionDialog drives `start_proxy` and pushes the
   // result back via these callbacks. The dialog is the only entry point
   // since client (rdkafka) mode was removed.
-  const handleProxyStarting = (): void => {
-    // eslint-disable-next-line react-hooks/immutability -- ref is our source of truth for the rAF batcher; state mirrors it
+  /* eslint-disable react-hooks/immutability, react-hooks/refs --
+     the closure runs only when ConnectionDialog calls back on Start,
+     never during render; same pattern as the tap path below */
+  const clearMessagesForProxy = (): void => {
     messagesRef.current = [];
     setMessages([]);
-    setSelectedId(null);
-    setStats(INITIAL_STATS);
-    setConnection((prev) => ({
-      ...prev,
-      status: "connecting",
-      error: null,
-      proxyStatus: null,
-    }));
-    setEditing(false);
   };
-
-  const handleProxyStarted = (status: ProxyStatus): void => {
-    setConnection({
-      status: "connected",
-      upstream: status.upstream,
-      error: null,
-      proxyStatus: status,
-    });
-  };
-
-  const handleProxyError = (message: string): void => {
-    setConnection((prev) => ({
-      ...prev,
-      status: "error",
-      error: message,
-      proxyStatus: null,
-    }));
-  };
+  const { handleProxyStarting, handleProxyStarted, handleProxyError } = buildProxyHandlers({
+    clearMessages: clearMessagesForProxy,
+    setSelectedId,
+    setStats,
+    setConnection,
+    setEditing,
+    initialStats: INITIAL_STATS,
+  });
+  /* eslint-enable react-hooks/immutability, react-hooks/refs */
 
   const handleDisconnect = (): void => {
+    // The active capture slot is shared: either a proxy is running OR
+    // a tap is. Pick the right stop command based on which status
+    // slice is populated. Both are best-effort; we always reset local
+    // state below.
+    const stopCommand = connection.tapStatus !== null ? "stop_jvm_tap" : "stop_proxy";
     void (async () => {
       try {
-        await invoke("stop_proxy");
+        await invoke(stopCommand);
       } catch (err) {
-        console.error("stop_proxy failed", err);
+        console.error(`${stopCommand} failed`, err);
       } finally {
         setConnection(INITIAL_CONNECTION);
         // Brokers tab is hidden when disconnected — fall back to messages
@@ -546,6 +542,30 @@ function App(): JSX.Element {
       }
     })();
   };
+
+  // JVM tap lifecycle — TapDialog is the single entry point. The
+  // dialog drives `start_jvm_tap` + `attach_jvm_tap_agent` itself
+  // (different from the proxy path where ConnectionDialog calls
+  // `start_proxy`) so these callbacks just steer the local state.
+  // The handler bodies live in `lib/tapLifecycle.ts` to keep App.tsx
+  // under the file-size budget.
+  /* eslint-disable react-hooks/immutability, react-hooks/refs --
+     the closure runs only when TapDialog calls handleTapStarting on
+     button click, never during render; the same pattern is used by
+     handleProxyStarting on line ~500 */
+  const clearMessagesForTap = (): void => {
+    messagesRef.current = [];
+    setMessages([]);
+  };
+  const { handleTapStarting, handleTapStarted, handleTapError } = buildTapHandlers({
+    clearMessages: clearMessagesForTap,
+    setSelectedId,
+    setStats,
+    setConnection,
+    setTapDialogOpen,
+    initialStats: INITIAL_STATS,
+  });
+  /* eslint-enable react-hooks/immutability, react-hooks/refs */
 
   const handleClear = (): void => {
     // Wipes BOTH the message ring buffer AND the protocol frame ring
@@ -708,8 +728,12 @@ function App(): JSX.Element {
             setEditing(true);
           }
         }}
+        onOpenTap={() => {
+          setTapDialogOpen(true);
+        }}
         onClear={handleClear}
         proxyStatus={connection.proxyStatus}
+        tapStatus={connection.tapStatus}
         onEdit={() => {
           setEditing(true);
         }}
@@ -922,6 +946,32 @@ function App(): JSX.Element {
           onCancel={cancelDialog}
           pending={connection.status === "connecting"}
           error={connection.error}
+        />
+      ) : null}
+      {tapDialogOpen ? (
+        <TapDialog
+          onTapStarting={handleTapStarting}
+          onTapStarted={handleTapStarted}
+          onTapError={handleTapError}
+          onCancel={() => {
+            setTapDialogOpen(false);
+          }}
+          pending={connection.status === "connecting"}
+        />
+      ) : null}
+      {modePickerOpen && connection.status !== "connected" ? (
+        <ModePickerDialog
+          onPickTap={() => {
+            setModePickerOpen(false);
+            setTapDialogOpen(true);
+          }}
+          onPickProxy={() => {
+            setModePickerOpen(false);
+            setEditing(true);
+          }}
+          onCancel={() => {
+            setModePickerOpen(false);
+          }}
         />
       ) : null}
       {menu ? (

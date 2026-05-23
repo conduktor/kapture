@@ -8,8 +8,14 @@ interface Props {
   filterPlaceholder?: string;
   capturing: boolean;
   onToggleCapture: () => void;
+  /** Open the JVM tap picker. Visible only when not capturing —
+   * once a session is active, Stop terminates it regardless of mode. */
+  onOpenTap: () => void;
   onClear: () => void;
   proxyStatus: ProxyStatus | null;
+  /** When a tap session is active, the cluster pill flips to
+   * `tap PID X (truncated command)` instead of the proxy address. */
+  tapStatus: { pid: number; command: string; socketPath: string } | null;
   onEdit: () => void;
   /** Open the Snippets modal. Button is only rendered when connected. */
   onOpenSnippets: () => void;
@@ -31,21 +37,28 @@ export function TopBar({
   filterPlaceholder,
   capturing,
   onToggleCapture,
+  onOpenTap,
   onClear,
   proxyStatus,
+  tapStatus,
   onEdit,
   onOpenSnippets,
   onOpenMcp,
   paused,
   onTogglePaused,
 }: Props): JSX.Element {
-  // Cluster pill: show `{listenAddr} → {upstream}` when the listener
-  // is up; "not connected" when nothing's running. "proxy" wording is
-  // deliberately hidden in the user-facing label — Kapture presents
-  // itself as an inspector, the proxy plumbing is an implementation
-  // detail, not a feature the user has to think about.
-  const pillLabel =
-    proxyStatus !== null ? `${proxyStatus.listenAddr} → ${proxyStatus.upstream}` : "not connected";
+  // Cluster pill: show `{listenAddr} → {upstream}` when the proxy
+  // is up, `tap PID X` when a JVM tap is active, "not connected"
+  // otherwise. "proxy" / "tap" wording is intentionally minimal —
+  // Kapture presents itself as an inspector; the capture-mode
+  // plumbing is implementation detail, not a feature the user has
+  // to think about.
+  let pillLabel = "not connected";
+  if (tapStatus !== null) {
+    pillLabel = `tap PID ${tapStatus.pid}`;
+  } else if (proxyStatus !== null) {
+    pillLabel = `${proxyStatus.listenAddr} → ${proxyStatus.upstream}`;
+  }
   return (
     <header className="topbar">
       <div className="topbar__controls">
@@ -92,6 +105,16 @@ export function TopBar({
         >
           {capturing ? "Stop" : "Start"}
         </button>
+        {!capturing ? (
+          <button
+            type="button"
+            className="btn"
+            onClick={onOpenTap}
+            title="Inject the Kapture agent into a running Java Kafka client (no proxy)"
+          >
+            Tap JVM
+          </button>
+        ) : null}
         <button type="button" className="btn" onClick={onClear}>
           Clear
         </button>

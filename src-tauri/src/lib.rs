@@ -5,6 +5,9 @@ mod correlator;
 mod decode;
 mod error;
 mod filter;
+mod jvm_processes;
+mod jvm_tap;
+mod jvm_tap_commands;
 mod mcp;
 mod message;
 mod profile_commands;
@@ -36,6 +39,7 @@ mod state;
 pub mod example_api {
     pub use crate::anti_patterns::{AntiPatternKind, AntiPatternsSnapshot, Detection, Severity};
     pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
+    pub use crate::jvm_tap::{JvmTapConfig, JvmTapHandle};
     pub use crate::message::CapturedMessage;
     pub use crate::proto_event::ProtoDirection;
     pub use crate::proxy::ProxyConfig;
@@ -104,6 +108,10 @@ pub fn run() {
             commands::test_proxy_upstream,
             commands::stop_proxy,
             commands::proxy_status,
+            jvm_tap_commands::start_jvm_tap,
+            jvm_tap_commands::stop_jvm_tap,
+            jvm_tap_commands::list_local_jvms,
+            jvm_tap_commands::attach_jvm_tap_agent,
             commands::snapshot,
             commands::inspect_message_by_id,
             commands::proto_frames,

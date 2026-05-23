@@ -24,7 +24,31 @@ If you debugged HTTP with Fiddler ten years ago, this is the same idea, for Kafk
 
 ## How it works
 
-Kapture runs a local TCP proxy. You point your Kafka client at `127.0.0.1:9092` (instead of your real broker), Kapture forwards every byte upstream, and copies a decoded view into the inspector.
+Two capture modes, one decoder. Pick what fits your setup — and combine them if you have a polyglot fleet.
+
+### Tap mode — JVM Kafka clients, no proxy in the path
+
+Attach a ByteBuddy agent to your Java Kafka client at startup:
+
+```sh
+java -javaagent:kapture-jvm-agent.jar -jar your-app.jar
+```
+
+The agent hooks `SslTransportLayer.read/write` and `PlaintextTransportLayer.read/write` inside the client JVM and streams plaintext Kafka bytes to Kapture over a Unix domain socket (`/tmp/kapture-tap.sock`, owner-only 0600). The TLS connection stays end-to-end with the real broker — real cert, real handshake, real mTLS / SASL / pinning. There is no second TLS session, no fake cert to install, no client config change.
+
+```
+your Java client ─────────TLS────────▶ real broker
+       │
+       └─ in-process agent ──▶ /tmp/kapture-tap.sock ──▶ Kapture
+```
+
+Works against Confluent Cloud, MSK, Azure Event Hubs, your local docker — anything the Java client can talk to. SSL and PLAINTEXT listeners both covered.
+
+Caveats: tap mode requires Kapture and the client on the same host (the UDS is local). JVM only (`librdkafka` and Go static `crypto/tls` taps via eBPF uprobes are on the roadmap). The agent stays resident in the JVM until the process exits — there is no clean detach.
+
+### Proxy mode — any client, any host, optional chaos
+
+Point your client at `127.0.0.1:9092`, Kapture forwards every byte upstream and copies a decoded view to the inspector.
 
 ```
 your client ──▶ 127.0.0.1:9092 ──▶ real broker
@@ -34,6 +58,8 @@ your client ──▶ 127.0.0.1:9092 ──▶ real broker
 ```
 
 No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's there. SASL/PLAIN, SASL/SCRAM-SHA-256/512, TLS, and mTLS upstream are all passed through correctly.
+
+Pick proxy mode when: the client is non-JVM, on a different machine, or you need to _modify_ the traffic (latency injection, error codes, fault testing — that work is in the roadmap as "Chaos"). Proxy mode terminates TLS, which means provisioning a cert the client trusts — that's the cost tap mode avoids.
 
 ## What you get
 
@@ -67,14 +93,34 @@ brew install --cask kapture
 
 **Windows** — `Kapture_<version>_x64-setup.exe` (NSIS installer) or `Kapture_<version>_x64_en-US.msi`. SmartScreen will warn on first run because the binary is not yet codesigned — click _More info_ → _Run anyway_.
 
+### Using proxy mode
+
 In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at your upstream broker (Confluent Cloud, MSK, your local docker, …). Configure SASL/TLS if needed. Hit Start. Then point any Kafka client at `127.0.0.1:9092` and watch.
 
-Building from source: `pnpm install && pnpm tauri dev`.
+### Using tap mode
+
+Start a tap session in Kapture (the UI exposes `start_jvm_tap` via the command palette / MCP; the listener binds `/tmp/kapture-tap.sock`). Build the agent JAR once:
+
+```sh
+cd agents/jvm-tap && mvn -q -DskipTests package
+# produces agents/jvm-tap/target/kapture-jvm-agent.jar
+```
+
+Then launch your Kafka client with `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar` (plus `--add-opens java.base/java.nio=ALL-UNNAMED` on Java 11+). The agent connects to Kapture's UDS automatically; frames appear in the same Protocol / Messages / Expert tabs as proxy mode, with a `source: tap` badge per frame. The agent JAR will ship as a release asset once the release pipeline picks it up; for now, build from source.
+
+### Building Kapture from source
+
+```sh
+pnpm install && pnpm tauri dev
+```
 
 ## Roadmap
 
+- **eBPF taps.** `librdkafka` family (Python, Node, Ruby, .NET, C++) via `SSL_write`/`SSL_read` uprobes; Go static `crypto/tls` via RET-scan uprobes. Linux only. Combined with the JVM tap already shipped, target is ~95% of the production Kafka client market observable without provisioning a cert.
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
+
+Full backlog with shirt sizes in [docs/ROADMAP.md](docs/ROADMAP.md). Background and design notes on the JVM tap in the [five-part blog series](docs/blog/).
 
 ## Changelog
 

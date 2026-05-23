@@ -1,0 +1,7 @@
+# Maven build output
+target/
+
+# Eclipse / m2e IDE files (regenerated on import)
+.classpath
+.project
+.settings/

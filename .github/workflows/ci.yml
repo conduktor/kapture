@@ -177,3 +177,73 @@ jobs:
       - name: Dump broker logs on failure
         if: failure()
         run: docker compose logs --tail=300
+
+  jvm-tap-e2e:
+    name: JVM tap end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Runs in its own job because the `ssl` profile's broker binds
+    # 39093 — the same port `mb` profile broker-2 uses in the
+    # anti-patterns job. Mutually exclusive on port; trivially
+    # parallel as separate runners.
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Tauri system deps (cached)
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          version: "1"
+
+      - name: Set up JDK 21 (needed for the agent + test client + javaagent flag)
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Generate self-signed JKS test fixtures
+        run: src-tauri/tests/fixtures/certs/gen-certs.sh
+
+      - name: Build the JVM agent
+        run: mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+
+      - name: Build the JVM test client
+        run: mvn -B -q -DskipTests -f src-tauri/tests/fixtures/jvm-test-client/pom.xml package
+
+      - name: Bring up SSL + plaintext Kafka brokers
+        run: |
+          docker compose --profile ssl --profile kafka up -d kafka-ssl kafka
+          for port in 39093 29092; do
+            for _ in $(seq 1 60); do
+              if (echo > /dev/tcp/localhost/$port) >/dev/null 2>&1; then
+                echo "broker on $port ready"
+                break
+              fi
+              sleep 2
+            done
+          done
+
+      - name: Run JVM tap end-to-end tests (SSL + plaintext)
+        env:
+          KAPTURE_JVM_TAP_E2E: "1"
+          KAPTURE_KAFKA_SSL_BOOTSTRAP: "localhost:39093"
+          KAPTURE_KAFKA_BOOTSTRAP: "localhost:29092"
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml \
+            --test jvm_tap_e2e \
+            --all-features -- --nocapture --test-threads=1
+
+      - name: Dump broker logs on failure
+        if: failure()
+        run: docker compose --profile ssl --profile kafka logs --tail=300

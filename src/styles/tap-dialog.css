@@ -1,0 +1,263 @@
+/* ---------- ModePickerDialog (entry-point) ---------- */
+.mode-picker {
+  width: min(720px, 94vw);
+}
+.mode-picker__cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 4px;
+}
+.mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 18px 16px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    transform 120ms ease;
+}
+.mode-card:hover {
+  border-color: var(--accent, #2563eb);
+  background: rgba(37, 99, 235, 0.04);
+}
+.mode-card:active {
+  transform: translateY(1px);
+}
+.mode-card:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+}
+.mode-card__icon {
+  font-size: 28px;
+  line-height: 1;
+  color: var(--accent, #2563eb);
+}
+.mode-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.mode-card__desc {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.mode-card__desc code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-elevated);
+  padding: 1px 4px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+@media (max-width: 620px) {
+  .mode-picker__cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- TapDialog (JVM picker) ---------- */
+.tap-dialog {
+  width: min(640px, 92vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tap-dialog__close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+}
+.tap-dialog__close:hover {
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+.tap-dialog__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.tap-dialog__count {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+.tap-dialog__error {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.08);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius);
+}
+.tap-dialog__list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  min-height: 120px;
+  max-height: 360px;
+}
+.tap-dialog__empty {
+  padding: 24px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.tap-dialog__empty p {
+  margin: 0 0 8px;
+}
+.tap-dialog__empty p:last-of-type {
+  margin-bottom: 12px;
+}
+.tap-dialog__empty code {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  background: var(--bg-elevated);
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.tap-dialog__sample {
+  text-align: left;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+}
+.tap-dialog__sample > summary {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 8px 10px;
+  user-select: none;
+  color: var(--accent, #2563eb);
+}
+.tap-dialog__sample > summary:hover {
+  background: var(--bg-subtle);
+}
+.tap-dialog__sample[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+.tap-dialog__sample pre {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--bg-subtle);
+  overflow-x: auto;
+  white-space: pre;
+}
+.tap-dialog__sample-hint {
+  margin: 0 !important;
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+.tap-dialog__log {
+  font-size: 11px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.tap-dialog__log-label {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.tap-dialog__log pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--mono);
+  color: var(--text-muted);
+}
+.tap-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* Per-process row */
+.tap-row {
+  display: grid;
+  grid-template-columns: 100px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tap-row:last-child {
+  border-bottom: none;
+}
+.tap-row:hover {
+  background: var(--bg-elevated);
+}
+.tap-row--kafka {
+  background: rgba(37, 99, 235, 0.04);
+}
+.tap-row--kafka:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+.tap-row__id {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tap-row__pid {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tap-row__badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  color: var(--accent, #2563eb);
+  background: rgba(37, 99, 235, 0.1);
+  border-radius: 4px;
+  padding: 1px 6px;
+  width: max-content;
+}
+.tap-row__command {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tap-row__attach {
+  white-space: nowrap;
+}

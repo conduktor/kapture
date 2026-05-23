@@ -138,6 +138,145 @@ current per-frame view.
 
 ---
 
+## Tap modes — observation without TLS termination
+
+The proxy-only model has a ceiling: to read TLS, Kapture has to
+terminate TLS, which provisions a fake cert and re-encrypts to the
+upstream broker. That breaks pinning, mTLS, Confluent Cloud cert
+chains, and any client environment where "swap the cert" is not
+acceptable.
+
+Tap modes observe the Kafka wire from _inside_ the client process
+(or kernel-side via uprobes) instead of standing between client and
+broker. The TLS connection stays end-to-end with the real broker.
+Kapture sees plaintext because it reads the bytes before encrypt /
+after decrypt, not because it broke the encryption.
+
+All tap modes feed the same wire decoder as the proxy. The
+Protocol / Messages / Expert tabs render the same data with a
+`source: tap-jvm | tap-ebpf | proxy` badge per frame. Five blog
+posts in `docs/blog/01..05-*.md` explain the motivation and the
+design.
+
+> **JVM tap** is already shipped (covers `SslTransportLayer` and
+> `PlaintextTransportLayer`, agent at `agents/jvm-tap/`, listener at
+> `src-tauri/src/jvm_tap.rs`, Tauri commands `start_jvm_tap` /
+> `stop_jvm_tap`). The items below are the remaining tap work.
+
+### JVM tap — follow-ups [S/M each]
+
+Hardening + UX items left on the JVM path:
+
+- Bump ByteBuddy to a release with Java 25 support (eliminates the
+  `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
+- Shutdown drain hook on the agent (today loses ~5% of frames at
+  JVM exit).
+- Picker UI in Kapture: list JVM PIDs with sockets to Kafka ports,
+  one-click "Inject & tap". Confirmation modal explaining the
+  agent cannot detach cleanly until the JVM exits.
+- Detection that the JVM is using Conscrypt or BouncyCastle JSSE
+  instead of SunJSSE → either extend the hook target or surface a
+  "use proxy mode" message.
+- Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
+  the desktop app so users don't have to build it from source.
+
+### eBPF tap — librdkafka family [L]
+
+eBPF uprobes on `SSL_write` and `SSL_read` in OpenSSL / BoringSSL,
+following the AgentSight (arXiv:2508.02736) and ecapture recipes.
+Covers every Kafka client built on `librdkafka`:
+confluent-kafka-{python, node, ruby, dotnet}, plus C/C++ apps and
+`confluent-kafka-go` (which is cgo over librdkafka).
+
+Implementation outline:
+
+- Use libbpf-rs (already in the Rust ecosystem) for the userspace
+  loader. Avoid bcc to keep the runtime light.
+- Two probes per process: entry-uprobe on `SSL_write` (captures
+  the plaintext buffer before encrypt), return-uprobe on
+  `SSL_read` (captures the plaintext buffer after decrypt). Carry
+  the `SSL*` pointer through a BPF map to correlate.
+- Userspace ringbuf consumer in Kapture writes into the same
+  decoder pipeline as the JVM tap. Same `source: tap-ebpf` badge.
+- PID picker scans `/proc/*/maps` for `libssl*` and Kafka-shaped
+  sockets (port 9092/9093/9094 or a string match against
+  `__consumer_offsets` in the heap).
+
+Constraints:
+
+- Linux only. macOS dev falls back to proxy mode for non-JVM
+  clients.
+- `CAP_BPF` (or root) required. Document `setcap` setup; warn
+  clearly if not available.
+- Statically-linked OpenSSL needs offset-scanning fallback —
+  defer until we see a real customer report.
+
+_Why:_ Closes the Python / Node / .NET / Ruby gap in one move.
+About a quarter of the production Kafka fleet uses these stacks.
+
+### eBPF tap — Go static `crypto/tls` [L]
+
+Sister to the librdkafka tap, different attach technique. Pure-Go
+Kafka clients (Sarama, segmentio/kafka-go) statically link
+`crypto/tls` and do not export the SSL symbols. We follow the
+Speedscale / ecapture pattern:
+
+- Disassemble `crypto/tls.(*Conn).Read` and `.Write` at agent
+  start, scan for `RET` instructions, attach uprobes at each
+  offset (Go's uretprobes are unsafe because of goroutine stack
+  management).
+- Per-Go-version offset table for the common Go releases (1.20+).
+  New Go releases require regeneration; surface a clear "Go
+  version unsupported, please report" message instead of silently
+  failing.
+
+Constraints:
+
+- Strip-resistant: requires non-stripped binaries (`-ldflags="-s"`
+  removes the symbol that the disassembler needs).
+- Linux only, `CAP_BPF` required (same as librdkafka tap).
+
+_Why:_ Sarama and `confluent-kafka-go` native Go covers the
+remaining production gap. Combined with the JVM and librdkafka
+taps, Kapture observes roughly 95% of the production Kafka client
+market without breaking TLS.
+
+### Tap source picker UI [S]
+
+Connection dialog gains a "Tap a process" entry alongside "New
+proxy". The picker lists local processes that look like Kafka
+clients (have a connection to a Kafka port + load a TLS library
+Kapture knows how to hook), with the technique pre-selected per
+runtime:
+
+- JVM process → JVM tap path
+- Process with `libssl*` mapped → eBPF librdkafka path
+- Statically-linked Go binary with `crypto/tls` symbols → eBPF Go
+  path
+- Anything else → "Use proxy mode" link
+
+_Why:_ Without a friendly picker, the tap modes are CLI flags only.
+The picker is what makes the feature visible to users who don't
+read the docs.
+
+### Pcap / SSLKEYLOGFILE import [M]
+
+Fourth observation source: a `.pcap` file plus an
+`SSLKEYLOGFILE`-format key log. Kapture decrypts offline using the
+keys, then feeds the same wire decoder. Useful for forensic /
+post-mortem analysis where neither a proxy nor a live tap is an
+option.
+
+Open: librdkafka does not natively emit `SSLKEYLOGFILE`. We may
+need to ship a patched OpenSSL wrapper or lobby upstream
+(librdkafka issue #3454, open since 2021).
+
+_Why:_ Closes the "we can't be live on the host" case. Also makes
+Kapture a credible Wireshark companion for Kafka — same input,
+better decoder.
+
+---
+
 ## Diagnosis — surface what looks wrong
 
 ### Anomaly banner [M]

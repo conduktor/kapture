@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kapture Blog — deep dives on Kafka wire debugging</title>
+    <meta
+      name="description"
+      content="Long-form deep dives on Kafka wire-level debugging, TLS visibility, and the design behind Kapture's tap mode."
+    />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:title" content="Kapture Blog" />
+    <meta
+      property="og:description"
+      content="Deep dives on Kafka wire-level debugging, TLS visibility, and Kapture's tap mode."
+    />
+    <meta property="og:image" content="/images/og-card.png" />
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.55;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.92);
+        backdrop-filter: saturate(140%) blur(10px);
+        -webkit-backdrop-filter: saturate(140%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      header.nav.scrolled {
+        border-bottom-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 60px;
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 20px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 28px;
+        height: 28px;
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.1;
+      }
+      .brand-text .name {
+        font-size: 16px;
+      }
+      .brand-text .by {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .hero {
+        padding: 64px 0 32px;
+        border-bottom: 1px solid var(--border);
+      }
+      .hero h1 {
+        font-size: 40px;
+        line-height: 1.15;
+        margin: 0 0 12px;
+        letter-spacing: -0.02em;
+      }
+      .hero p {
+        margin: 0;
+        font-size: 18px;
+        color: var(--muted);
+        max-width: 640px;
+      }
+      .hero .source {
+        margin-top: 16px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .hero .source code {
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 1px 6px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--text);
+      }
+      main {
+        padding: 32px 0 80px;
+      }
+      .posts {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+      .post {
+        display: grid;
+        grid-template-columns: 56px 1fr;
+        gap: 20px;
+        padding: 24px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .post:last-child {
+        border-bottom: 0;
+      }
+      .post-number {
+        font-family: var(--mono);
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+        padding-top: 2px;
+      }
+      .post-body h2 {
+        font-size: 22px;
+        margin: 0 0 6px;
+        letter-spacing: -0.01em;
+      }
+      .post-body h2 a {
+        color: var(--text);
+      }
+      .post-body h2 a:hover {
+        color: var(--accent);
+      }
+      .post-meta {
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      .post-meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-body p {
+        margin: 0 0 12px;
+        color: var(--text);
+      }
+      .post-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 32px 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 16px;
+      }
+      .foot a {
+        margin-right: 16px;
+        color: var(--muted);
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+      @media (max-width: 600px) {
+        .hero h1 {
+          font-size: 30px;
+        }
+        .post {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+        .post-number {
+          padding-top: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+        </nav>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="wrap">
+        <h1>Kapture Blog</h1>
+        <p>
+          Long-form notes on Kafka wire-level debugging, TLS visibility, and the design behind
+          Kapture's tap mode. Posts are the source-of-truth Markdown files committed to the repo —
+          each "Read" link opens the rendered Markdown on GitHub.
+        </p>
+        <p class="source">
+          Source files live at
+          <code>docs/blog/*.md</code> in
+          <a href="https://github.com/conduktor/kapture/tree/main/docs/blog" rel="noopener"
+            >conduktor/kapture</a
+          >.
+        </p>
+      </div>
+    </section>
+
+    <main>
+      <div class="wrap">
+        <ol class="posts">
+          <li class="post">
+            <div class="post-number">01</div>
+            <div class="post-body">
+              <h2>
+                <a
+                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/01-kafka-tls-debug-without-proxy.md"
+                  rel="noopener"
+                  >Decrypting Kafka TLS without a proxy</a
+                >
+              </h2>
+              <div class="post-meta">
+                <time datetime="2026-05-22">May 22, 2026</time>
+                <span class="dot">·</span>
+                <span>~5 min read</span>
+              </div>
+              <p>
+                Why MITM proxies fall short for modern Kafka debugging, and how an in-process
+                boundary hook captures plaintext without breaking encryption.
+              </p>
+              <div class="post-tags">
+                <span class="tag">kafka tls debug</span>
+                <span class="tag">kafka ssl inspect</span>
+                <span class="tag">mitm proxy alternative</span>
+              </div>
+            </div>
+          </li>
+
+          <li class="post">
+            <div class="post-number">02</div>
+            <div class="post-body">
+              <h2>
+                <a
+                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/02-hooking-ssl-transport-layer-bytebuddy.md"
+                  rel="noopener"
+                  >Hooking SslTransportLayer via ByteBuddy</a
+                >
+              </h2>
+              <div class="post-meta">
+                <time datetime="2026-05-22">May 22, 2026</time>
+                <span class="dot">·</span>
+                <span>~6 min read</span>
+              </div>
+              <p>
+                A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with
+                ByteBuddy, including the two overload traps that nearly killed the POC.
+              </p>
+              <div class="post-tags">
+                <span class="tag">java agent ssl interception</span>
+                <span class="tag">bytebuddy tls</span>
+                <span class="tag">java instrumentation api</span>
+              </div>
+            </div>
+          </li>
+
+          <li class="post">
+            <div class="post-number">03</div>
+            <div class="post-body">
+              <h2>
+                <a
+                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/03-ebpf-vs-java-agent-tls.md"
+                  rel="noopener"
+                  >Why eBPF isn't needed for JVM TLS</a
+                >
+              </h2>
+              <div class="post-meta">
+                <time datetime="2026-05-22">May 22, 2026</time>
+                <span class="dot">·</span>
+                <span>~5 min read</span>
+              </div>
+              <p>
+                When eBPF uprobes earn their cost for TLS observability, and when a Java agent does
+                the same job with none of the operational tax.
+              </p>
+              <div class="post-tags">
+                <span class="tag">ebpf vs java agent</span>
+                <span class="tag">jvm tls capture</span>
+                <span class="tag">ebpf uprobe ssl</span>
+              </div>
+            </div>
+          </li>
+
+          <li class="post">
+            <div class="post-number">04</div>
+            <div class="post-body">
+              <h2>
+                <a
+                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/04-kafka-wire-decode-no-mitm.md"
+                  rel="noopener"
+                  >Kafka wire decode end-to-end without MITM</a
+                >
+              </h2>
+              <div class="post-meta">
+                <time datetime="2026-05-22">May 22, 2026</time>
+                <span class="dot">·</span>
+                <span>~5 min read</span>
+              </div>
+              <p>
+                Kapture's three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one
+                Kafka wire decoder. Where each mode wins, and what ships next.
+              </p>
+              <div class="post-tags">
+                <span class="tag">kafka traffic capture</span>
+                <span class="tag">kafka observability</span>
+                <span class="tag">kafka wire protocol</span>
+              </div>
+            </div>
+          </li>
+
+          <li class="post">
+            <div class="post-number">05</div>
+            <div class="post-body">
+              <h2>
+                <a
+                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/05-dev-tools-that-dont-break-tls.md"
+                  rel="noopener"
+                  >Building dev tools that don't break TLS</a
+                >
+              </h2>
+              <div class="post-meta">
+                <time datetime="2026-05-22">May 22, 2026</time>
+                <span class="dot">·</span>
+                <span>~5 min read</span>
+              </div>
+              <p>
+                Every dev tool that intercepts TLS pays a hidden tax. What we lose, what we get back
+                when we stop interposing, and the three techniques that observe without changing the
+                wire.
+              </p>
+              <div class="post-tags">
+                <span class="tag">tls visibility</span>
+                <span class="tag">passive tls decryption</span>
+                <span class="tag">dev tool design</span>
+              </div>
+            </div>
+          </li>
+        </ol>
+      </div>
+    </main>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" rel="noopener">Issues</a>
+          <a href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md" rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+    </script>
+  </body>
+</html>

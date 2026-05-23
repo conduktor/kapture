@@ -315,6 +315,55 @@ services:
       - "39097:39097"
     networks: [kafka-acl]
 
+  # ──────────── Apache Kafka with SSL (used by the JVM-tap e2e test) ────────────
+  # Single-broker KRaft with a one-way TLS listener on 39093. The
+  # broker keystore + truststore are JKS files mounted from
+  # src-tauri/tests/fixtures/certs/ (generate via gen-certs.sh).
+  # Password is `kapture` — dev only, NEVER reuse.
+  # ssl.client.auth=none → no mTLS, clients just need a truststore
+  # that vouches for the broker's self-signed cert.
+  kafka-ssl:
+    image: apache/kafka:latest
+    container_name: kapture-kafka-ssl
+    profiles: ["ssl"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,SSL://0.0.0.0:39093,CONTROLLER://0.0.0.0:9094"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-ssl:9092,SSL://localhost:39093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,SSL:SSL,CONTROLLER:PLAINTEXT"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka-ssl:9094"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # SSL config — one-way auth. The apache/kafka entrypoint
+      # (`/etc/kafka/docker/configure`) reads filenames relative to
+      # /etc/kafka/secrets/ and pulls passwords from credentials files
+      # via `cat`. Credentials files MUST NOT have a trailing newline;
+      # gen-certs.sh writes them with `printf` for that reason.
+      # ssl.client.auth=none → no mTLS, so no broker truststore needed.
+      KAFKA_SSL_KEYSTORE_FILENAME: "broker.keystore.jks"
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: "broker_keystore_creds"
+      KAFKA_SSL_KEY_CREDENTIALS: "broker_key_creds"
+      KAFKA_SSL_KEYSTORE_TYPE: "JKS"
+      KAFKA_SSL_CLIENT_AUTH: "none"
+      CLUSTER_ID: "kapture-ssl-cluster"
+    volumes:
+      - ./src-tauri/tests/fixtures/certs:/etc/kafka/secrets:ro
+    ports:
+      - "39093:39093"
+    healthcheck:
+      test:
+        ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-ssl:9092 --list || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [kafka-ssl]
+
   # ──────────── Apache Kafka 3.7.0 — legacy decoder smoke ────────────
   # Pinned to the OLDEST apache/kafka image tag (Apache only started
   # publishing the official Docker image with 3.7). Used to verify
@@ -360,3 +409,5 @@ networks:
     name: kapture-kafka-acl
   kafka-scram:
     name: kapture-kafka-scram
+  kafka-ssl:
+    name: kapture-kafka-ssl

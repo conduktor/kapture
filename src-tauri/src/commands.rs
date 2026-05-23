@@ -590,7 +590,7 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
 /// Snapshot both rings into the `AppState` pinned maps. Shared by
 /// pause and `stop_proxy` so detail lookups keep resolving after
 /// the live rings either evict the row or vanish entirely.
-fn pin_capture_snapshot(state: &AppState) {
+pub fn pin_capture_snapshot(state: &AppState) {
     let messages: std::collections::HashMap<String, CapturedMessage> = state
         .buffer
         .snapshot()
