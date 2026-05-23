@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hooking SslTransportLayer via ByteBuddy — Kapture blog</title>
+    <meta
+      name="description"
+      content="A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with ByteBuddy, including the two overload traps that nearly killed the POC."
+    />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link
+      rel="canonical"
+      href="https://kapturekafka.dev/blog/hooking-ssl-transport-layer-bytebuddy/"
+    />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="Hooking SslTransportLayer via ByteBuddy" />
+    <meta
+      property="og:description"
+      content="A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with ByteBuddy, including the two overload traps that nearly killed the POC."
+    />
+    <meta
+      property="og:url"
+      content="https://kapturekafka.dev/blog/hooking-ssl-transport-layer-bytebuddy/"
+    />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="article:published_time" content="2026-05-22" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Hooking SslTransportLayer via ByteBuddy" />
+    <meta
+      name="twitter:description"
+      content="A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with ByteBuddy, including the two overload traps that nearly killed the POC."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Hooking SslTransportLayer via ByteBuddy",
+        "description": "A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with ByteBuddy, including the two overload traps that nearly killed the POC.",
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://kapturekafka.dev/apple-touch-icon.png"
+          }
+        },
+        "datePublished": "2026-05-22",
+        "dateModified": "2026-05-22",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kapturekafka.dev/blog/hooking-ssl-transport-layer-bytebuddy/"
+        },
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "keywords": ""
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      .post-hero {
+        padding: 56px 0 28px;
+      }
+      .post-hero .back {
+        display: inline-block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .post-hero .back:hover {
+        color: var(--text);
+      }
+      .post-hero h1 {
+        font-size: clamp(32px, 4.5vw, 44px);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+      }
+      .post-hero .meta {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .post-hero .meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-hero .meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-hero .tags {
+        margin-top: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-hero .tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+
+      main.post-main {
+        padding: 8px 0 64px;
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+      }
+      .prose {
+        font-size: 16.5px;
+      }
+      .prose h2 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        margin: 48px 0 12px;
+        line-height: 1.25;
+      }
+      .prose h3 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 32px 0 10px;
+      }
+      .prose p {
+        margin: 0 0 18px;
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 18px;
+        padding-left: 24px;
+      }
+      .prose li {
+        margin-bottom: 6px;
+      }
+      .prose li > p {
+        margin: 0 0 8px;
+      }
+      .prose blockquote {
+        margin: 0 0 18px;
+        padding: 12px 18px;
+        border-left: 3px solid var(--border-strong);
+        background: var(--bg-soft);
+        color: var(--text);
+        border-radius: 0 8px 8px 0;
+      }
+      .prose blockquote p:last-child {
+        margin-bottom: 0;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--text);
+      }
+      .prose pre {
+        margin: 0 0 22px;
+        padding: 16px 18px;
+        background: var(--bg-code);
+        color: #e2e8f0;
+        border-radius: 10px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .prose pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        font-size: inherit;
+      }
+      .prose hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 36px 0;
+      }
+      .prose em {
+        color: var(--muted);
+      }
+      .prose a {
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      .prose a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .prose strong {
+        font-weight: 650;
+      }
+
+      .post-nav-next {
+        margin-top: 48px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-soft);
+      }
+      .post-nav-next .label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .post-nav-next a {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .post-nav-next a:hover {
+        color: var(--accent);
+      }
+      .post-nav-next .next-desc {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <article>
+      <section class="post-hero">
+        <div class="wrap">
+          <a class="back" href="/blog/">← Back to blog</a>
+          <h1>Hooking SslTransportLayer via ByteBuddy</h1>
+          <div class="meta">
+            <time datetime="2026-05-22">May 22, 2026</time>
+            <span class="dot">·</span>
+            <span>~3 min read</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="post-main">
+        <div class="wrap prose">
+          <p>
+            Companion piece to
+            <a href="/blog/kafka-tls-debug-without-proxy/">Decrypting Kafka TLS without a proxy</a>.
+            Same POC, this time with the code that made it work and the two missteps that ate the
+            most hours.
+          </p>
+          <h2>Choosing where to hook</h2>
+          <p>Three places make sense for intercepting Kafka client TLS:</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Hook point</th>
+                <th>What you see</th>
+                <th>What you don&#39;t</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>SSLEngine.wrap</code> / <code>unwrap</code> (JDK)</td>
+                <td>All TLS traffic from any consumer of the engine</td>
+                <td>Application-level framing context</td>
+              </tr>
+              <tr>
+                <td>Socket layer (<code>SocketChannel.read/write</code>)</td>
+                <td>Encrypted bytes</td>
+                <td>Plaintext</td>
+              </tr>
+              <tr>
+                <td><code>org.apache.kafka.common.network.SslTransportLayer</code></td>
+                <td>Plaintext Kafka wire bytes, scoped to the Kafka client</td>
+                <td>Anything outside the Kafka client</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            We went with <code>SslTransportLayer</code>. Narrowest cut: Kafka traffic only,
+            plaintext already, one class to instrument, stable surface across kafka-clients since
+            2.x. Hooking <code>SSLEngine</code> would have caught every TLS user in the JVM (JMX
+            console, Schema Registry HTTP client, anything else). More noise, slower path to a
+            useful capture.
+          </p>
+          <h2>What ByteBuddy is doing</h2>
+          <p>
+            ByteBuddy is a bytecode rewriter. Paired with the JDK&#39;s Java Instrumentation API, it
+            can redefine classes at load time or retransform classes already loaded. We use it to
+            insert entry and exit advice into the methods we care about, no source changes, no
+            recompile.
+          </p>
+          <p>
+            The agent boils down to one <code>AgentBuilder</code> call wired from
+            <code>premain</code>:
+          </p>
+          <pre><code class="language-java">public static void premain(String args, Instrumentation inst) {
+    TapPublisher.start(); // boots the UDS writer thread
+
+    new AgentBuilder.Default()
+        .disableClassFormatChanges()
+        .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
+        .with(AgentBuilder.InitializationStrategy.NoOp.INSTANCE)
+        .with(AgentBuilder.TypeStrategy.Default.REDEFINE)
+        .ignore(nameStartsWith(&quot;net.bytebuddy.&quot;))
+        .ignore(nameStartsWith(&quot;io.kapture.tap.&quot;))
+        .type(named(&quot;org.apache.kafka.common.network.SslTransportLayer&quot;))
+        .transform((builder, type, cl, module, pd) -&gt;
+            builder
+                .visit(Advice.to(ReadAdvice.class)
+                    .on(named(&quot;read&quot;).and(takesArguments(ByteBuffer.class))))
+                .visit(Advice.to(WriteAdvice.class)
+                    .on(named(&quot;write&quot;)
+                        .and(takesArgument(0, ByteBuffer[].class))
+                        .and(takesArguments(3))))
+        )
+        .installOn(inst);
+}
+</code></pre>
+          <p>
+            <code>ReadAdvice</code> grabs the buffer after <code>read</code> returns.
+            <code>WriteAdvice</code> grabs the buffer array before <code>write</code> runs. Both
+            push bytes onto a bounded queue that a dedicated writer thread drains to a Unix domain
+            socket.
+          </p>
+          <h2>Trap one: which <code>write</code> overload do you actually hook</h2>
+          <p>
+            <code>SslTransportLayer</code> exposes three <code>write</code> methods, inherited from
+            <code>GatheringByteChannel</code>:
+          </p>
+          <pre><code>public int  write(ByteBuffer src)
+public long write(ByteBuffer[] srcs)
+public long write(ByteBuffer[] srcs, int offset, int length)
+</code></pre>
+          <p>
+            The Kafka client calls <code>write(srcs, 0, length)</code> from
+            <code>KafkaChannel.write()</code>. Internally, the <code>(ByteBuffer[])</code> overload
+            delegates to the three-arg form. The single-buffer form is rarely called by Kafka client
+            code itself, but it fires inside the TLS wrap loop.
+          </p>
+          <p>
+            I hooked all three. The receiver dumped every frame two or three times in a row,
+            identical byte content each time. The agent was firing on the public method, the
+            delegated method, and the inner loop method. Same data, three captures. Took me longer
+            than I&#39;d like to admit to figure out why.
+          </p>
+          <p>Fix: hook only the three-arg form, the one that actually moves bytes:</p>
+          <pre><code class="language-java">.on(named(&quot;write&quot;)
+    .and(takesArgument(0, ByteBuffer[].class))
+    .and(takesArguments(3)))
+</code></pre>
+          <p>
+            Before: 90 captured frames for a 10-message producer. After: 14. That 14 is correct:
+            three handshake RPCs, then one Produce per message after batching settles.
+          </p>
+          <h2>Trap two: ByteBuddy 1.14.x does not support Java 25</h2>
+          <p>
+            I was on a JDK 25 dev box. ByteBuddy 1.14.19, the latest stable at the time, officially
+            supports up to Java 23. The premain installed fine, our &quot;installed&quot; banner
+            printed, everything looked happy. The first time <code>SslTransportLayer</code> loaded,
+            ByteBuddy threw:
+          </p>
+          <pre><code>java.lang.IllegalArgumentException: Java 25 (69) is not supported by the current
+version of Byte Buddy which officially supports Java 23 (67) - update Byte
+Buddy or set io.kapture.tap.shaded.bytebuddy.experimental as a VM property
+</code></pre>
+          <p>
+            Silently, because no <code>AgentBuilder.Listener</code> was wired up. The class loaded
+            as if no instrumentation had been requested. Two hours of &quot;why does my matcher
+            never fire&quot; later, I bolted on a listener:
+          </p>
+          <pre><code class="language-java">.with(new AgentBuilder.Listener.Adapter() {
+    @Override public void onError(String typeName, ClassLoader cl,
+                                   JavaModule m, boolean loaded, Throwable th) {
+        if (typeName.contains(&quot;TransportLayer&quot;)) {
+            System.err.println(&quot;[agent] error on &quot; + typeName + &quot;: &quot; + th);
+        }
+    }
+})
+</code></pre>
+          <p>
+            First run told me exactly what was broken. Wire <code>Listener.onError</code> on every
+            <code>AgentBuilder</code> you ever write. Silent failure mode is the default and it will
+            eat your afternoon.
+          </p>
+          <p>
+            Two ways out: bump to ByteBuddy 1.15+ when it ships full Java 25 support, or set
+            <code>-Dio.kapture.tap.shaded.bytebuddy.experimental=true</code> until then.
+          </p>
+          <h2>What the advice looks like</h2>
+          <p>
+            <code>ReadAdvice</code> runs at method exit and slices freshly-decrypted bytes out of
+            the destination buffer:
+          </p>
+          <pre><code class="language-java">public class ReadAdvice {
+    @Advice.OnMethodEnter
+    public static int enter(@Advice.Argument(0) ByteBuffer dst) {
+        return dst == null ? -1 : dst.position();
+    }
+
+    @Advice.OnMethodExit(suppress = Throwable.class)
+    public static void exit(@Advice.This Object self,
+                            @Advice.Argument(0) ByteBuffer dst,
+                            @Advice.Enter int oldPos) {
+        if (dst == null || oldPos &lt; 0) return;
+        int n = dst.position() - oldPos;
+        if (n &lt;= 0) return;
+        byte[] payload = new byte[n];
+        ByteBuffer dup = dst.duplicate();
+        dup.position(oldPos);
+        dup.limit(oldPos + n);
+        dup.get(payload);
+        TapPublisher.capture(self, (byte) 1, payload);
+    }
+}
+</code></pre>
+          <p>
+            Two non-negotiables. <code>dst.duplicate()</code> so the advice never touches the
+            original buffer&#39;s position. Corrupt that and the Kafka client starts reading
+            garbage. <code>suppress = Throwable.class</code> so a bug in observation code can never
+            bubble up into the client&#39;s hot path. The application must never see an exception
+            that came from us.
+          </p>
+          <h2>What&#39;s left on the floor</h2>
+          <p>
+            The agent has a bounded 8192-frame queue and a dedicated writer thread. Fine for
+            localhost. High-throughput brokers will need batching or shared memory. Next: bump
+            ByteBuddy, replace the toy Rust receiver with Kapture&#39;s wire decoder, surface tap
+            sessions in the Protocol tab with a <code>source: tap</code> badge.
+          </p>
+          <hr />
+          <p>
+            <em
+              >Next:
+              <a href="/blog/ebpf-vs-java-agent-tls/">Why eBPF isn&#39;t needed for JVM TLS</a>, and
+              where it actually is the right tool.</em
+            >
+          </p>
+
+          <div class="post-nav-next">
+            <div class="label">Next in this series</div>
+            <a href="/blog/ebpf-vs-java-agent-tls/">Why eBPF isn't needed for JVM TLS</a>
+            <div class="next-desc">
+              When eBPF uprobes earn their cost for TLS observability, and when a Java agent does
+              the same job with none of the operational tax.
+            </div>
+          </div>
+        </div>
+      </main>
+    </article>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

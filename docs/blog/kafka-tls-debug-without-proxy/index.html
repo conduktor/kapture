@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Decrypting Kafka TLS without a proxy — Kapture blog</title>
+    <meta
+      name="description"
+      content="Why MITM proxies fall short for modern Kafka debugging, and how an in-process boundary hook captures plaintext without breaking encryption."
+    />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://kapturekafka.dev/blog/kafka-tls-debug-without-proxy/" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="Decrypting Kafka TLS without a proxy" />
+    <meta
+      property="og:description"
+      content="Why MITM proxies fall short for modern Kafka debugging, and how an in-process boundary hook captures plaintext without breaking encryption."
+    />
+    <meta
+      property="og:url"
+      content="https://kapturekafka.dev/blog/kafka-tls-debug-without-proxy/"
+    />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="article:published_time" content="2026-05-22" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Decrypting Kafka TLS without a proxy" />
+    <meta
+      name="twitter:description"
+      content="Why MITM proxies fall short for modern Kafka debugging, and how an in-process boundary hook captures plaintext without breaking encryption."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Decrypting Kafka TLS without a proxy",
+        "description": "Why MITM proxies fall short for modern Kafka debugging, and how an in-process boundary hook captures plaintext without breaking encryption.",
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://kapturekafka.dev/apple-touch-icon.png"
+          }
+        },
+        "datePublished": "2026-05-22",
+        "dateModified": "2026-05-22",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kapturekafka.dev/blog/kafka-tls-debug-without-proxy/"
+        },
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "keywords": "kafka tls debug, kafka ssl inspect, kafka traffic capture, mitm proxy alternative"
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      .post-hero {
+        padding: 56px 0 28px;
+      }
+      .post-hero .back {
+        display: inline-block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .post-hero .back:hover {
+        color: var(--text);
+      }
+      .post-hero h1 {
+        font-size: clamp(32px, 4.5vw, 44px);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+      }
+      .post-hero .meta {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .post-hero .meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-hero .meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-hero .tags {
+        margin-top: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-hero .tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+
+      main.post-main {
+        padding: 8px 0 64px;
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+      }
+      .prose {
+        font-size: 16.5px;
+      }
+      .prose h2 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        margin: 48px 0 12px;
+        line-height: 1.25;
+      }
+      .prose h3 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 32px 0 10px;
+      }
+      .prose p {
+        margin: 0 0 18px;
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 18px;
+        padding-left: 24px;
+      }
+      .prose li {
+        margin-bottom: 6px;
+      }
+      .prose li > p {
+        margin: 0 0 8px;
+      }
+      .prose blockquote {
+        margin: 0 0 18px;
+        padding: 12px 18px;
+        border-left: 3px solid var(--border-strong);
+        background: var(--bg-soft);
+        color: var(--text);
+        border-radius: 0 8px 8px 0;
+      }
+      .prose blockquote p:last-child {
+        margin-bottom: 0;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--text);
+      }
+      .prose pre {
+        margin: 0 0 22px;
+        padding: 16px 18px;
+        background: var(--bg-code);
+        color: #e2e8f0;
+        border-radius: 10px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .prose pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        font-size: inherit;
+      }
+      .prose hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 36px 0;
+      }
+      .prose em {
+        color: var(--muted);
+      }
+      .prose a {
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      .prose a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .prose strong {
+        font-weight: 650;
+      }
+
+      .post-nav-next {
+        margin-top: 48px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-soft);
+      }
+      .post-nav-next .label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .post-nav-next a {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .post-nav-next a:hover {
+        color: var(--accent);
+      }
+      .post-nav-next .next-desc {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <article>
+      <section class="post-hero">
+        <div class="wrap">
+          <a class="back" href="/blog/">← Back to blog</a>
+          <h1>Decrypting Kafka TLS without a proxy</h1>
+          <div class="meta">
+            <time datetime="2026-05-22">May 22, 2026</time>
+            <span class="dot">·</span>
+            <span>~3 min read</span>
+          </div>
+          <div class="tags">
+            <span class="tag">kafka tls debug</span><span class="tag">kafka ssl inspect</span
+            ><span class="tag">kafka traffic capture</span
+            ><span class="tag">mitm proxy alternative</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="post-main">
+        <div class="wrap prose">
+          <p>
+            Kafka debugging tools split into two camps. Topic browsers read data at rest. Wire-level
+            proxies read it in flight, but only after breaking TLS. Fine for a local broker. Useless
+            the moment a client talks to Confluent Cloud, MSK, or anything that looks like
+            production.
+          </p>
+          <p>
+            Kapture started in the second camp. The proxy terminates TLS from the client, opens a
+            new TLS session to the broker, decodes the frames in between. It works. The price is
+            what you have to give up to make it work.
+          </p>
+          <h2>What standing in the middle costs</h2>
+          <p>To intercept TLS, Kapture presents a certificate the client trusts. To get there:</p>
+          <ul>
+            <li>
+              A CA in the client&#39;s truststore, or
+              <code>ssl.endpoint.identification.algorithm=</code> set to empty. Both are footguns
+              nobody wants in a dev workflow.
+            </li>
+            <li>
+              Re-termination of mTLS upstream, which hands the client&#39;s private key to the
+              proxy. Most security teams refuse this for ten seconds, let alone for a debugging
+              session.
+            </li>
+            <li>
+              Pinning breaks. Clients that pin the broker SAN see the proxy&#39;s fake cert, the
+              handshake fails, and the error surfaces as a generic SSL exception that has nothing to
+              do with the actual bug.
+            </li>
+            <li>
+              Confluent Cloud, Azure Event Hubs, and MSK push back hard. Their cert chains and
+              IAM-flavored auth schemes are not happy to be MITMed.
+            </li>
+          </ul>
+          <p>
+            The proxy earns its keep. Every senior Kafka engineer we showed it to asked the same
+            question anyway: can you do this without standing in the middle?
+          </p>
+          <h2>Hook the client, not the wire</h2>
+          <p>
+            Observe the application before it hands bytes to its TLS library and the bytes are still
+            cleartext. Same coming back: after the TLS library decrypts, before the application
+            reads. Where the application code meets the TLS code, the protocol is readable.
+          </p>
+          <p>
+            For Java Kafka clients, around two-thirds of production traffic, that boundary is one
+            class: <code>org.apache.kafka.common.network.SslTransportLayer</code>.
+            <code>write(ByteBuffer[], int, int)</code> receives the plaintext the client is about to
+            encrypt. <code>read(ByteBuffer)</code> receives what just came out of decrypt. Two
+            hooks, full visibility.
+          </p>
+          <p>
+            The tap mode is a Java agent attached with <code>-javaagent</code>. ByteBuddy
+            instruments those two methods. Captured buffers ship over a Unix domain socket to
+            Kapture. The agent stays inside the JVM, the TLS connection stays end-to-end between
+            client and real broker, no second TLS session, no cert to install. mTLS, pinning, the
+            broker&#39;s cert chain all behave as they do in production, because they still are in
+            production.
+          </p>
+          <h2>What the POC does</h2>
+          <p>
+            Apache Kafka broker, SSL listener on <code>localhost:39093</code>, self-signed cert,
+            Java producer/consumer pair on <code>kafka-clients</code> 3.8.1. With the agent
+            attached, the receiver decoded this out of the captured buffers:
+          </p>
+          <pre><code>[conn=1 W] ApiVersionsRequest v3 — client_id=jvm-tap-producer
+[conn=1 R] ApiVersionsResponse — 720 bytes of advertised versions
+[conn=2 W] ProduceRequest v11 — topic=tap-test, key=0, value=msg-0, header tenant=acme
+[conn=2 R] ProduceResponse — partition 0, offset 30
+[conn=3 R] FetchResponse v11 — 3513 bytes containing all 10 records
+</code></pre>
+          <p>
+            Every byte the receiver printed lined up with what the Java client sent and received
+            over TLS. Producer reported &quot;OK, sent 10 messages.&quot; Consumer reported
+            &quot;received 10/10 messages.&quot; Neither client noticed the agent.
+          </p>
+          <h2>What it doesn&#39;t do</h2>
+          <ul>
+            <li>
+              Same-host only. The agent runs inside the JVM. Remote client means proxy or SSH
+              session.
+            </li>
+            <li>
+              JVM only so far. The boundary trick generalizes to <code>librdkafka</code> via
+              <code>SSL_write</code> and <code>SSL_read</code>, but that work has not shipped.
+            </li>
+            <li>
+              Dynamic attach warns on Java 21+. Premain attach does not. Use premain in dev
+              environments shaped like production.
+            </li>
+            <li>
+              The Java agent cannot detach cleanly. Once injected, the bytecode stays until the JVM
+              restarts. eBPF probes in Pixie and Coroot carry the same constraint for different
+              reasons.
+            </li>
+          </ul>
+          <p>
+            In exchange: tap mode against a Confluent Cloud bootstrap that pins the broker SAN, no
+            cert provisioning. Tap mode on a kafka-clients build with mTLS upstream, no private key
+            handed to the dev tool. The handshakes match production because they
+            <em>are</em> production.
+          </p>
+          <h2>Why the wire matters</h2>
+          <p>
+            Hard Kafka bugs hide on the wire. Rebalance loops, stale leaders, mismatched
+            <code>api_version</code>, SASL sessions that drop every two hours. Logs hide all of it,
+            a wire dump shows it in seconds. Dumping under TLS used to mean breaking TLS, which made
+            the debug environment subtly different from the production one. The worst property a
+            debugger can have.
+          </p>
+          <p>The boundary hook keeps the protocol visible and changes nothing else.</p>
+
+          <div class="post-nav-next">
+            <div class="label">Next in this series</div>
+            <a href="/blog/hooking-ssl-transport-layer-bytebuddy/"
+              >Hooking SslTransportLayer via ByteBuddy</a
+            >
+            <div class="next-desc">
+              A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with
+              ByteBuddy, including the two overload traps that nearly killed the POC.
+            </div>
+          </div>
+        </div>
+      </main>
+    </article>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

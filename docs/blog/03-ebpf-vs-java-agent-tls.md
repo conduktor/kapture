@@ -8,43 +8,43 @@ keywords: [ebpf vs java agent, jvm tls capture, ebpf uprobe ssl, java instrument
 
 # Why eBPF isn't needed for JVM TLS
 
-eBPF for TLS observability is having a moment. Pixie, Cilium, Coroot, and a wave of newer tools all use the same trick: attach uprobes to `SSL_write` and `SSL_read` in the OpenSSL shared object, ship the pre-encrypt / post-decrypt bytes through a BPF map, decode in userspace. It works, the overhead is real but small (single-digit percent in most benchmarks), and the conference talks are good.
+eBPF for TLS observability is having a moment. Pixie, Cilium, Coroot, and a long tail of newer tools all run the same playbook: attach uprobes to `SSL_write` and `SSL_read` in the OpenSSL shared object, ship the pre-encrypt / post-decrypt bytes through a BPF map, decode in userspace. Overhead is small, usually single-digit percent, and the approach scales to whatever happens to be running on the node. For a JVM Kafka client it's still the wrong tool.
 
-For Java Kafka clients, it is the wrong tool.
+## What eBPF actually buys you
 
-## What eBPF buys you, and what it costs
+eBPF earns its complexity when the target binary is opaque. A Go program that statically links `crypto/tls` exposes no stable userspace symbol to attach to without scanning the binary for function offsets, and even then you're stuck with `BPF_KRETPROBE`-style return-path tricks because Go strips frame pointers. A C++ daemon vendoring its own BoringSSL has the same shape. eBPF reaches past the application from a privileged vantage point the process can't refuse, and that is sometimes the only way in.
 
-eBPF earns its complexity when the target binary is _opaque_. A Go program that statically links `crypto/tls` does not expose a stable symbol you can attach to from userspace without scanning the binary. A C++ daemon using a vendored copy of BoringSSL is the same. eBPF reaches across the userspace/kernel boundary, attaches to whatever symbols the binary actually has, and observes from a privileged vantage point the application cannot block.
+What you pay for that vantage point:
 
-The cost of that vantage point is real:
+- `CAP_BPF`, usually `CAP_PERFMON`, often `CAP_SYS_ADMIN`. Fine on a laptop, a security review on a customer's prod node.
+- Linux only. Half the Kafka client developers I know run macOS.
+- Kernel version coupling. Modern uprobe features land in 5.x and 6.x. Older RHEL fleets get a different probe or none.
+- The verifier. Loop bounds, pointer arithmetic, stack depth, all checked, all unforgiving. Reading verifier rejection messages is a separate skill.
+- A second runtime to ship and operate: probe in C-ish BPF, loader in userspace, decoder somewhere else. Three places to change for one feature.
 
-- Kernel privilege. You need `CAP_BPF` and usually `CAP_PERFMON` and `CAP_SYS_ADMIN`. On a dev laptop, that is fine. On a customer's production node, it is a conversation.
-- Linux only. macOS and Windows do not have eBPF. Half of Kafka client developers carry a MacBook.
-- Kernel version coupling. Modern eBPF features land in 5.x and 6.x kernels. Older RHEL hosts can't run the same probe.
-- A verifier in your way. Every probe goes through the kernel's BPF verifier, which has strict rules about loop bounds, pointer arithmetic, and stack depth. Debugging a verifier rejection is a separate skill.
-- A second runtime. The probe code is C-ish, the loader is userspace, the decoder is somewhere else. Three places to change for one feature.
+For a Go static binary, that tax is the price of entry. Nothing else gets plaintext out of `crypto/tls` short of recompiling.
 
-When your target is a Go static binary, this tax is worth it. There is no other way to get plaintext out of `crypto/tls` without rebuilding the binary.
+## A JVM is not opaque
 
-## The JVM is the opposite kind of target
-
-A JVM does not have the opacity problem. Every class is loadable. Every method has a stable name and signature. The JDK ships an Instrumentation API specifically designed for runtime bytecode rewriting. ByteBuddy gives you a typed advice API on top of that. The agent code runs as the JVM user, on any OS the JVM runs on, with no kernel module, no probe loader, no verifier.
+Every class is loadable. Every method has a stable name and signature. The JDK ships an Instrumentation API specifically for runtime bytecode rewriting, and ByteBuddy puts a typed advice API on top. An agent runs as the JVM user, on any OS the JVM runs on, with no kernel module, no probe loader, no verifier.
 
 For our Kapture POC against the Kafka Java client:
 
-- The hook point (`SslTransportLayer.write` and `.read`) is a public Java method with a stable contract.
+- The hook points (`SslTransportLayer.write` and `.read`) are public Java methods with a stable contract.
 - The plaintext bytes are already in a `ByteBuffer` we can read by name. No memory scanning, no offset hunting, no symbol resolution.
-- The agent installs from `-javaagent` at startup, no privilege escalation.
-- The same JAR works on macOS, Linux, and Windows.
-- The advice code is plain Java that the JIT compiles. Overhead in our tests sits around 0.8% on the producer's hot path.
+- The agent installs via `-javaagent` at startup. No privilege escalation.
+- The same JAR runs on macOS, Linux, Windows.
+- The advice is plain Java that the JIT compiles. Overhead measured around 0.8% on the producer's hot path.
 
-If we used eBPF here, we would attach uprobes to a JVM's `libsslJava.so`... which doesn't exist. We would have to attach to `libsunec.so` or the JDK's native PKCS11 bindings, and even then the TLS handshake state lives in Java objects in the heap, not in the C code. We would spend a week implementing what one ByteBuddy advice class delivers in twenty lines.
+Try to do this with eBPF and the first question is which `libssl` to hook. The JVM doesn't dynamically link OpenSSL for its TLS stack, so there is no `SSL_write` symbol to attach to. The TLS handshake state lives in Java objects on the heap, not in `libsunec.so` or the JDK's native PKCS11 bindings. A week of offset chasing replaces twenty lines of ByteBuddy advice, and the result still won't see what happens above the JCE provider boundary.
 
 > **Visual:** decision tree. Root: "Is your target a JVM?" → Yes branch: "Use a Java agent. ByteBuddy + Instrumentation API. Done." → No branch: "Is it statically linked (Go, C++ with vendored OpenSSL)?" → Yes: "Use eBPF uprobes. AgentSight pattern." → No: "Is it dynamically linking libssl?" → Yes: "Either eBPF uprobes on libssl OR an LD_PRELOAD shim. Both work. eBPF if you want one tool across many processes." → No: "Use a proxy (and break TLS)."
 
-## Where this lines up
+## Match the tool to the target
 
-We are not claiming eBPF is bad. We are claiming the tool-to-target match matters more than the tool's mindshare. Here is how we plan Kapture's coverage:
+eBPF isn't bad. It's a kernel-side observability bus for userspace code the kernel doesn't naturally see, which is exactly what you want when you have to watch many unknown processes on the same node. Pixie and Coroot built around that case for good reason: "tell me what's happening on this host, whatever's running" really is best answered from below the process.
+
+Kapture's job is narrower. Planned coverage:
 
 | Target                                                                  | Hook technique                          | Why                                            |
 | ----------------------------------------------------------------------- | --------------------------------------- | ---------------------------------------------- |
@@ -53,15 +53,13 @@ We are not claiming eBPF is bad. We are claiming the tool-to-target match matter
 | Sarama (Go, static `crypto/tls`)                                        | eBPF uprobe with RET-scan               | Go strips frame pointers, need offset scanning |
 | confluent-kafka-go (cgo over librdkafka)                                | Same as librdkafka                      | Bytes go through OpenSSL underneath            |
 
-Roughly two-thirds of production Kafka traffic is the first row. The remaining third splits across the next three, and Linux dev environments will use eBPF for that. macOS developers will fall back to the proxy for non-JVM clients until we ship a different technique (key log import, DTrace, or LD_PRELOAD shim).
+Roughly two-thirds of production Kafka traffic sits in the first row. The rest splits across the next three, and on Linux that's where eBPF carries its weight. macOS developers fall back to the proxy for non-JVM clients until we ship a key log import or an `LD_PRELOAD` shim.
 
-## The deeper point
+## Pick the affordance the runtime already gives you
 
-eBPF is a kernel-side observability bus for userspace code the kernel doesn't naturally see. The JVM is a userspace runtime designed to be observed from inside. Picking eBPF for the JVM is using a microscope to read a book: it works, but the book has been printed in 12-point type for a reason.
+A JVM was built to be observed from inside; reaching for eBPF on it pays kernel-level costs to do what the Instrumentation API gives away. The mirror case is a ByteBuddy agent against a Go static binary: there's no agent API to attach to and the JAR doesn't help at all. Same principle, opposite answer.
 
-The same logic applies in reverse. Picking a ByteBuddy agent for a Go static binary doesn't work at all. There is no agent API to attach to. Each runtime exposes the affordances its designers built into it. Use those first.
-
-For Kapture, that means the Java tap mode ships first, on every OS, with no privileges. The librdkafka and Go tap modes ship next, Linux only, with eBPF. The two paths feed the same Kafka wire decoder. The user picks the tool that matches their client.
+For Kapture this falls out naturally. Java tap mode ships first, every OS, no privileges. librdkafka and Go tap modes ship after, Linux only, eBPF underneath. Both paths feed the same Kafka wire decoder, and users pick the tap that fits their client.
 
 ---
 

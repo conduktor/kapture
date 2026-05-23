@@ -1,0 +1,723 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Why eBPF isn't needed for JVM TLS — Kapture blog</title>
+    <meta
+      name="description"
+      content="When eBPF uprobes earn their cost for TLS observability, and when a Java agent does the same job with none of the operational tax."
+    />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://kapturekafka.dev/blog/ebpf-vs-java-agent-tls/" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="Why eBPF isn't needed for JVM TLS" />
+    <meta
+      property="og:description"
+      content="When eBPF uprobes earn their cost for TLS observability, and when a Java agent does the same job with none of the operational tax."
+    />
+    <meta property="og:url" content="https://kapturekafka.dev/blog/ebpf-vs-java-agent-tls/" />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="article:published_time" content="2026-05-22" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Why eBPF isn't needed for JVM TLS" />
+    <meta
+      name="twitter:description"
+      content="When eBPF uprobes earn their cost for TLS observability, and when a Java agent does the same job with none of the operational tax."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Why eBPF isn't needed for JVM TLS",
+        "description": "When eBPF uprobes earn their cost for TLS observability, and when a Java agent does the same job with none of the operational tax.",
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://kapturekafka.dev/apple-touch-icon.png"
+          }
+        },
+        "datePublished": "2026-05-22",
+        "dateModified": "2026-05-22",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kapturekafka.dev/blog/ebpf-vs-java-agent-tls/"
+        },
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "keywords": "ebpf vs java agent, jvm tls capture, ebpf uprobe ssl, java instrumentation tls"
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      .post-hero {
+        padding: 56px 0 28px;
+      }
+      .post-hero .back {
+        display: inline-block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .post-hero .back:hover {
+        color: var(--text);
+      }
+      .post-hero h1 {
+        font-size: clamp(32px, 4.5vw, 44px);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+      }
+      .post-hero .meta {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .post-hero .meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-hero .meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-hero .tags {
+        margin-top: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-hero .tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+
+      main.post-main {
+        padding: 8px 0 64px;
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+      }
+      .prose {
+        font-size: 16.5px;
+      }
+      .prose h2 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        margin: 48px 0 12px;
+        line-height: 1.25;
+      }
+      .prose h3 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 32px 0 10px;
+      }
+      .prose p {
+        margin: 0 0 18px;
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 18px;
+        padding-left: 24px;
+      }
+      .prose li {
+        margin-bottom: 6px;
+      }
+      .prose li > p {
+        margin: 0 0 8px;
+      }
+      .prose blockquote {
+        margin: 0 0 18px;
+        padding: 12px 18px;
+        border-left: 3px solid var(--border-strong);
+        background: var(--bg-soft);
+        color: var(--text);
+        border-radius: 0 8px 8px 0;
+      }
+      .prose blockquote p:last-child {
+        margin-bottom: 0;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--text);
+      }
+      .prose pre {
+        margin: 0 0 22px;
+        padding: 16px 18px;
+        background: var(--bg-code);
+        color: #e2e8f0;
+        border-radius: 10px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .prose pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        font-size: inherit;
+      }
+      .prose hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 36px 0;
+      }
+      .prose em {
+        color: var(--muted);
+      }
+      .prose a {
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      .prose a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .prose strong {
+        font-weight: 650;
+      }
+
+      .post-nav-next {
+        margin-top: 48px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-soft);
+      }
+      .post-nav-next .label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .post-nav-next a {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .post-nav-next a:hover {
+        color: var(--accent);
+      }
+      .post-nav-next .next-desc {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <article>
+      <section class="post-hero">
+        <div class="wrap">
+          <a class="back" href="/blog/">← Back to blog</a>
+          <h1>Why eBPF isn't needed for JVM TLS</h1>
+          <div class="meta">
+            <time datetime="2026-05-22">May 22, 2026</time>
+            <span class="dot">·</span>
+            <span>~4 min read</span>
+          </div>
+          <div class="tags">
+            <span class="tag">ebpf vs java agent</span><span class="tag">jvm tls capture</span
+            ><span class="tag">ebpf uprobe ssl</span
+            ><span class="tag">java instrumentation tls</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="post-main">
+        <div class="wrap prose">
+          <p>
+            eBPF for TLS observability is having a moment. Pixie, Cilium, Coroot, and a long tail of
+            newer tools all run the same playbook: attach uprobes to <code>SSL_write</code> and
+            <code>SSL_read</code> in the OpenSSL shared object, ship the pre-encrypt / post-decrypt
+            bytes through a BPF map, decode in userspace. Overhead is small, usually single-digit
+            percent, and the approach scales to whatever happens to be running on the node. For a
+            JVM Kafka client it&#39;s still the wrong tool.
+          </p>
+          <h2>What eBPF actually buys you</h2>
+          <p>
+            eBPF earns its complexity when the target binary is opaque. A Go program that statically
+            links <code>crypto/tls</code> exposes no stable userspace symbol to attach to without
+            scanning the binary for function offsets, and even then you&#39;re stuck with
+            <code>BPF_KRETPROBE</code>-style return-path tricks because Go strips frame pointers. A
+            C++ daemon vendoring its own BoringSSL has the same shape. eBPF reaches past the
+            application from a privileged vantage point the process can&#39;t refuse, and that is
+            sometimes the only way in.
+          </p>
+          <p>What you pay for that vantage point:</p>
+          <ul>
+            <li>
+              <code>CAP_BPF</code>, usually <code>CAP_PERFMON</code>, often
+              <code>CAP_SYS_ADMIN</code>. Fine on a laptop, a security review on a customer&#39;s
+              prod node.
+            </li>
+            <li>Linux only. Half the Kafka client developers I know run macOS.</li>
+            <li>
+              Kernel version coupling. Modern uprobe features land in 5.x and 6.x. Older RHEL fleets
+              get a different probe or none.
+            </li>
+            <li>
+              The verifier. Loop bounds, pointer arithmetic, stack depth, all checked, all
+              unforgiving. Reading verifier rejection messages is a separate skill.
+            </li>
+            <li>
+              A second runtime to ship and operate: probe in C-ish BPF, loader in userspace, decoder
+              somewhere else. Three places to change for one feature.
+            </li>
+          </ul>
+          <p>
+            For a Go static binary, that tax is the price of entry. Nothing else gets plaintext out
+            of <code>crypto/tls</code> short of recompiling.
+          </p>
+          <h2>A JVM is not opaque</h2>
+          <p>
+            Every class is loadable. Every method has a stable name and signature. The JDK ships an
+            Instrumentation API specifically for runtime bytecode rewriting, and ByteBuddy puts a
+            typed advice API on top. An agent runs as the JVM user, on any OS the JVM runs on, with
+            no kernel module, no probe loader, no verifier.
+          </p>
+          <p>For our Kapture POC against the Kafka Java client:</p>
+          <ul>
+            <li>
+              The hook points (<code>SslTransportLayer.write</code> and <code>.read</code>) are
+              public Java methods with a stable contract.
+            </li>
+            <li>
+              The plaintext bytes are already in a <code>ByteBuffer</code> we can read by name. No
+              memory scanning, no offset hunting, no symbol resolution.
+            </li>
+            <li>
+              The agent installs via <code>-javaagent</code> at startup. No privilege escalation.
+            </li>
+            <li>The same JAR runs on macOS, Linux, Windows.</li>
+            <li>
+              The advice is plain Java that the JIT compiles. Overhead measured around 0.8% on the
+              producer&#39;s hot path.
+            </li>
+          </ul>
+          <p>
+            Try to do this with eBPF and the first question is which <code>libssl</code> to hook.
+            The JVM doesn&#39;t dynamically link OpenSSL for its TLS stack, so there is no
+            <code>SSL_write</code> symbol to attach to. The TLS handshake state lives in Java
+            objects on the heap, not in <code>libsunec.so</code> or the JDK&#39;s native PKCS11
+            bindings. A week of offset chasing replaces twenty lines of ByteBuddy advice, and the
+            result still won&#39;t see what happens above the JCE provider boundary.
+          </p>
+          <h2>Match the tool to the target</h2>
+          <p>
+            eBPF isn&#39;t bad. It&#39;s a kernel-side observability bus for userspace code the
+            kernel doesn&#39;t naturally see, which is exactly what you want when you have to watch
+            many unknown processes on the same node. Pixie and Coroot built around that case for
+            good reason: &quot;tell me what&#39;s happening on this host, whatever&#39;s
+            running&quot; really is best answered from below the process.
+          </p>
+          <p>Kapture&#39;s job is narrower. Planned coverage:</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Hook technique</th>
+                <th>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>kafka-clients</code> (Java)</td>
+                <td>ByteBuddy agent on <code>SslTransportLayer</code></td>
+                <td>Native JVM trick, zero kernel ask</td>
+              </tr>
+              <tr>
+                <td>
+                  <code>librdkafka</code> (C, used by Python / Node / Ruby / .NET / Go via bindings)
+                </td>
+                <td>eBPF uprobe on <code>SSL_write</code> / <code>SSL_read</code></td>
+                <td>Stable libssl symbols, target is opaque</td>
+              </tr>
+              <tr>
+                <td>Sarama (Go, static <code>crypto/tls</code>)</td>
+                <td>eBPF uprobe with RET-scan</td>
+                <td>Go strips frame pointers, need offset scanning</td>
+              </tr>
+              <tr>
+                <td>confluent-kafka-go (cgo over librdkafka)</td>
+                <td>Same as librdkafka</td>
+                <td>Bytes go through OpenSSL underneath</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Roughly two-thirds of production Kafka traffic sits in the first row. The rest splits
+            across the next three, and on Linux that&#39;s where eBPF carries its weight. macOS
+            developers fall back to the proxy for non-JVM clients until we ship a key log import or
+            an <code>LD_PRELOAD</code> shim.
+          </p>
+          <h2>Pick the affordance the runtime already gives you</h2>
+          <p>
+            A JVM was built to be observed from inside; reaching for eBPF on it pays kernel-level
+            costs to do what the Instrumentation API gives away. The mirror case is a ByteBuddy
+            agent against a Go static binary: there&#39;s no agent API to attach to and the JAR
+            doesn&#39;t help at all. Same principle, opposite answer.
+          </p>
+          <p>
+            For Kapture this falls out naturally. Java tap mode ships first, every OS, no
+            privileges. librdkafka and Go tap modes ship after, Linux only, eBPF underneath. Both
+            paths feed the same Kafka wire decoder, and users pick the tap that fits their client.
+          </p>
+          <hr />
+          <p>
+            <em
+              >Next:
+              <a href="/blog/kafka-wire-decode-no-mitm/"
+                >Kafka wire decode end-to-end without MITM</a
+              >
+              — three observation modes, one decoder, no broken TLS.</em
+            >
+          </p>
+
+          <div class="post-nav-next">
+            <div class="label">Next in this series</div>
+            <a href="/blog/kafka-wire-decode-no-mitm/">Kafka wire decode end-to-end without MITM</a>
+            <div class="next-desc">
+              Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap)
+              sharing one Kafka wire decoder. Here is the shape that emerges.
+            </div>
+          </div>
+        </div>
+      </main>
+    </article>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

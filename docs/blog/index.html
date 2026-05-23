@@ -2,24 +2,47 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Kapture Blog — deep dives on Kafka wire debugging</title>
+    <title>Kapture blog — deep dives on Kafka wire debugging</title>
     <meta
       name="description"
       content="Long-form deep dives on Kafka wire-level debugging, TLS visibility, and the design behind Kapture's tap mode."
     />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://kapturekafka.dev/blog/" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <meta property="og:title" content="Kapture Blog" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Kapture blog" />
     <meta
       property="og:description"
       content="Deep dives on Kafka wire-level debugging, TLS visibility, and Kapture's tap mode."
     />
-    <meta property="og:image" content="/images/og-card.png" />
+    <meta property="og:url" content="https://kapturekafka.dev/blog/" />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Kapture blog" />
+    <meta
+      name="twitter:description"
+      content="Deep dives on Kafka wire-level debugging, TLS visibility, and Kapture's tap mode."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
     <style>
       :root {
         --bg: #ffffff;
         --bg-soft: #fafafa;
+        --bg-code: #0b1020;
         --text: #0f172a;
         --muted: #64748b;
         --border: #e5e7eb;
@@ -49,7 +72,7 @@
         font-family: var(--font);
         color: var(--text);
         background: var(--bg);
-        line-height: 1.55;
+        line-height: 1.6;
         -webkit-font-smoothing: antialiased;
         text-rendering: optimizeLegibility;
       }
@@ -63,29 +86,32 @@
       .wrap {
         max-width: var(--maxw);
         margin: 0 auto;
-        padding: 0 20px;
+        padding: 0 24px;
       }
+
       header.nav {
         position: sticky;
         top: 0;
         z-index: 50;
-        background: rgba(255, 255, 255, 0.92);
-        backdrop-filter: saturate(140%) blur(10px);
-        -webkit-backdrop-filter: saturate(140%) blur(10px);
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
         border-bottom: 1px solid transparent;
-        transition: border-color 0.15s;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
       }
       header.nav.scrolled {
-        border-bottom-color: var(--border);
+        border-color: var(--border);
       }
       .nav-inner {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        height: 60px;
-        max-width: var(--maxw);
+        height: 64px;
+        max-width: 1120px;
         margin: 0 auto;
-        padding: 0 20px;
+        padding: 0 24px;
       }
       .brand {
         display: flex;
@@ -95,21 +121,69 @@
         font-weight: 700;
       }
       .brand-icon {
-        width: 28px;
-        height: 28px;
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
       }
       .brand-text {
         display: flex;
         flex-direction: column;
-        line-height: 1.1;
+        line-height: 1.05;
       }
       .brand-text .name {
-        font-size: 16px;
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
       }
       .brand-text .by {
-        font-size: 11px;
+        font-size: 10.5px;
         color: var(--muted);
         font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
       }
       .nav-links {
         display: flex;
@@ -127,49 +201,100 @@
       .nav-links a.current {
         color: var(--text);
       }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
       .hero {
         padding: 64px 0 32px;
         border-bottom: 1px solid var(--border);
       }
       .hero h1 {
-        font-size: 40px;
+        font-size: clamp(36px, 5vw, 46px);
         line-height: 1.15;
-        margin: 0 0 12px;
+        margin: 0 0 14px;
         letter-spacing: -0.02em;
+        font-weight: 700;
       }
       .hero p {
         margin: 0;
-        font-size: 18px;
+        font-size: 17px;
         color: var(--muted);
         max-width: 640px;
       }
-      .hero .source {
-        margin-top: 16px;
-        font-size: 13px;
-        color: var(--muted);
-      }
-      .hero .source code {
-        background: var(--bg-soft);
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        padding: 1px 6px;
-        font-family: var(--mono);
-        font-size: 12px;
-        color: var(--text);
-      }
-      main {
+      main.blog-main {
         padding: 32px 0 80px;
       }
       .posts {
         display: flex;
         flex-direction: column;
         gap: 0;
+        list-style: none;
+        margin: 0;
+        padding: 0;
       }
       .post {
         display: grid;
         grid-template-columns: 56px 1fr;
         gap: 20px;
-        padding: 24px 0;
+        padding: 26px 0;
         border-bottom: 1px solid var(--border);
       }
       .post:last-child {
@@ -186,6 +311,7 @@
         font-size: 22px;
         margin: 0 0 6px;
         letter-spacing: -0.01em;
+        font-weight: 650;
       }
       .post-body h2 a {
         color: var(--text);
@@ -223,29 +349,7 @@
         padding: 2px 8px;
         font-family: var(--mono);
       }
-      footer {
-        border-top: 1px solid var(--border);
-        padding: 32px 0;
-        font-size: 13px;
-        color: var(--muted);
-      }
-      .foot {
-        display: flex;
-        justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 16px;
-      }
-      .foot a {
-        margin-right: 16px;
-        color: var(--muted);
-      }
-      .foot a:hover {
-        color: var(--text);
-      }
       @media (max-width: 600px) {
-        .hero h1 {
-          font-size: 30px;
-        }
         .post {
           grid-template-columns: 1fr;
           gap: 6px;
@@ -258,7 +362,7 @@
   </head>
   <body>
     <header class="nav" id="nav">
-      <div class="nav-inner">
+      <div class="wrap nav-inner">
         <a class="brand" href="/">
           <img src="/favicon.png" alt="" class="brand-icon" />
           <span class="brand-text">
@@ -270,148 +374,138 @@
           <a href="/#why">Why</a>
           <a href="/#how">How it works</a>
           <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
           <a href="/#install">Install</a>
           <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
         </nav>
       </div>
     </header>
 
     <section class="hero">
       <div class="wrap">
-        <h1>Kapture Blog</h1>
+        <h1>Notes from the wire</h1>
         <p>
-          Long-form notes on Kafka wire-level debugging, TLS visibility, and the design behind
-          Kapture's tap mode. Posts are the source-of-truth Markdown files committed to the repo —
-          each "Read" link opens the rendered Markdown on GitHub.
-        </p>
-        <p class="source">
-          Source files live at
-          <code>docs/blog/*.md</code> in
-          <a href="https://github.com/conduktor/kapture/tree/main/docs/blog" rel="noopener"
-            >conduktor/kapture</a
-          >.
+          Long-form deep dives on Kafka wire-level debugging, TLS visibility, and the design behind
+          Kapture's tap mode.
         </p>
       </div>
     </section>
 
-    <main>
+    <main class="blog-main">
       <div class="wrap">
         <ol class="posts">
           <li class="post">
             <div class="post-number">01</div>
             <div class="post-body">
               <h2>
-                <a
-                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/01-kafka-tls-debug-without-proxy.md"
-                  rel="noopener"
+                <a href="/blog/kafka-tls-debug-without-proxy/"
                   >Decrypting Kafka TLS without a proxy</a
                 >
               </h2>
               <div class="post-meta">
                 <time datetime="2026-05-22">May 22, 2026</time>
                 <span class="dot">·</span>
-                <span>~5 min read</span>
+                <span>~3 min read</span>
               </div>
               <p>
                 Why MITM proxies fall short for modern Kafka debugging, and how an in-process
                 boundary hook captures plaintext without breaking encryption.
               </p>
               <div class="post-tags">
-                <span class="tag">kafka tls debug</span>
-                <span class="tag">kafka ssl inspect</span>
-                <span class="tag">mitm proxy alternative</span>
+                <span class="tag">kafka tls debug</span><span class="tag">kafka ssl inspect</span
+                ><span class="tag">kafka traffic capture</span>
               </div>
             </div>
           </li>
-
           <li class="post">
             <div class="post-number">02</div>
             <div class="post-body">
               <h2>
-                <a
-                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/02-hooking-ssl-transport-layer-bytebuddy.md"
-                  rel="noopener"
+                <a href="/blog/hooking-ssl-transport-layer-bytebuddy/"
                   >Hooking SslTransportLayer via ByteBuddy</a
                 >
               </h2>
               <div class="post-meta">
                 <time datetime="2026-05-22">May 22, 2026</time>
                 <span class="dot">·</span>
-                <span>~6 min read</span>
+                <span>~3 min read</span>
               </div>
               <p>
                 A concrete walkthrough of instrumenting the Kafka Java client's TLS boundary with
                 ByteBuddy, including the two overload traps that nearly killed the POC.
               </p>
-              <div class="post-tags">
-                <span class="tag">java agent ssl interception</span>
-                <span class="tag">bytebuddy tls</span>
-                <span class="tag">java instrumentation api</span>
-              </div>
             </div>
           </li>
-
           <li class="post">
             <div class="post-number">03</div>
             <div class="post-body">
-              <h2>
-                <a
-                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/03-ebpf-vs-java-agent-tls.md"
-                  rel="noopener"
-                  >Why eBPF isn't needed for JVM TLS</a
-                >
-              </h2>
+              <h2><a href="/blog/ebpf-vs-java-agent-tls/">Why eBPF isn't needed for JVM TLS</a></h2>
               <div class="post-meta">
                 <time datetime="2026-05-22">May 22, 2026</time>
                 <span class="dot">·</span>
-                <span>~5 min read</span>
+                <span>~4 min read</span>
               </div>
               <p>
                 When eBPF uprobes earn their cost for TLS observability, and when a Java agent does
                 the same job with none of the operational tax.
               </p>
               <div class="post-tags">
-                <span class="tag">ebpf vs java agent</span>
-                <span class="tag">jvm tls capture</span>
-                <span class="tag">ebpf uprobe ssl</span>
+                <span class="tag">ebpf vs java agent</span><span class="tag">jvm tls capture</span
+                ><span class="tag">ebpf uprobe ssl</span>
               </div>
             </div>
           </li>
-
           <li class="post">
             <div class="post-number">04</div>
             <div class="post-body">
               <h2>
-                <a
-                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/04-kafka-wire-decode-no-mitm.md"
-                  rel="noopener"
+                <a href="/blog/kafka-wire-decode-no-mitm/"
                   >Kafka wire decode end-to-end without MITM</a
                 >
               </h2>
               <div class="post-meta">
                 <time datetime="2026-05-22">May 22, 2026</time>
                 <span class="dot">·</span>
-                <span>~5 min read</span>
+                <span>~4 min read</span>
               </div>
               <p>
-                Kapture's three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one
-                Kafka wire decoder. Where each mode wins, and what ships next.
+                Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap)
+                sharing one Kafka wire decoder. Here is the shape that emerges.
               </p>
               <div class="post-tags">
-                <span class="tag">kafka traffic capture</span>
-                <span class="tag">kafka observability</span>
-                <span class="tag">kafka wire protocol</span>
+                <span class="tag">kafka traffic capture</span
+                ><span class="tag">kafka observability</span
+                ><span class="tag">kafka wire protocol</span>
               </div>
             </div>
           </li>
-
           <li class="post">
             <div class="post-number">05</div>
             <div class="post-body">
               <h2>
-                <a
-                  href="https://github.com/conduktor/kapture/blob/main/docs/blog/05-dev-tools-that-dont-break-tls.md"
-                  rel="noopener"
+                <a href="/blog/dev-tools-that-dont-break-tls/"
                   >Building dev tools that don't break TLS</a
                 >
               </h2>
@@ -421,14 +515,14 @@
                 <span>~5 min read</span>
               </div>
               <p>
-                Every dev tool that intercepts TLS pays a hidden tax. What we lose, what we get back
-                when we stop interposing, and the three techniques that observe without changing the
-                wire.
+                Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we
+                get back when we stop interposing, and the three techniques that observe without
+                changing the wire.
               </p>
               <div class="post-tags">
-                <span class="tag">tls visibility</span>
-                <span class="tag">passive tls decryption</span>
-                <span class="tag">dev tool design</span>
+                <span class="tag">tls visibility</span
+                ><span class="tag">passive tls decryption</span
+                ><span class="tag">dev tool design</span>
               </div>
             </div>
           </li>
@@ -443,21 +537,35 @@
           Apache-2.0.
         </div>
         <div>
-          <a href="https://github.com/conduktor/kapture" rel="noopener">GitHub</a>
-          <a href="https://github.com/conduktor/kapture/issues" rel="noopener">Issues</a>
-          <a href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md" rel="noopener"
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
             >Changelog</a
           >
           <a href="mailto:kapture@conduktor.io">Feedback</a>
         </div>
       </div>
     </footer>
-
     <script>
       const nav = document.getElementById("nav");
       const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
       document.addEventListener("scroll", onScroll, { passive: true });
       onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
     </script>
   </body>
 </html>

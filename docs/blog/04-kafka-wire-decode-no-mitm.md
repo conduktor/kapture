@@ -8,15 +8,13 @@ keywords: [kafka traffic capture, kafka observability, kafka wire protocol, kafk
 
 # Kafka wire decode end-to-end without MITM
 
-Kapture started as a Kafka proxy with a wire dissector. The proxy works: point your client at `127.0.0.1:9092`, Kapture forwards to your real broker, the inspector decodes every byte. It has a ceiling, though. To intercept TLS, it has to terminate TLS. There are dev environments where "debug tool that changes the certificate chain" is too invasive. [We covered the costs in the first post](./01-kafka-tls-debug-without-proxy.md).
+Kapture started as a Kafka proxy with a wire dissector. Point your client at `127.0.0.1:9092`, Kapture forwards to your real broker, the inspector decodes every byte. That works, up to a point. To intercept TLS, the proxy has to terminate TLS, and in plenty of dev environments a debug tool that rewrites the certificate chain is too invasive to deploy. [The first post in this series went through the costs in detail](./01-kafka-tls-debug-without-proxy.md).
 
-The plan, now that the JVM tap POC works, is to make Kapture a three-mode observation platform with one decoder underneath.
+The JVM tap POC works now, so Kapture is growing two more capture modes alongside the proxy. Three modes, one decoder.
 
 ## Three modes, one wire decoder
 
-The trick that holds this together is that Kapture's wire decoder doesn't care where the bytes come from. It takes Kafka frames, returns decoded structures with topic / partition / RTT / errors / anti-pattern signals. The source can be a proxy connection, a Java agent socket, or an eBPF ringbuf.
-
-Three modes, same downstream:
+The decoder doesn't care where the bytes come from. Feed it Kafka frames, get back decoded structures: topic, partition, RTT, errors, anti-pattern signals. The source can be a proxy connection, a Java agent socket, or an eBPF ringbuf.
 
 | Mode     | Where bytes come from                            | Where it runs                   | TLS posture                            |
 | -------- | ------------------------------------------------ | ------------------------------- | -------------------------------------- |
@@ -28,54 +26,54 @@ Three modes, same downstream:
 
 ## Where each mode wins
 
-**Proxy mode** is best when:
+Proxy mode fits when:
 
-- You don't have access to the client process (running in someone else's container, on a different host, behind a service mesh).
-- The client refuses to use any custom JVM flags or load any agent (compliance reasons).
-- You want chaos injection — drop connections, return error codes, fake `NOT_LEADER`. Tap modes are observation-only, the proxy is a knob.
-- You want to debug TLS itself — handshake failures, cert chain errors, SASL drift. The proxy sees both sides of the handshake.
+- You don't have access to the client process. It's in someone else's container, on a different host, behind a service mesh.
+- The client refuses custom JVM flags or any loaded agent (usually compliance).
+- You want chaos injection. Drop connections, return error codes, fake `NOT_LEADER`. Tap modes are observation-only; the proxy is a knob.
+- You're debugging TLS itself: handshake failures, cert chain errors, SASL drift. The proxy sees both sides of the handshake.
 
-**JVM tap** is best when:
+JVM tap fits when:
 
-- The client is a Java Kafka app running on your machine.
-- The target broker uses TLS that you cannot proxy (mTLS with cert chains you don't control, pinning, restricted CA).
-- You want zero changes to the client's network config — no listener swap, no DNS rewrite, no cert install.
-- You are demoing Kapture against Confluent Cloud or MSK without provisioning anything.
+- The client is a Java Kafka app on your machine.
+- The broker uses TLS you can't proxy: mTLS with cert chains you don't control, pinning, a restricted CA.
+- You want zero changes to the client's network config. No listener swap, no DNS rewrite, no cert install.
+- You're demoing against Confluent Cloud or MSK without provisioning anything.
 
-**eBPF tap** (planned) is best when:
+eBPF tap (planned) fits when:
 
-- The client uses `librdkafka` (Python, Node, Ruby, .NET, the C apps), Go static binaries, or any non-JVM TLS path.
-- You are on Linux with `CAP_BPF`.
-- You want a single tool that catches every process on the host that talks Kafka, regardless of language.
+- The client uses `librdkafka` (Python, Node, Ruby, .NET, C), Go static binaries, or any non-JVM TLS path.
+- You're on Linux with `CAP_BPF`.
+- You want one tool that picks up every Kafka-talking process on the host, regardless of language.
 
-The three are not mutually exclusive. A typical Kapture session against a polyglot client fleet might use the JVM tap for the Spring Boot service, eBPF for the Python ingester, and the proxy for the .NET admin tool running on Windows.
+The modes compose. A session against a polyglot client fleet might use JVM tap for the Spring Boot service, eBPF for the Python ingester, and the proxy for a .NET admin tool running on Windows.
 
 ## What you see is the same thing
 
-We kept the decoded output identical across modes. The Protocol tab renders the same columns: corr_id, RTT, API key, version, request size, decoded body. The Messages tab still flattens records out of `ProduceRequest` and `FetchResponse`. The Expert tab still fires on the same 25 anti-pattern detectors — overcommit, producer-per-record, rebalance loop, stale-leader producing, throttle pressure, the lot.
+The decoded output is identical across modes. The Protocol tab renders the same columns: corr_id, RTT, API key, version, request size, decoded body. The Messages tab still flattens records out of `ProduceRequest` and `FetchResponse`. The Expert tab still fires on the same 25 anti-pattern detectors: overcommit, producer-per-record, rebalance loop, stale-leader producing, throttle pressure, all of it.
 
-The only visible difference is a `source` badge per frame: `proxy`, `tap-jvm`, or `tap-ebpf`. RTT calculation differs slightly between modes. The proxy measures from `proxy ← client` to `proxy → client` (a TCP-level round trip). The tap measures from `SslTransportLayer.write` exit to the matching `SslTransportLayer.read` entry with the same corr_id (client-perceived, includes encrypt + decrypt). We document the difference where it matters.
+The only visible difference is a `source` badge per frame (`proxy`, `tap-jvm`, or `tap-ebpf`) and how RTT is measured. The proxy measures `proxy ← client` to `proxy → client`, a TCP-level round trip. The tap measures `SslTransportLayer.write` exit to the matching `SslTransportLayer.read` entry with the same corr_id, which is client-perceived and includes encrypt and decrypt time. The docs flag the difference wherever it shows up.
 
 > **Visual:** screenshot of the Kapture Protocol tab. Half the rows have a small `proxy` badge in the left column. Half have a `tap-jvm` badge. Otherwise the rows look identical: same corr_id format, same RTT column, same decoded body on the right. Caption: "Mode-agnostic UI. Wire bytes are wire bytes."
 
-## What this unlocks for users
+## Who the proxy-only constraint locked out
 
-Three categories of users were gated by the proxy-only constraint:
+Three groups couldn't use Kapture before the JVM tap landed:
 
-1. **Confluent Cloud / MSK users with strict TLS** could not point a dev producer at `127.0.0.1:9092` without disabling cert validation. JVM tap removes the gate.
+1. **Confluent Cloud / MSK users with strict TLS.** Pointing a dev producer at `127.0.0.1:9092` meant disabling cert validation. JVM tap removes that step.
 
-2. **Production-shape staging environments** with the same TLS / SASL / mTLS posture as prod. Provisioning a proxy with all the right certs is enough friction to skip Kapture; the agent works with whatever credentials the client already has.
+2. **Production-shape staging.** Same TLS, SASL, and mTLS posture as prod. Provisioning a proxy with the right certs is enough friction that most people skip Kapture and reach for log statements. The agent reuses whatever credentials the client already has.
 
-3. **Multi-language fleets debugged from one laptop.** Today, a Python producer and a Java consumer need two different debug setups. With JVM tap shipping now and eBPF tap next, both show up in the same Kapture window.
+3. **Multi-language fleets debugged from one laptop.** A Python producer and a Java consumer need two different debug setups today. JVM tap ships now, eBPF tap is next; both surface in the same Kapture window.
 
-Adding a fourth mode later (a `.pcap` import, an `SSLKEYLOGFILE` consumer, a Wireshark plugin export) becomes a question of writing the source adapter, not rewriting the inspector.
+Adding a fourth mode later (`.pcap` import, `SSLKEYLOGFILE` consumer, Wireshark plugin export) is a source adapter, not a decoder rewrite.
 
 ## What ships next
 
-The JVM tap is integrated into Kapture proper. The agent lives at `agents/jvm-tap/`, the in-process listener is `src-tauri/src/jvm_tap.rs`, and Tauri commands `start_jvm_tap` / `stop_jvm_tap` claim the same capture slot the proxy uses. The Protocol / Messages / Expert tabs render tap-sourced frames through the existing `ProtoCorrelator`. Next: bump ByteBuddy to support Java 25 cleanly, surface tap sessions in the Connections sidebar, then eBPF tap targeting `libssl` for the librdkafka family.
+The JVM tap is in Kapture proper. The agent lives at `agents/jvm-tap/`, the in-process listener is `src-tauri/src/jvm_tap.rs`, and the Tauri commands `start_jvm_tap` / `stop_jvm_tap` claim the same capture slot the proxy uses. Protocol, Messages, and Expert tabs render tap-sourced frames through the existing `ProtoCorrelator`. Next up: bump ByteBuddy for clean Java 25 support, surface tap sessions in the Connections sidebar, then ship the eBPF tap against `libssl` for the librdkafka family.
 
-To play with it today: bring up the SSL Kafka cluster with `docker compose --profile ssl up -d`, build the agent + test client (`mvn package` in `agents/jvm-tap/` and `src-tauri/tests/fixtures/jvm-test-client/`), call `start_jvm_tap`, then run the test client with `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar`. Captured frames appear in Kapture's existing tabs.
+To try the JVM tap today: bring up the SSL Kafka cluster with `docker compose --profile ssl up -d`, build the agent and test client (`mvn package` in `agents/jvm-tap/` and `src-tauri/tests/fixtures/jvm-test-client/`), call `start_jvm_tap`, then run the test client with `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar`. Captured frames show up in the existing tabs.
 
 ---
 
-_Next: [Building dev tools that don't break TLS](./05-dev-tools-that-dont-break-tls.md) — the broader principle this POC instances._
+_Next: [Building dev tools that don't break TLS](./05-dev-tools-that-dont-break-tls.md), the broader principle behind this POC._

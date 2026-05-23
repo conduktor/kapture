@@ -41,4 +41,29 @@
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
+  <url>
+    <loc>https://kapturekafka.dev/blog/kafka-tls-debug-without-proxy/</loc>
+    <lastmod>2026-05-22</lastmod>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/blog/hooking-ssl-transport-layer-bytebuddy/</loc>
+    <lastmod>2026-05-22</lastmod>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/blog/ebpf-vs-java-agent-tls/</loc>
+    <lastmod>2026-05-22</lastmod>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/blog/kafka-wire-decode-no-mitm/</loc>
+    <lastmod>2026-05-22</lastmod>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://kapturekafka.dev/blog/dev-tools-that-dont-break-tls/</loc>
+    <lastmod>2026-05-22</lastmod>
+    <priority>0.7</priority>
+  </url>
 </urlset>

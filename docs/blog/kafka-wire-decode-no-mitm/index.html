@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Kafka wire decode end-to-end without MITM — Kapture blog</title>
+    <meta
+      name="description"
+      content="Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one Kafka wire decoder. Here is the shape that emerges."
+    />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://kapturekafka.dev/blog/kafka-wire-decode-no-mitm/" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="Kafka wire decode end-to-end without MITM" />
+    <meta
+      property="og:description"
+      content="Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one Kafka wire decoder. Here is the shape that emerges."
+    />
+    <meta property="og:url" content="https://kapturekafka.dev/blog/kafka-wire-decode-no-mitm/" />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="article:published_time" content="2026-05-22" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Kafka wire decode end-to-end without MITM" />
+    <meta
+      name="twitter:description"
+      content="Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one Kafka wire decoder. Here is the shape that emerges."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Kafka wire decode end-to-end without MITM",
+        "description": "Kapture is becoming a three-mode observation platform (proxy, JVM tap, eBPF tap) sharing one Kafka wire decoder. Here is the shape that emerges.",
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://kapturekafka.dev/apple-touch-icon.png"
+          }
+        },
+        "datePublished": "2026-05-22",
+        "dateModified": "2026-05-22",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kapturekafka.dev/blog/kafka-wire-decode-no-mitm/"
+        },
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "keywords": "kafka traffic capture, kafka observability, kafka wire protocol, kafka client debugging"
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      .post-hero {
+        padding: 56px 0 28px;
+      }
+      .post-hero .back {
+        display: inline-block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .post-hero .back:hover {
+        color: var(--text);
+      }
+      .post-hero h1 {
+        font-size: clamp(32px, 4.5vw, 44px);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+      }
+      .post-hero .meta {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .post-hero .meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-hero .meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-hero .tags {
+        margin-top: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-hero .tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+
+      main.post-main {
+        padding: 8px 0 64px;
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+      }
+      .prose {
+        font-size: 16.5px;
+      }
+      .prose h2 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        margin: 48px 0 12px;
+        line-height: 1.25;
+      }
+      .prose h3 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 32px 0 10px;
+      }
+      .prose p {
+        margin: 0 0 18px;
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 18px;
+        padding-left: 24px;
+      }
+      .prose li {
+        margin-bottom: 6px;
+      }
+      .prose li > p {
+        margin: 0 0 8px;
+      }
+      .prose blockquote {
+        margin: 0 0 18px;
+        padding: 12px 18px;
+        border-left: 3px solid var(--border-strong);
+        background: var(--bg-soft);
+        color: var(--text);
+        border-radius: 0 8px 8px 0;
+      }
+      .prose blockquote p:last-child {
+        margin-bottom: 0;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--text);
+      }
+      .prose pre {
+        margin: 0 0 22px;
+        padding: 16px 18px;
+        background: var(--bg-code);
+        color: #e2e8f0;
+        border-radius: 10px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .prose pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        font-size: inherit;
+      }
+      .prose hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 36px 0;
+      }
+      .prose em {
+        color: var(--muted);
+      }
+      .prose a {
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      .prose a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .prose strong {
+        font-weight: 650;
+      }
+
+      .post-nav-next {
+        margin-top: 48px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-soft);
+      }
+      .post-nav-next .label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .post-nav-next a {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .post-nav-next a:hover {
+        color: var(--accent);
+      }
+      .post-nav-next .next-desc {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <article>
+      <section class="post-hero">
+        <div class="wrap">
+          <a class="back" href="/blog/">← Back to blog</a>
+          <h1>Kafka wire decode end-to-end without MITM</h1>
+          <div class="meta">
+            <time datetime="2026-05-22">May 22, 2026</time>
+            <span class="dot">·</span>
+            <span>~4 min read</span>
+          </div>
+          <div class="tags">
+            <span class="tag">kafka traffic capture</span
+            ><span class="tag">kafka observability</span><span class="tag">kafka wire protocol</span
+            ><span class="tag">kafka client debugging</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="post-main">
+        <div class="wrap prose">
+          <p>
+            Kapture started as a Kafka proxy with a wire dissector. Point your client at
+            <code>127.0.0.1:9092</code>, Kapture forwards to your real broker, the inspector decodes
+            every byte. That works, up to a point. To intercept TLS, the proxy has to terminate TLS,
+            and in plenty of dev environments a debug tool that rewrites the certificate chain is
+            too invasive to deploy.
+            <a href="/blog/kafka-tls-debug-without-proxy/"
+              >The first post in this series went through the costs in detail</a
+            >.
+          </p>
+          <p>
+            The JVM tap POC works now, so Kapture is growing two more capture modes alongside the
+            proxy. Three modes, one decoder.
+          </p>
+          <h2>Three modes, one wire decoder</h2>
+          <p>
+            The decoder doesn&#39;t care where the bytes come from. Feed it Kafka frames, get back
+            decoded structures: topic, partition, RTT, errors, anti-pattern signals. The source can
+            be a proxy connection, a Java agent socket, or an eBPF ringbuf.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Mode</th>
+                <th>Where bytes come from</th>
+                <th>Where it runs</th>
+                <th>TLS posture</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Proxy</td>
+                <td>TLS-terminating TCP proxy in front of the broker</td>
+                <td>Anywhere</td>
+                <td>Re-encrypts, breaks pinning</td>
+              </tr>
+              <tr>
+                <td>JVM tap</td>
+                <td>ByteBuddy agent inside the Kafka Java client</td>
+                <td>Same host as client</td>
+                <td>Untouched, client talks to real broker</td>
+              </tr>
+              <tr>
+                <td>eBPF tap</td>
+                <td>uprobes on <code>libssl</code> / <code>crypto/tls</code> symbols</td>
+                <td>Same host as client, Linux only</td>
+                <td>Untouched, single TLS session</td>
+              </tr>
+            </tbody>
+          </table>
+          <h2>Where each mode wins</h2>
+          <p>Proxy mode fits when:</p>
+          <ul>
+            <li>
+              You don&#39;t have access to the client process. It&#39;s in someone else&#39;s
+              container, on a different host, behind a service mesh.
+            </li>
+            <li>The client refuses custom JVM flags or any loaded agent (usually compliance).</li>
+            <li>
+              You want chaos injection. Drop connections, return error codes, fake
+              <code>NOT_LEADER</code>. Tap modes are observation-only; the proxy is a knob.
+            </li>
+            <li>
+              You&#39;re debugging TLS itself: handshake failures, cert chain errors, SASL drift.
+              The proxy sees both sides of the handshake.
+            </li>
+          </ul>
+          <p>JVM tap fits when:</p>
+          <ul>
+            <li>The client is a Java Kafka app on your machine.</li>
+            <li>
+              The broker uses TLS you can&#39;t proxy: mTLS with cert chains you don&#39;t control,
+              pinning, a restricted CA.
+            </li>
+            <li>
+              You want zero changes to the client&#39;s network config. No listener swap, no DNS
+              rewrite, no cert install.
+            </li>
+            <li>
+              You&#39;re demoing against Confluent Cloud or MSK without provisioning anything.
+            </li>
+          </ul>
+          <p>eBPF tap (planned) fits when:</p>
+          <ul>
+            <li>
+              The client uses <code>librdkafka</code> (Python, Node, Ruby, .NET, C), Go static
+              binaries, or any non-JVM TLS path.
+            </li>
+            <li>You&#39;re on Linux with <code>CAP_BPF</code>.</li>
+            <li>
+              You want one tool that picks up every Kafka-talking process on the host, regardless of
+              language.
+            </li>
+          </ul>
+          <p>
+            The modes compose. A session against a polyglot client fleet might use JVM tap for the
+            Spring Boot service, eBPF for the Python ingester, and the proxy for a .NET admin tool
+            running on Windows.
+          </p>
+          <h2>What you see is the same thing</h2>
+          <p>
+            The decoded output is identical across modes. The Protocol tab renders the same columns:
+            corr_id, RTT, API key, version, request size, decoded body. The Messages tab still
+            flattens records out of <code>ProduceRequest</code> and <code>FetchResponse</code>. The
+            Expert tab still fires on the same 25 anti-pattern detectors: overcommit,
+            producer-per-record, rebalance loop, stale-leader producing, throttle pressure, all of
+            it.
+          </p>
+          <p>
+            The only visible difference is a <code>source</code> badge per frame
+            (<code>proxy</code>, <code>tap-jvm</code>, or <code>tap-ebpf</code>) and how RTT is
+            measured. The proxy measures <code>proxy ← client</code> to <code>proxy → client</code>,
+            a TCP-level round trip. The tap measures <code>SslTransportLayer.write</code> exit to
+            the matching <code>SslTransportLayer.read</code> entry with the same corr_id, which is
+            client-perceived and includes encrypt and decrypt time. The docs flag the difference
+            wherever it shows up.
+          </p>
+          <h2>Who the proxy-only constraint locked out</h2>
+          <p>Three groups couldn&#39;t use Kapture before the JVM tap landed:</p>
+          <ol>
+            <li>
+              <p>
+                <strong>Confluent Cloud / MSK users with strict TLS.</strong> Pointing a dev
+                producer at <code>127.0.0.1:9092</code> meant disabling cert validation. JVM tap
+                removes that step.
+              </p>
+            </li>
+            <li>
+              <p>
+                <strong>Production-shape staging.</strong> Same TLS, SASL, and mTLS posture as prod.
+                Provisioning a proxy with the right certs is enough friction that most people skip
+                Kapture and reach for log statements. The agent reuses whatever credentials the
+                client already has.
+              </p>
+            </li>
+            <li>
+              <p>
+                <strong>Multi-language fleets debugged from one laptop.</strong> A Python producer
+                and a Java consumer need two different debug setups today. JVM tap ships now, eBPF
+                tap is next; both surface in the same Kapture window.
+              </p>
+            </li>
+          </ol>
+          <p>
+            Adding a fourth mode later (<code>.pcap</code> import,
+            <code>SSLKEYLOGFILE</code> consumer, Wireshark plugin export) is a source adapter, not a
+            decoder rewrite.
+          </p>
+          <h2>What ships next</h2>
+          <p>
+            The JVM tap is in Kapture proper. The agent lives at <code>agents/jvm-tap/</code>, the
+            in-process listener is <code>src-tauri/src/jvm_tap.rs</code>, and the Tauri commands
+            <code>start_jvm_tap</code> / <code>stop_jvm_tap</code> claim the same capture slot the
+            proxy uses. Protocol, Messages, and Expert tabs render tap-sourced frames through the
+            existing <code>ProtoCorrelator</code>. Next up: bump ByteBuddy for clean Java 25
+            support, surface tap sessions in the Connections sidebar, then ship the eBPF tap against
+            <code>libssl</code> for the librdkafka family.
+          </p>
+          <p>
+            To try the JVM tap today: bring up the SSL Kafka cluster with
+            <code>docker compose --profile ssl up -d</code>, build the agent and test client (<code
+              >mvn package</code
+            >
+            in <code>agents/jvm-tap/</code> and
+            <code>src-tauri/tests/fixtures/jvm-test-client/</code>), call
+            <code>start_jvm_tap</code>, then run the test client with
+            <code>-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar</code>. Captured frames
+            show up in the existing tabs.
+          </p>
+          <hr />
+          <p>
+            <em
+              >Next:
+              <a href="/blog/dev-tools-that-dont-break-tls/"
+                >Building dev tools that don&#39;t break TLS</a
+              >, the broader principle behind this POC.</em
+            >
+          </p>
+
+          <div class="post-nav-next">
+            <div class="label">Next in this series</div>
+            <a href="/blog/dev-tools-that-dont-break-tls/"
+              >Building dev tools that don't break TLS</a
+            >
+            <div class="next-desc">
+              Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we
+              get back when we stop interposing, and the three techniques that observe without
+              changing the wire.
+            </div>
+          </div>
+        </div>
+      </main>
+    </article>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>

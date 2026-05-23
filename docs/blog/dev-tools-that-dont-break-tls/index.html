@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-F508MVXD3Z"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag() {
+        dataLayer.push(arguments);
+      }
+      gtag("js", new Date());
+      gtag("config", "G-F508MVXD3Z");
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Building dev tools that don't break TLS — Kapture blog</title>
+    <meta
+      name="description"
+      content="Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we get back when we stop interposing, and the three techniques that observe without changing the wire."
+    />
+    <meta name="author" content="Conduktor" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="color-scheme" content="light" />
+    <link rel="canonical" href="https://kapturekafka.dev/blog/dev-tools-that-dont-break-tls/" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content="Building dev tools that don't break TLS" />
+    <meta
+      property="og:description"
+      content="Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we get back when we stop interposing, and the three techniques that observe without changing the wire."
+    />
+    <meta
+      property="og:url"
+      content="https://kapturekafka.dev/blog/dev-tools-that-dont-break-tls/"
+    />
+    <meta property="og:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <meta property="article:published_time" content="2026-05-22" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Building dev tools that don't break TLS" />
+    <meta
+      name="twitter:description"
+      content="Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we get back when we stop interposing, and the three techniques that observe without changing the wire."
+    />
+    <meta name="twitter:image" content="https://kapturekafka.dev/images/og-card.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "BlogPosting",
+        "headline": "Building dev tools that don't break TLS",
+        "description": "Every dev tool that intercepts TLS pays a hidden tax. Here is what we lose, what we get back when we stop interposing, and the three techniques that observe without changing the wire.",
+        "author": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io"
+        },
+        "publisher": {
+          "@type": "Organization",
+          "name": "Conduktor",
+          "url": "https://www.conduktor.io",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://kapturekafka.dev/apple-touch-icon.png"
+          }
+        },
+        "datePublished": "2026-05-22",
+        "dateModified": "2026-05-22",
+        "mainEntityOfPage": {
+          "@type": "WebPage",
+          "@id": "https://kapturekafka.dev/blog/dev-tools-that-dont-break-tls/"
+        },
+        "image": "https://kapturekafka.dev/images/og-card.png",
+        "keywords": "tls visibility, passive tls decryption, dev tool design, mitm proxy alternative"
+      }
+    </script>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-soft: #fafafa;
+        --bg-code: #0b1020;
+        --text: #0f172a;
+        --muted: #64748b;
+        --border: #e5e7eb;
+        --border-strong: #d1d5db;
+        --accent: #2563eb;
+        --accent-hover: #1d4ed8;
+        --accent-soft: #eff6ff;
+        --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+        --shadow-md: 0 8px 24px -8px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
+        --radius: 10px;
+        --radius-lg: 16px;
+        --maxw: 880px;
+        --font:
+          -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+          sans-serif;
+        --mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: var(--font);
+        color: var(--text);
+        background: var(--bg);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        text-rendering: optimizeLegibility;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        color: var(--accent-hover);
+      }
+      .wrap {
+        max-width: var(--maxw);
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+
+      header.nav {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: rgba(255, 255, 255, 0.78);
+        backdrop-filter: saturate(160%) blur(10px);
+        -webkit-backdrop-filter: saturate(160%) blur(10px);
+        border-bottom: 1px solid transparent;
+        transition:
+          border-color 0.2s,
+          background 0.2s;
+      }
+      header.nav.scrolled {
+        border-color: var(--border);
+      }
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        height: 64px;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .brand-icon {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        flex-shrink: 0;
+        box-shadow: var(--shadow-sm);
+      }
+      .brand-text {
+        display: flex;
+        flex-direction: column;
+        line-height: 1.05;
+      }
+      .brand-text .name {
+        font-weight: 650;
+        font-size: 15px;
+        letter-spacing: -0.01em;
+      }
+      .brand-text .by {
+        font-size: 10.5px;
+        color: var(--muted);
+        font-weight: 500;
+        margin-top: 2px;
+        letter-spacing: 0.01em;
+      }
+      .nav-star {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px 6px 12px;
+        background: #fff;
+        border: 1px solid var(--border-strong);
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text) !important;
+        transition:
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .nav-star:hover {
+        border-color: var(--text);
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-sm);
+      }
+      .nav-star svg {
+        width: 14px;
+        height: 14px;
+        color: #eab308;
+        transition: transform 0.2s;
+      }
+      .nav-star:hover svg {
+        transform: rotate(15deg) scale(1.1);
+      }
+      .nav-star .count {
+        padding: 1px 7px;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        font-size: 11.5px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+        min-width: 18px;
+        text-align: center;
+      }
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .nav-links a {
+        color: var(--muted);
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .nav-links a:hover {
+        color: var(--text);
+      }
+      .nav-links a.current {
+        color: var(--text);
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 16px;
+        border-radius: var(--radius);
+        font-size: 14px;
+        font-weight: 550;
+        border: 1px solid transparent;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          border-color 0.15s,
+          transform 0.15s,
+          box-shadow 0.15s;
+      }
+      .btn-primary,
+      .nav-links a.btn-primary {
+        background: var(--text);
+        color: #fff;
+      }
+      .btn-primary:hover,
+      .nav-links a.btn-primary:hover {
+        background: #000;
+        color: #fff;
+        transform: translateY(-1px);
+        box-shadow: var(--shadow-md);
+      }
+      @media (max-width: 720px) {
+        .nav-links a:not(.btn):not(.nav-star) {
+          display: none;
+        }
+        .nav-star .count {
+          display: none;
+        }
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 40px 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      .foot {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        flex-wrap: wrap;
+        max-width: 1120px;
+        margin: 0 auto;
+        padding: 0 24px;
+      }
+      .foot a {
+        color: var(--muted);
+        margin-right: 18px;
+      }
+      .foot a:hover {
+        color: var(--text);
+      }
+
+      .post-hero {
+        padding: 56px 0 28px;
+      }
+      .post-hero .back {
+        display: inline-block;
+        font-size: 13px;
+        color: var(--muted);
+        margin-bottom: 16px;
+      }
+      .post-hero .back:hover {
+        color: var(--text);
+      }
+      .post-hero h1 {
+        font-size: clamp(32px, 4.5vw, 44px);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        margin: 0 0 14px;
+        font-weight: 700;
+      }
+      .post-hero .meta {
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .post-hero .meta time {
+        font-variant-numeric: tabular-nums;
+      }
+      .post-hero .meta .dot {
+        margin: 0 8px;
+        opacity: 0.5;
+      }
+      .post-hero .tags {
+        margin-top: 16px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .post-hero .tags .tag {
+        font-size: 12px;
+        color: var(--muted);
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 2px 8px;
+        font-family: var(--mono);
+      }
+
+      main.post-main {
+        padding: 8px 0 64px;
+        border-top: 1px solid var(--border);
+        margin-top: 16px;
+      }
+      .prose {
+        font-size: 16.5px;
+      }
+      .prose h2 {
+        font-size: 26px;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+        margin: 48px 0 12px;
+        line-height: 1.25;
+      }
+      .prose h3 {
+        font-size: 19px;
+        font-weight: 600;
+        margin: 32px 0 10px;
+      }
+      .prose p {
+        margin: 0 0 18px;
+      }
+      .prose ul,
+      .prose ol {
+        margin: 0 0 18px;
+        padding-left: 24px;
+      }
+      .prose li {
+        margin-bottom: 6px;
+      }
+      .prose li > p {
+        margin: 0 0 8px;
+      }
+      .prose blockquote {
+        margin: 0 0 18px;
+        padding: 12px 18px;
+        border-left: 3px solid var(--border-strong);
+        background: var(--bg-soft);
+        color: var(--text);
+        border-radius: 0 8px 8px 0;
+      }
+      .prose blockquote p:last-child {
+        margin-bottom: 0;
+      }
+      .prose code {
+        font-family: var(--mono);
+        font-size: 0.88em;
+        background: var(--bg-soft);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 1px 6px;
+        color: var(--text);
+      }
+      .prose pre {
+        margin: 0 0 22px;
+        padding: 16px 18px;
+        background: var(--bg-code);
+        color: #e2e8f0;
+        border-radius: 10px;
+        overflow-x: auto;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+      .prose pre code {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        color: inherit;
+        font-size: inherit;
+      }
+      .prose hr {
+        border: 0;
+        border-top: 1px solid var(--border);
+        margin: 36px 0;
+      }
+      .prose em {
+        color: var(--muted);
+      }
+      .prose a {
+        border-bottom: 1px solid transparent;
+        transition: border-color 0.15s;
+      }
+      .prose a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .prose strong {
+        font-weight: 650;
+      }
+
+      .post-nav-next {
+        margin-top: 48px;
+        padding: 20px 22px;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        background: var(--bg-soft);
+      }
+      .post-nav-next .label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+      .post-nav-next a {
+        font-weight: 600;
+        color: var(--text);
+      }
+      .post-nav-next a:hover {
+        color: var(--accent);
+      }
+      .post-nav-next .next-desc {
+        color: var(--muted);
+        font-size: 14px;
+        margin-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="nav" id="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="/">
+          <img src="/favicon.png" alt="" class="brand-icon" />
+          <span class="brand-text">
+            <span class="name">Kapture</span>
+            <span class="by">by conduktor</span>
+          </span>
+        </a>
+        <nav class="nav-links">
+          <a href="/#why">Why</a>
+          <a href="/#how">How it works</a>
+          <a href="/#features">Features</a>
+          <a href="/#faq">FAQ</a>
+          <a href="/#install">Install</a>
+          <a href="/blog/" class="current">Blog</a>
+          <a
+            class="nav-star"
+            href="https://github.com/conduktor/kapture"
+            target="_blank"
+            rel="noopener"
+            aria-label="Star Kapture on GitHub"
+          >
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path
+                d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"
+              />
+            </svg>
+            <span>Star</span>
+            <span class="count" id="gh-stars">—</span>
+          </a>
+          <a
+            class="btn btn-primary"
+            href="https://github.com/conduktor/kapture/releases/latest"
+            target="_blank"
+            rel="noopener"
+            >Download</a
+          >
+        </nav>
+      </div>
+    </header>
+
+    <article>
+      <section class="post-hero">
+        <div class="wrap">
+          <a class="back" href="/blog/">← Back to blog</a>
+          <h1>Building dev tools that don't break TLS</h1>
+          <div class="meta">
+            <time datetime="2026-05-22">May 22, 2026</time>
+            <span class="dot">·</span>
+            <span>~5 min read</span>
+          </div>
+          <div class="tags">
+            <span class="tag">tls visibility</span><span class="tag">passive tls decryption</span
+            ><span class="tag">dev tool design</span><span class="tag">mitm proxy alternative</span>
+          </div>
+        </div>
+      </section>
+
+      <main class="post-main">
+        <div class="wrap prose">
+          <p>
+            A whole category of dev tooling exists to show you what is happening on a network. For
+            HTTP that&#39;s Fiddler, Charles, mitmproxy. For databases, ORM-aware debuggers. For
+            Kafka, until recently, mostly Kapture&#39;s proxy mode. They share one mechanism: they
+            terminate TLS to read it.
+          </p>
+          <p>
+            That mechanism used to be cheap. It isn&#39;t anymore. This post is about why, and about
+            three ways to observe TLS that don&#39;t touch the wire.
+          </p>
+          <h2>The MITM tax</h2>
+          <p>
+            When a debug tool terminates TLS and opens a second TLS session to the real server, it
+            owes five things to the system it claims to be observing.
+          </p>
+          <ol>
+            <li>
+              <p>
+                A certificate the client trusts. Custom CA in the truststore, or
+                <code>--insecure</code>, or a wildcard for <code>*.localhost</code>. Every option is
+                friction. Every option has been a CVE somewhere.
+              </p>
+            </li>
+            <li>
+              <p>
+                Credentials the original client owned. mTLS clients need their private key reachable
+                from the debug tool. Some compliance regimes refuse this outright, and they are
+                right to.
+              </p>
+            </li>
+            <li>
+              <p>
+                A way around pinning. If the client pins the broker&#39;s SAN or fingerprint, the
+                proxy&#39;s fake cert fails the pin. The failure surfaces as an opaque handshake
+                error and you waste an afternoon on it.
+              </p>
+            </li>
+            <li>
+              <p>
+                A passable impression of production. The client now talks to a TLS endpoint with
+                different cipher negotiation, different SANs, different OCSP behavior. The bug you
+                came to debug may not reproduce against the proxy because the proxy isn&#39;t the
+                thing you were debugging.
+              </p>
+            </li>
+            <li>
+              <p>
+                The loss of certificate transparency. The dev tool&#39;s cert never appears in CT
+                logs. A client that checks CT will accept the proxy where it would have rejected a
+                real attacker. The dev tool now succeeds in a scenario where production would have
+                failed loudly.
+              </p>
+            </li>
+          </ol>
+          <p>
+            No single item kills you. Together they make the dev tool&#39;s view of TLS a different
+            system from the production view of TLS. When the bug lives in one of the rows that
+            changed, you can&#39;t reproduce it. The tool that was supposed to help you debug
+            becomes the thing you have to debug around.
+          </p>
+          <h2>What the proxy was solving</h2>
+          <p>
+            The reasoning was straightforward. TLS is opaque from outside the endpoints, so to read
+            what&#39;s inside, stand inside. That argument was correct in 2012. It is still correct
+            <em>when there is no other way</em>. The interesting question is whether there&#39;s
+            another way.
+          </p>
+          <p>There are three.</p>
+          <h2>Technique one: cooperative key log</h2>
+          <p>
+            The client writes its TLS session keys to a file (<code>SSLKEYLOGFILE</code>). The
+            observer reads the file and decrypts the captured wire bytes. The client has to opt in
+            (closed-source SDKs usually won&#39;t), keys live in plaintext on disk somewhere, and
+            the inspector turns into Wireshark.
+          </p>
+          <p>
+            For Kafka, no major client implements this natively. librdkafka has an open issue from
+            2021. Theoretical until someone files the PR.
+          </p>
+          <h2>Technique two: in-process boundary hook</h2>
+          <p>
+            Observe inside the client, at the seam between application code and TLS code. The
+            <a href="/blog/hooking-ssl-transport-layer-bytebuddy/">Kapture JVM tap</a> sits there.
+            TLS stays end-to-end with the real server, real cert, real handshake. Plaintext is read
+            from inside the same process before it hits the encrypt path, or after it leaves the
+            decrypt path.
+          </p>
+          <p>
+            Cost: code runs in the target process (Java agent, LD<em
+              >PRELOAD shim, language plugin), same host only, same UID by default. Benefit: every
+              TLS property is unchanged. Production cert chains, production mTLS, production
+              pinning. Your debugger sees what the application sees, because it _is</em
+            >
+            the application.
+          </p>
+          <h2>Technique three: kernel-side uprobe</h2>
+          <p>
+            The kernel attaches a probe to a userspace function (eBPF uprobe on Linux, DTrace on
+            BSDs, ETW on Windows). The probe reads the function&#39;s arguments, including buffer
+            pointers. For libssl exposing <code>SSL_write</code> / <code>SSL_read</code>, that means
+            plaintext without touching the client at all.
+          </p>
+          <p>
+            Cost: privilege (<code>CAP_BPF</code> on Linux), OS coupling, opacity for
+            statically-linked TLS where the symbols aren&#39;t exported. Used by AgentSight, Pixie,
+            Coroot, ecapture. TLS itself stays untouched.
+          </p>
+          <h2>When the MITM proxy is still the right answer</h2>
+          <p>Mostly when one of the other three isn&#39;t available.</p>
+          <ul>
+            <li>The client runs on a host you can&#39;t touch.</li>
+            <li>
+              The runtime offers no instrumentation API and links statically to a TLS library you
+              can&#39;t uprobe.
+            </li>
+            <li>
+              You need to <em>modify</em> the traffic, not just watch it: chaos injection, fault
+              testing, latency simulation. Tap modes only observe.
+            </li>
+            <li>
+              The TLS layer <em>is</em> the bug. You want two handshakes side by side, deliberately
+              diverging.
+            </li>
+          </ul>
+          <p>
+            For Kapture that means the proxy mode stays. We keep recommending it for remote
+            debugging, chaos testing, and staging environments where the dev tool&#39;s TLS
+            difference doesn&#39;t matter to the question being asked. Tap modes ship alongside it,
+            not instead of it.
+          </p>
+          <h2>The principle</h2>
+          <p>
+            The dev tools I trust observe without changing what they observe. Strace doesn&#39;t
+            rewrite syscalls. Wireshark doesn&#39;t rewrite packets. Perf doesn&#39;t move threads
+            around. Tools that change the system to fit the observer end up reporting on a system
+            slightly different from the one their user runs in production, and that gap is where the
+            unreproducible bugs live.
+          </p>
+          <p>
+            For TLS the principle is precise: the encrypted bytes on the wire should be the bytes
+            that would have been there without the tool. The three techniques above preserve that. A
+            MITM proxy explicitly breaks it.
+          </p>
+          <p>
+            I&#39;m not evangelical about it. The proxy stays useful, and we still ship one. But
+            every feature we now add to Kapture starts with the same question: can we get the signal
+            without standing in the middle? For years the honest answer was no. With JVM tap
+            shipping today and eBPF tap shipping next, more and more often it&#39;s yes.
+          </p>
+          <p>
+            A dev tool that doesn&#39;t break TLS is one that watches the TLS the application
+            actually negotiated, with the cert the application actually presented, against the
+            server the application actually reached. If you&#39;re looking at anything else,
+            you&#39;re looking at the tool, not the system.
+          </p>
+          <hr />
+          <p>
+            <em
+              >This is the end of the five-part series on Kapture&#39;s tap mode. The whole series
+              in order:</em
+            >
+          </p>
+          <ol>
+            <li>
+              <em
+                ><a href="/blog/kafka-tls-debug-without-proxy/"
+                  >Decrypting Kafka TLS without a proxy</a
+                ></em
+              >
+            </li>
+            <li>
+              <em
+                ><a href="/blog/hooking-ssl-transport-layer-bytebuddy/"
+                  >Hooking SslTransportLayer via ByteBuddy</a
+                ></em
+              >
+            </li>
+            <li>
+              <em
+                ><a href="/blog/ebpf-vs-java-agent-tls/"
+                  >Why eBPF isn&#39;t needed for JVM TLS</a
+                ></em
+              >
+            </li>
+            <li>
+              <em
+                ><a href="/blog/kafka-wire-decode-no-mitm/"
+                  >Kafka wire decode end-to-end without MITM</a
+                ></em
+              >
+            </li>
+            <li><em>Building dev tools that don&#39;t break TLS (this post)</em></li>
+          </ol>
+        </div>
+      </main>
+    </article>
+
+    <footer>
+      <div class="wrap foot">
+        <div>
+          <strong style="color: var(--text)">Kapture</strong> — built by the Conduktor team.
+          Apache-2.0.
+        </div>
+        <div>
+          <a href="https://github.com/conduktor/kapture" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://github.com/conduktor/kapture/issues" target="_blank" rel="noopener"
+            >Issues</a
+          >
+          <a
+            href="https://github.com/conduktor/kapture/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noopener"
+            >Changelog</a
+          >
+          <a href="mailto:kapture@conduktor.io">Feedback</a>
+        </div>
+      </div>
+    </footer>
+    <script>
+      const nav = document.getElementById("nav");
+      const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 4);
+      document.addEventListener("scroll", onScroll, { passive: true });
+      onScroll();
+      fetch("https://api.github.com/repos/conduktor/kapture")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (!d || d.stargazers_count == null) return;
+          const n = d.stargazers_count;
+          const fmt = n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k" : String(n);
+          const el = document.getElementById("gh-stars");
+          if (el) el.textContent = fmt;
+        })
+        .catch(() => {});
+    </script>
+  </body>
+</html>
