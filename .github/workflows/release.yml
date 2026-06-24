@@ -39,7 +39,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Read version from tag
         id: meta
@@ -91,7 +91,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -270,7 +270,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -375,7 +375,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -533,7 +533,7 @@ jobs:
       - name: Checkout main
         # Cask file lives on main, not on the tag. Tags are immutable, so we
         # commit the bumped Casks/kapture.rb to main.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

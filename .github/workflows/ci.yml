@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6
         with:
@@ -51,7 +51,7 @@ jobs:
       - name: Checkout (with submodules)
         # The kafka-protocol-rs fork lives at vendor/kafka-protocol-rs and
         # is referenced via `path = "../vendor/..."` in src-tauri/Cargo.toml.
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -104,7 +104,7 @@ jobs:
     # custom commands cleanly.
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -188,7 +188,7 @@ jobs:
     # parallel as separate runners.
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
