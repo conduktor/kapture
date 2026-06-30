@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "kapture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "apache-avro",
  "async-trait",

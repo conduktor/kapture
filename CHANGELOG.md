@@ -6,6 +6,39 @@ log if you want every commit.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-30 — JVM tap mode, anti-pattern detectors, tunable thresholds
+
+### JVM tap mode
+
+- **Observe a JVM Kafka client without a proxy.** Attach the Kapture
+  agent to a Java process (`-javaagent`, or dynamic attach from the Tap
+  dialog) and it streams plaintext Kafka wire bytes over a local Unix
+  domain socket. The TLS connection to the broker stays end-to-end — real
+  cert, real mTLS/SASL — so there's no second TLS session, no client
+  config change, and nothing to point at `127.0.0.1`. Protocol / Messages
+  / Expert tabs render identically to proxy mode.
+- The Brokers tab is hidden in tap mode (no proxy topology to show).
+
+### Expert tab — wire anti-pattern detectors
+
+- **26 client + cluster anti-patterns detected live on the wire** —
+  overcommit, producer-per-record, tiny batches, rebalance loop,
+  stale-leader producing, mixed api_version, SASL drift, acks=0,
+  compression-off, non-idempotent producer, producer-instance leak,
+  transactional zombie, auto-commit cadence, tight fetch polling,
+  fetch-session error cascade, throttle pressure, metadata storm, KIP-848
+  holdouts, message-too-large, offset-out-of-range, cooperative-sticky
+  churn, commit-during-rebalance, ACL deny, unknown-topic poll loop,
+  coordinator churn, and **slow consumer poll stall** (a fetch stream that
+  goes silent past `max.poll.interval.ms` then resumes — slow processing
+  stalling the poll loop, which reads on dashboards as a scaling problem).
+  Each finding links straight to the offending frame in the Protocol tab.
+- **Tunable detector thresholds.** Every threshold is configurable via a
+  global `detector_config.json`; the values the wire can't reveal
+  (poll-stall gap ↔ `max.poll.interval.ms`, auto-commit interval, SASL
+  reauth floor) are editable in a settings modal on the Expert tab, the
+  rest in the file. Defaults reproduce the previous behaviour.
+
 ### Inspector
 
 - **Copy button on every ProtoDetail layer.** Hover any section header
