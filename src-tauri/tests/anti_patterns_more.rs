@@ -529,3 +529,79 @@ async fn coordinator_churn_detected_through_proxy() {
     );
     proxy.stop().await;
 }
+
+// =====================================================================
+// #26 — SlowConsumerPollStall
+// =====================================================================
+// trivago 2026 shape: an established Fetch stream goes silent past
+// max.poll.interval.ms because record processing blocked, then resumes.
+// Drive a real fetch cadence through the proxy, stall >POLL_STALL_GAP
+// (10s), then resume → the detector fires on the resuming fetch.
+#[tokio::test]
+async fn slow_consumer_poll_stall_detected_through_proxy() {
+    let Some(upstream) = upstream_or_skip("slow_consumer_poll_stall_detected_through_proxy") else {
+        return;
+    };
+    let proxy = TestProxy::start(upstream).await.expect("start proxy");
+    let addr = format!("127.0.0.1:{}", proxy.listen_port());
+    let mut client = WireClient::connect(&addr).await.expect("connect");
+    let _ = negotiate(&mut client).await.expect("negotiate");
+
+    let topic = format!(
+        "kapture-it-stall-{}",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let meta = MetadataRequest::default()
+        .with_topics(Some(vec![MetadataRequestTopic::default()
+            .with_name(Some(TopicName(StrBytes::from_string(topic.clone()))))]))
+        .with_allow_auto_topic_creation(true);
+    client.send(ApiKey::Metadata, 9, &meta).await.expect("meta");
+    let _ = client.recv_raw().await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let fetch = |topic: &str| {
+        FetchRequest::default()
+            .with_max_wait_ms(100)
+            .with_min_bytes(1)
+            .with_max_bytes(1_048_576)
+            .with_isolation_level(0)
+            .with_session_id(0)
+            .with_session_epoch(0)
+            .with_topics(vec![FetchTopic::default()
+                .with_topic(TopicName(StrBytes::from_string(topic.to_string())))
+                .with_partitions(vec![FetchPartition::default()
+                    .with_partition(0)
+                    .with_fetch_offset(0)
+                    .with_partition_max_bytes(1_048_576)])])
+    };
+
+    // Establish an active fetch cadence (clears POLL_STALL_MIN_FETCHES).
+    for _ in 0..4 {
+        client
+            .send(ApiKey::Fetch, 12, &fetch(&topic))
+            .await
+            .expect("send fetch");
+        let _ = client.recv_raw().await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    // Stall: stop polling for longer than POLL_STALL_GAP (10s).
+    tokio::time::sleep(Duration::from_secs(11)).await;
+
+    // Resume — this fetch breaks the silence and trips the detector.
+    client
+        .send(ApiKey::Fetch, 12, &fetch(&topic))
+        .await
+        .expect("send fetch");
+    let _ = client.recv_raw().await;
+
+    assert!(
+        wait_for_kind(
+            &proxy,
+            |d| matches!(d.kind, AntiPatternKind::SlowConsumerPollStall),
+            "SlowConsumerPollStall",
+        )
+        .await
+    );
+    proxy.stop().await;
+}

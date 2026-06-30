@@ -102,6 +102,20 @@ pub(super) const GC_SWEEP_EVERY: u64 = 1_000;
 /// rolling window on the same scope.
 pub(super) const ACL_DENY_THRESHOLD: usize = 3;
 
+/// Slow consumer poll stall: a gap between two consecutive
+/// `FetchRequest`s on the same connection that's long enough to risk
+/// breaching `max.poll.interval.ms` (default 300_000ms). A healthy
+/// consumer re-polls within `fetch.max.wait.ms` (default 500ms) even on
+/// an idle topic, so a multi-second gap means the application thread
+/// blocked between polls — the trivago slow-processing shape. 10s is
+/// conservative: well above the healthy re-poll cadence, low enough to
+/// catch a stall before the (invisible-on-the-wire) poll interval fires.
+pub(super) const POLL_STALL_GAP: Duration = Duration::from_secs(10);
+/// Require this many prior `FetchRequest`s on the connection before a
+/// gap counts — establishes an active fetch cadence so we don't flag a
+/// slow first fetch at startup or a one-off probe.
+pub(super) const POLL_STALL_MIN_FETCHES: u32 = 3;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct DetectionKey {
     pub kind: AntiPatternKind,
@@ -177,6 +191,15 @@ pub(super) struct FetchShape {
 pub(super) struct SaslState {
     pub count: u32,
     pub last_lifetime_ms: i64,
+}
+
+/// Per-connection `FetchRequest` cadence tracker for the slow-poll-stall
+/// detector. `last` is the instant of the previous fetch; `count` the
+/// number of fetches seen so far (gates on `POLL_STALL_MIN_FETCHES`).
+#[derive(Debug, Default)]
+pub(super) struct FetchPollState {
+    pub last: Option<Instant>,
+    pub count: u32,
 }
 
 /// Tiny `VecDeque` of `Instant` timestamps + drift-bounded cap.

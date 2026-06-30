@@ -11,18 +11,10 @@ use std::time::Instant;
 
 use crate::anti_patterns::fold::AntiPatternsFold;
 use crate::anti_patterns::kafka_errors as kerr;
-use crate::anti_patterns::state::{
-    ACL_DENY_THRESHOLD, AUTOCOMMIT_INTERVAL_MS, AUTOCOMMIT_INTERVAL_TOLERANCE,
-    AUTOCOMMIT_MIN_SAMPLES, COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES,
-    COOPERATIVE_STICKY_CHURN_THRESHOLD, COORDINATOR_CHURN_THRESHOLD,
-    FETCH_SESSION_ERRORS_THRESHOLD, METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC,
-    NON_IDEMPOTENT_MIN_SAMPLES, OFFSET_OUT_OF_RANGE_THRESHOLD, OVERCOMMIT_MIN_SAMPLES,
-    OVERCOMMIT_RATE_PER_SEC, PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
-    PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS, RATE_QUEUE_CAP, RATE_WINDOW,
-    REBALANCE_JOINS_IN_WINDOW, SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES,
-    TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE,
-    TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE, UNKNOWN_TOPIC_POLL_THRESHOLD,
-};
+// Threshold constants now live in `DetectorConfig` (read via
+// `self.config.*`); only the structural window/cap constants are used
+// directly here.
+use crate::anti_patterns::state::{RATE_QUEUE_CAP, RATE_WINDOW};
 use crate::anti_patterns::{AntiPatternKind, Severity};
 use crate::correlator::ProtoFrame;
 use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
@@ -167,9 +159,9 @@ impl AntiPatternsFold {
             let rate = shape.instants.len() as f64 / span;
             (avg_records, rate, shape.samples)
         };
-        if samples >= TINY_BATCH_MIN_SAMPLES
-            && avg_records <= TINY_BATCH_RECORDS_PER_PRODUCE
-            && rate >= TINY_BATCH_MIN_PRODUCE_RATE
+        if samples >= self.config.tiny_batch_min_samples
+            && avg_records <= self.config.tiny_batch_records_per_produce
+            && rate >= self.config.tiny_batch_min_produce_rate
         {
             let scope_topic = topics.first().cloned().unwrap_or_else(|| "—".into());
             self.upsert(
@@ -224,9 +216,9 @@ impl AntiPatternsFold {
                 rate,
             )
         };
-        if samples >= COMPRESSION_OFF_MIN_SAMPLES
+        if samples >= self.config.compression_off_min_samples
             && uncompressed * 2 >= samples
-            && rate >= COMPRESSION_OFF_MIN_RATE
+            && rate >= self.config.compression_off_min_rate
         {
             self.upsert(
                 AntiPatternKind::CompressionOff,
@@ -239,7 +231,7 @@ impl AntiPatternsFold {
                 frame,
             );
         }
-        if samples >= NON_IDEMPOTENT_MIN_SAMPLES && non_idempotent * 2 >= samples {
+        if samples >= self.config.non_idempotent_min_samples && non_idempotent * 2 >= samples {
             self.upsert(
                 AntiPatternKind::NonIdempotentProducer,
                 format!("conn={}", frame.connection_id),
@@ -263,12 +255,12 @@ impl AntiPatternsFold {
         let Some(c) = self.per_connection.get(&frame.connection_id) else {
             return;
         };
-        if c.init_producer_id < PRODUCER_PER_RECORD_MIN_INITS {
+        if c.init_producer_id < self.config.producer_per_record_min_inits {
             return;
         }
         let total = c.init_producer_id.saturating_add(c.produce_requests).max(1);
         let ratio = f64::from(c.init_producer_id) / f64::from(total);
-        if ratio < PRODUCER_PER_RECORD_INIT_RATIO {
+        if ratio < self.config.producer_per_record_init_ratio {
             return;
         }
         let detail = format!(
@@ -317,8 +309,8 @@ impl AntiPatternsFold {
                 let rate = w.instants.len() as f64 / span;
                 (w.instants.len(), rate)
             };
-            if samples >= PRODUCER_INSTANCE_LEAK_MIN_SAMPLES
-                && rate >= PRODUCER_INSTANCE_LEAK_PER_SEC
+            if samples >= self.config.producer_instance_leak_min_samples
+                && rate >= self.config.producer_instance_leak_per_sec
             {
                 self.upsert(
                     AntiPatternKind::ProducerInstanceLeak,
@@ -396,7 +388,9 @@ impl AntiPatternsFold {
             w.trim(now);
             (w.len(), w.rate_per_sec())
         };
-        if samples >= OVERCOMMIT_MIN_SAMPLES && rate >= OVERCOMMIT_RATE_PER_SEC {
+        if samples >= self.config.overcommit_min_samples
+            && rate >= self.config.overcommit_rate_per_sec
+        {
             self.upsert(
                 AntiPatternKind::Overcommit,
                 format!("group={group_id}"),
@@ -410,30 +404,35 @@ impl AntiPatternsFold {
                 frame,
             );
         }
-        // Auto-commit cadence detector — inter-arrival close to ~5s ± tolerance.
+        // Auto-commit cadence detector — inter-arrival close to the
+        // configured interval ± tolerance. Hoist config scalars before
+        // the mutable borrow of `intervals`.
+        let autocommit_min = self.config.autocommit_min_samples;
+        let autocommit_interval_ms = self.config.autocommit_interval_ms;
+        let autocommit_tolerance = self.config.autocommit_interval_tolerance;
         let intervals = self
             .autocommit_intervals
             .entry(group_id.to_owned())
             .or_default();
         intervals.push(now);
-        if intervals.len() > AUTOCOMMIT_MIN_SAMPLES * 2 {
+        if intervals.len() > autocommit_min * 2 {
             intervals.remove(0);
         }
-        if intervals.len() >= AUTOCOMMIT_MIN_SAMPLES {
+        if intervals.len() >= autocommit_min {
             let mut diffs_ms: Vec<f64> = intervals
                 .windows(2)
                 .map(|w| (w[1].duration_since(w[0])).as_secs_f64() * 1000.0)
                 .collect();
             diffs_ms.retain(|d| *d > 0.0);
-            if diffs_ms.len() >= AUTOCOMMIT_MIN_SAMPLES - 1 {
+            if diffs_ms.len() >= autocommit_min - 1 {
                 let mean: f64 = diffs_ms.iter().copied().sum::<f64>() / diffs_ms.len() as f64;
                 let max_dev = diffs_ms
                     .iter()
                     .map(|d| (d - mean).abs() / mean.max(1.0))
                     .fold(0.0_f64, f64::max);
-                let near_5s = (mean - AUTOCOMMIT_INTERVAL_MS).abs() / AUTOCOMMIT_INTERVAL_MS
-                    <= AUTOCOMMIT_INTERVAL_TOLERANCE;
-                if near_5s && max_dev <= AUTOCOMMIT_INTERVAL_TOLERANCE {
+                let near_target = (mean - autocommit_interval_ms).abs() / autocommit_interval_ms
+                    <= autocommit_tolerance;
+                if near_target && max_dev <= autocommit_tolerance {
                     self.upsert(
                         AntiPatternKind::AutoCommitCadence,
                         format!("group={group_id}"),
@@ -471,7 +470,7 @@ impl AntiPatternsFold {
                 .entry(group_id.to_owned())
                 .or_default()
                 .push_and_count(now);
-            if count >= COOPERATIVE_STICKY_CHURN_THRESHOLD {
+            if count >= self.config.cooperative_sticky_churn_threshold {
                 self.upsert(
                     AntiPatternKind::CooperativeStickyChurn,
                     format!("group={group_id}"),
@@ -506,7 +505,7 @@ impl AntiPatternsFold {
             .entry(group_id.to_owned())
             .or_default()
             .push_and_count(now);
-        if u32::try_from(samples).unwrap_or(u32::MAX) >= REBALANCE_JOINS_IN_WINDOW {
+        if u32::try_from(samples).unwrap_or(u32::MAX) >= self.config.rebalance_joins_in_window {
             self.upsert(
                 AntiPatternKind::RebalanceLoop,
                 format!("group={group_id}"),
@@ -521,16 +520,42 @@ impl AntiPatternsFold {
         }
     }
 
-    #[allow(clippy::unused_self)]
-    pub(super) const fn on_fetch_request(
-        &self,
-        _frame: &ProtoFrame,
-        _min_bytes: i32,
-        _session_epoch: i32,
-    ) {
-        // No-op for now. Kept as an explicit dispatch target so we can
-        // add `min_bytes`-based heuristics later without changing the
-        // dispatch table.
+    /// Slow-consumer-poll-stall detector. Tracks per-connection
+    /// `FetchRequest` cadence; once a connection has an established fetch
+    /// stream (`POLL_STALL_MIN_FETCHES`), a gap ≥ `POLL_STALL_GAP` before
+    /// the *next* fetch means the consumer stopped polling — the trivago
+    /// slow-processing shape that breaches `max.poll.interval.ms` and
+    /// triggers an eviction + rebalance. Fires on the resuming fetch so
+    /// the evidence frame is the one that broke the silence.
+    pub(super) fn on_fetch_request(&mut self, frame: &ProtoFrame, now: Instant) {
+        let min_fetches = self.config.poll_stall_min_fetches;
+        let stall_gap = self.config.poll_stall_gap();
+        let (prior_count, gap) = {
+            let state = self.fetch_poll.entry(frame.connection_id).or_default();
+            let gap = state.last.map(|last| now.duration_since(last));
+            let prior = state.count;
+            state.last = Some(now);
+            state.count = state.count.saturating_add(1);
+            (prior, gap)
+        };
+        if prior_count >= min_fetches {
+            if let Some(gap) = gap {
+                if gap >= stall_gap {
+                    self.upsert(
+                        AntiPatternKind::SlowConsumerPollStall,
+                        format!("conn={}", frame.connection_id),
+                        Severity::Warn,
+                        format!("Slow consumer poll stall (conn {})", frame.connection_id),
+                        format!(
+                            "Fetch stream went silent for {:.1}s then resumed on conn {} — the consumer stopped calling poll() between fetches. If the gap exceeds max.poll.interval.ms the broker evicts the member and the group rebalances (lag, duplicate processing). The wire shows the stall; the cause is usually slow / blocking record processing, not the broker.",
+                            gap.as_secs_f64(),
+                            frame.connection_id,
+                        ),
+                        frame,
+                    );
+                }
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -557,7 +582,7 @@ impl AntiPatternsFold {
                         .entry(key)
                         .or_default()
                         .push_and_count(now);
-                    if count >= OFFSET_OUT_OF_RANGE_THRESHOLD {
+                    if count >= self.config.offset_out_of_range_threshold {
                         self.upsert(
                             AntiPatternKind::OffsetOutOfRangeOnFetch,
                             format!("{}:{}", e.topic, e.partition),
@@ -577,7 +602,7 @@ impl AntiPatternsFold {
                         .entry(key)
                         .or_default()
                         .push_and_count(now);
-                    if count >= UNKNOWN_TOPIC_POLL_THRESHOLD {
+                    if count >= self.config.unknown_topic_poll_threshold {
                         self.upsert(
                             AntiPatternKind::UnknownTopicPollLoop,
                             format!("{}:{}", e.topic, e.partition),
@@ -602,7 +627,7 @@ impl AntiPatternsFold {
                 .entry(frame.connection_id)
                 .or_default()
                 .push_and_count(now);
-            if count >= FETCH_SESSION_ERRORS_THRESHOLD {
+            if count >= self.config.fetch_session_errors_threshold {
                 self.upsert(
                     AntiPatternKind::FetchSessionErrorCascade,
                     format!("conn={}", frame.connection_id),
@@ -642,9 +667,9 @@ impl AntiPatternsFold {
             let rate = shape.instants.len() as f64 / span;
             (shape.samples, avg_size, rate)
         };
-        if samples >= TIGHT_FETCH_MIN_SAMPLES
-            && avg_size <= TIGHT_FETCH_AVG_RESPONSE_BYTES
-            && rate >= TIGHT_FETCH_MIN_RATE
+        if samples >= self.config.tight_fetch_min_samples
+            && avg_size <= self.config.tight_fetch_avg_response_bytes
+            && rate >= self.config.tight_fetch_min_rate
         {
             self.upsert(
                 AntiPatternKind::TightFetchPolling,
@@ -732,7 +757,9 @@ impl AntiPatternsFold {
             w.trim(now);
             (w.len(), w.rate_per_sec())
         };
-        if samples >= METADATA_STORM_MIN_SAMPLES && rate >= METADATA_STORM_RATE_PER_SEC {
+        if samples >= self.config.metadata_storm_min_samples
+            && rate >= self.config.metadata_storm_rate_per_sec
+        {
             self.upsert(
                 AntiPatternKind::MetadataStorm,
                 format!("conn={}", frame.connection_id),
@@ -783,7 +810,7 @@ impl AntiPatternsFold {
             );
         } else if count >= 2
             && session_lifetime_ms > 0
-            && session_lifetime_ms < SASL_SHORT_SESSION_MS
+            && session_lifetime_ms < self.config.sasl_short_session_ms
         {
             self.upsert(
                 AntiPatternKind::SaslSessionTooShort,
@@ -846,7 +873,7 @@ impl AntiPatternsFold {
                 .entry(key.clone())
                 .or_default()
                 .push_and_count(now);
-            if count >= COORDINATOR_CHURN_THRESHOLD {
+            if count >= self.config.coordinator_churn_threshold {
                 self.upsert(
                     AntiPatternKind::CoordinatorChurn,
                     format!("key={key}"),
@@ -882,7 +909,7 @@ impl AntiPatternsFold {
             .entry(frame.connection_id)
             .or_default()
             .push_and_count(now);
-        if count >= ACL_DENY_THRESHOLD {
+        if count >= self.config.acl_deny_threshold {
             let name = kerr::name(error_code);
             self.upsert(
                 AntiPatternKind::AclDeny,

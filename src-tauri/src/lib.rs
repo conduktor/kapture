@@ -85,7 +85,9 @@ pub fn run() {
                     .join("io.kapture.app")
             });
             let store = Arc::new(ProfileStore::open(dir.clone())?);
-            app.manage(state::AppState::new(store));
+            let app_state = state::AppState::new(store);
+            app_state.init_detector_config(&dir);
+            app.manage(app_state);
 
             // Spawn the MCP server so AI agents can drive Kapture
             // through the standardised protocol. Bound to localhost
@@ -131,6 +133,8 @@ pub fn run() {
             commands::set_capture_paused,
             commands::capture_paused,
             commands::mcp_info,
+            commands::get_detector_config,
+            commands::set_detector_config,
         ])
         .run(tauri::generate_context!());
 

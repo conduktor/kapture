@@ -23,6 +23,13 @@
 .expert__header {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+.expert__settings-btn {
+  margin-left: auto;
+}
+.expert__empty-actions {
+  margin-top: 16px;
 }
 .expert__tile {
   background: var(--bg-elevated);

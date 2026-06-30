@@ -7,7 +7,7 @@ use tracing::info;
 
 use serde::Deserialize;
 
-use crate::anti_patterns::AntiPatternsSnapshot;
+use crate::anti_patterns::{AntiPatternsSnapshot, DetectorConfig};
 use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
@@ -347,7 +347,7 @@ pub async fn start_proxy_impl(
         ));
     }
 
-    let correlator = Arc::new(ProtoCorrelator::new());
+    let correlator = Arc::new(ProtoCorrelator::with_config(state.detector_config()));
     let mut cfg = crate::proxy::ProxyConfig::new(trimmed_upstream.clone(), listen_port);
     cfg.upstream_tls = tls;
     cfg.upstream_sasl = sasl;
@@ -778,6 +778,23 @@ pub fn set_mcp_connect_allowed(state: State<'_, AppState>, allowed: bool) {
 #[tauri::command]
 pub fn mcp_connect_allowed(state: State<'_, AppState>) -> bool {
     state.mcp_connect_allowed()
+}
+
+/// Current detector thresholds (defaults until the user changes them).
+#[tauri::command]
+pub fn get_detector_config(state: State<'_, AppState>) -> DetectorConfig {
+    state.detector_config()
+}
+
+/// Replace the detector thresholds and persist them. Applies to the
+/// next capture session; the running correlator is not rebuilt.
+#[tauri::command]
+pub fn set_detector_config(state: State<'_, AppState>, config: DetectorConfig) -> Result<()> {
+    state
+        .set_detector_config(config)
+        .map_err(|err| KaptureError::Config(format!("persist detector config: {err}")))?;
+    info!("detector config updated");
+    Ok(())
 }
 
 /// Toggle the user-driven UI pause. On `true`, snapshot both ring

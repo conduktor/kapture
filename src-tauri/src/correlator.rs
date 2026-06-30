@@ -25,7 +25,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::anti_patterns::{AntiPatternsFold, AntiPatternsSnapshot};
+use crate::anti_patterns::{AntiPatternsFold, AntiPatternsSnapshot, DetectorConfig};
 use crate::proto_decode;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proto_summary::{self, FrameSummary};
@@ -198,6 +198,17 @@ impl ProtoCorrelator {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Build a correlator whose detector fold uses explicit thresholds.
+    /// Everything else (frame ring, session fold, fetch-metadata state)
+    /// is default.
+    #[must_use]
+    pub fn with_config(config: DetectorConfig) -> Self {
+        Self {
+            anti_patterns: Mutex::new(AntiPatternsFold::new(config)),
+            ..Self::default()
+        }
     }
 
     /// Record a protocol event. Called synchronously from the

@@ -1,6 +1,7 @@
-import { type JSX } from "react";
+import { useState, type JSX } from "react";
 
 import { kindLabel, type AntiPatternsSnapshot, type Detection } from "../lib/antiPatterns";
+import { DetectorSettingsModal } from "./DetectorSettingsModal";
 
 interface Props {
   /**
@@ -19,40 +20,71 @@ interface Props {
 }
 
 export function ExpertTab({ snapshot, onJumpToFrame }: Props): JSX.Element {
+  // The detector-thresholds modal is owned here (it's contextual to the
+  // Expert tab) rather than lifted into App.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const detections = snapshot.detections;
-  if (detections.length === 0) {
-    return (
+  const warnCount = detections.filter((d) => d.severity === "warn").length;
+
+  const openSettings = (): void => {
+    setSettingsOpen(true);
+  };
+
+  const body =
+    detections.length === 0 ? (
       <div className="expert expert--empty">
         <div className="expert__empty">
-          No anti-patterns detected yet. The detector watches the wire for 25 client + cluster
+          No anti-patterns detected yet. The detector watches the wire for 26 client + cluster
           patterns — overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader
           producing, mixed api_version, SASL drift, acks=0, compression-off, non-idempotent
           producer, producer-instance leak, transactional zombie, auto-commit cadence, tight fetch
           polling, fetch-session error cascade, throttle pressure, metadata storm, KIP-848 holdouts,
           message-too-large, offset-out-of-range, cooperative-sticky churn, commit-during-rebalance,
-          ACL deny, unknown-topic poll loop, and coordinator churn. Run some traffic through the
-          proxy and findings will surface here.
+          ACL deny, unknown-topic poll loop, coordinator churn, and slow consumer poll stall. Run
+          some traffic through the proxy and findings will surface here.
+          <div className="expert__empty-actions">
+            <button type="button" className="btn btn--ghost" onClick={openSettings}>
+              Tune thresholds
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : (
+      <div className="expert">
+        <section className="expert__header" aria-label="Expert summary">
+          <SummaryTile
+            label="Active findings"
+            value={String(detections.length)}
+            tone={warnCount > 0 ? "warn" : "ok"}
+            hint={warnCount > 0 ? `${String(warnCount)} warn` : "all clear"}
+          />
+          <button
+            type="button"
+            className="btn btn--ghost expert__settings-btn"
+            onClick={openSettings}
+          >
+            Tune thresholds
+          </button>
+        </section>
+        <div className="expert__list" role="list">
+          {detections.map((d) => (
+            <DetectionRow key={`${d.kind}|${d.scope}`} det={d} onJumpToFrame={onJumpToFrame} />
+          ))}
         </div>
       </div>
     );
-  }
-  const warnCount = detections.filter((d) => d.severity === "warn").length;
+
   return (
-    <div className="expert">
-      <section className="expert__header" aria-label="Expert summary">
-        <SummaryTile
-          label="Active findings"
-          value={String(detections.length)}
-          tone={warnCount > 0 ? "warn" : "ok"}
-          hint={warnCount > 0 ? `${String(warnCount)} warn` : "all clear"}
+    <>
+      {body}
+      {settingsOpen ? (
+        <DetectorSettingsModal
+          onClose={() => {
+            setSettingsOpen(false);
+          }}
         />
-      </section>
-      <div className="expert__list" role="list">
-        {detections.map((d) => (
-          <DetectionRow key={`${d.kind}|${d.scope}`} det={d} onJumpToFrame={onJumpToFrame} />
-        ))}
-      </div>
-    </div>
+      ) : null}
+    </>
   );
 }
 

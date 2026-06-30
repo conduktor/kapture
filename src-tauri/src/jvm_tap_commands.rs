@@ -62,7 +62,7 @@ pub async fn start_jvm_tap(
         .and_then(|a| a.socket_path)
         .unwrap_or_else(|| DEFAULT_JVM_TAP_SOCKET.to_owned());
     let config = JvmTapConfig::new(socket_path);
-    let correlator = Arc::new(ProtoCorrelator::new());
+    let correlator = Arc::new(ProtoCorrelator::with_config(state.detector_config()));
 
     let handle = match JvmTapHandle::start(config, Arc::clone(&correlator)).await {
         Ok(h) => h,

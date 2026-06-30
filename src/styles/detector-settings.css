@@ -1,0 +1,56 @@
+/* ---------- DetectorSettingsModal ---------- */
+/* Same envelope as the MCP modal; class-B threshold fields in a single
+   readable column with inline help. */
+.modal--detector {
+  width: min(560px, 92vw);
+  max-height: 85vh;
+  overflow: auto;
+}
+
+.detector__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 4px;
+}
+
+.detector__field {
+  gap: 4px;
+}
+
+.detector__mirrors {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: var(--radius);
+}
+
+.detector__input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detector__input {
+  width: 160px;
+}
+
+.detector__unit {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.detector__help {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.detector__note {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}

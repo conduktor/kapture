@@ -3,8 +3,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use std::path::{Path, PathBuf};
+
 use parking_lot::{Mutex, RwLock};
 
+use crate::anti_patterns::DetectorConfig;
 use crate::correlator::{ProtoCorrelator, ProtoFrame};
 use crate::filter::CompiledFilter;
 use crate::jvm_tap::JvmTapHandle;
@@ -48,6 +51,13 @@ pub struct AppState {
     /// `stop_proxy` so a subsequent start with a different URL gets a
     /// fresh client (LRU cache is per-instance).
     schema_registry: Mutex<Option<Arc<SchemaRegistryClient>>>,
+    /// User-tunable detector thresholds applied to every new capture
+    /// session's correlator. Mutated via the settings UI; persisted to
+    /// `detector_config_path`.
+    detector_config: RwLock<DetectorConfig>,
+    /// Where `detector_config` is persisted (`<config_dir>/detector_config.json`).
+    /// `None` until `init_detector_config` runs (e.g. some test harnesses).
+    detector_config_path: Mutex<Option<PathBuf>>,
     inner: Mutex<Inner>,
 }
 
@@ -76,7 +86,37 @@ impl AppState {
             pinned_messages: Mutex::new(None),
             pinned_proto_frames: Mutex::new(None),
             schema_registry: Mutex::new(None),
+            detector_config: RwLock::new(DetectorConfig::default()),
+            detector_config_path: Mutex::new(None),
             inner: Mutex::new(Inner::default()),
+        }
+    }
+
+    /// Point the state at `<config_dir>/detector_config.json` and load
+    /// it (falling back to defaults if absent/corrupt). Call once during
+    /// app setup, before `manage`.
+    pub fn init_detector_config(&self, config_dir: &Path) {
+        let path = config_dir.join("detector_config.json");
+        *self.detector_config.write() = DetectorConfig::load_or_default(&path);
+        *self.detector_config_path.lock() = Some(path);
+    }
+
+    /// Snapshot of the active detector thresholds.
+    #[must_use]
+    pub fn detector_config(&self) -> DetectorConfig {
+        self.detector_config.read().clone()
+    }
+
+    /// Replace the detector thresholds and persist them. The new config
+    /// applies to the *next* capture session (the running correlator is
+    /// not rebuilt mid-flight). Returns the persistence result; the
+    /// in-memory value is updated regardless.
+    pub fn set_detector_config(&self, config: DetectorConfig) -> std::io::Result<()> {
+        *self.detector_config.write() = config.clone();
+        let path = self.detector_config_path.lock().clone();
+        match path {
+            Some(path) => config.save(&path),
+            None => Ok(()),
         }
     }
 
