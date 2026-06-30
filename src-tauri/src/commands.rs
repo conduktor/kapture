@@ -24,6 +24,10 @@ pub struct AppInfo {
     pub name: &'static str,
     pub version: &'static str,
     pub status: &'static str,
+    /// Host OS (`std::env::consts::OS`: "macos", "linux", "windows", …).
+    /// The frontend uses this to hide Unix-only features (JVM tap) on
+    /// Windows.
+    pub os: &'static str,
 }
 
 #[tauri::command]
@@ -32,6 +36,7 @@ pub const fn app_info() -> AppInfo {
         name: env!("CARGO_PKG_NAME"),
         version: env!("CARGO_PKG_VERSION"),
         status: "ok",
+        os: std::env::consts::OS,
     }
 }
 

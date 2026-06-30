@@ -9,25 +9,40 @@
 //!   * `attach_jvm_tap_agent` — dynamic-attach injection via the
 //!     `Attacher` Main-Class shipped in the agent JAR.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
 use serde::Deserialize;
 use tauri::State;
-use tracing::info;
 
-use crate::commands::pin_capture_snapshot;
-use crate::correlator::ProtoCorrelator;
 use crate::error::{KaptureError, Result};
 use crate::jvm_processes::{self, AttachResult, JvmProcess};
-use crate::jvm_tap::{JvmTapConfig, JvmTapHandle};
 use crate::state::AppState;
+
+// Tap lifecycle (start/stop/attach) is Unix-only — the transport is a
+// Unix domain socket. These imports back the real implementations; on
+// Windows the commands are stubbed below.
+#[cfg(unix)]
+use crate::commands::pin_capture_snapshot;
+#[cfg(unix)]
+use crate::correlator::ProtoCorrelator;
+#[cfg(unix)]
+use crate::jvm_tap::{JvmTapConfig, JvmTapHandle};
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::sync::Arc;
+#[cfg(unix)]
+use tracing::info;
+
+/// Message returned by the tap commands on platforms without Unix
+/// domain sockets (Windows).
+#[cfg(not(unix))]
+const JVM_TAP_UNSUPPORTED: &str = "JVM tap mode is only available on macOS and Linux";
 
 /// Default Unix-domain-socket path the tap listener binds to. The
 /// matching default in the Java agent's `TapPublisher.SOCKET_PATH`
 /// constant means a user can start `kapture start_jvm_tap` and then
 /// `java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar ...`
 /// with no extra wiring.
+#[cfg(unix)]
 const DEFAULT_JVM_TAP_SOCKET: &str = "/tmp/kapture-tap.sock";
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +64,7 @@ pub struct StartJvmTapArgs {
 ///
 /// Returns `AlreadyJvmTapping` if a proxy or tap is already running:
 /// the two modes share the single capture slot.
+#[cfg(unix)]
 #[tauri::command]
 pub async fn start_jvm_tap(
     state: State<'_, AppState>,
@@ -78,9 +94,20 @@ pub async fn start_jvm_tap(
     Ok(path)
 }
 
+/// Windows stub — JVM tap requires Unix domain sockets.
+#[cfg(not(unix))]
+#[tauri::command]
+pub async fn start_jvm_tap(
+    _state: State<'_, AppState>,
+    _args: Option<StartJvmTapArgs>,
+) -> Result<String> {
+    Err(KaptureError::JvmTap(JVM_TAP_UNSUPPORTED.into()))
+}
+
 /// Stop the running JVM tap session, pin the current capture so
 /// detail clicks on still-visible rows keep resolving, and remove
 /// the socket file. Returns `NotJvmTapping` if no session is active.
+#[cfg(unix)]
 #[tauri::command]
 pub async fn stop_jvm_tap(state: State<'_, AppState>) -> Result<()> {
     // Gate on is_jvm_tapping FIRST so we don't pin a snapshot when
@@ -100,6 +127,13 @@ pub async fn stop_jvm_tap(state: State<'_, AppState>) -> Result<()> {
     handle.stop().await;
     info!("jvm-tap stopped");
     Ok(())
+}
+
+/// Windows stub — JVM tap requires Unix domain sockets.
+#[cfg(not(unix))]
+#[tauri::command]
+pub async fn stop_jvm_tap(_state: State<'_, AppState>) -> Result<()> {
+    Err(KaptureError::JvmTap(JVM_TAP_UNSUPPORTED.into()))
 }
 
 /// List local Java processes for the JVM tap picker. Surfaces every
@@ -135,6 +169,7 @@ pub struct AttachJvmTapAgentArgs {
 /// so the UI can show the JDK attach error verbatim on failure
 /// (target uses Conscrypt, attach disabled with
 /// `-XX:+DisableAttachMechanism`, JRE-only install, wrong UID).
+#[cfg(unix)]
 #[tauri::command]
 pub async fn attach_jvm_tap_agent(
     state: State<'_, AppState>,
@@ -164,8 +199,19 @@ pub async fn attach_jvm_tap_agent(
     Ok(result)
 }
 
+/// Windows stub — JVM tap requires Unix domain sockets.
+#[cfg(not(unix))]
+#[tauri::command]
+pub async fn attach_jvm_tap_agent(
+    _state: State<'_, AppState>,
+    _args: AttachJvmTapAgentArgs,
+) -> Result<AttachResult> {
+    Err(KaptureError::JvmTap(JVM_TAP_UNSUPPORTED.into()))
+}
+
 /// Best-effort default for the agent JAR location. Used by the
 /// `attach_jvm_tap_agent` command when no override is provided.
+#[cfg(unix)]
 fn default_agent_jar_path() -> PathBuf {
     // `CARGO_MANIFEST_DIR` resolves to `<repo>/src-tauri` at compile
     // time — its parent is the repo root. For the packaged release
