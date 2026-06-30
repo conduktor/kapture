@@ -11,7 +11,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::anti_patterns::fold::AntiPatternsFold;
-use crate::anti_patterns::{AntiPatternKind, Severity};
+use crate::anti_patterns::{AntiPatternKind, DetectorConfig, Severity};
 use crate::correlator::ProtoFrame;
 use crate::proto_event::ProtoDirection;
 use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
@@ -738,6 +738,127 @@ fn stale_leader_does_not_invent_broker_zero_on_old_produce() {
         !det.detail.contains("current leader is broker 0"),
         "regression: detail unexpectedly invented broker 0: {}",
         det.detail
+    );
+}
+
+#[test]
+fn slow_consumer_poll_stall_fires_after_fetch_gap() {
+    // trivago shape: an established fetch stream goes silent past the
+    // poll-stall threshold, then resumes. Drive `on_fetch_request`
+    // directly with synthetic instants so the gap is deterministic
+    // (real sleeps would make this an 11s test).
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("fr", "t", 7, 9092);
+    let t0 = Instant::now();
+    // Establish an active fetch cadence (3 fetches, sub-second apart).
+    fold.on_fetch_request(&f, t0);
+    fold.on_fetch_request(&f, t0 + Duration::from_millis(500));
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(1));
+    // No stall yet.
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::SlowConsumerPollStall));
+    // Stall then resume: 11s gap > POLL_STALL_GAP (10s) → fires on the
+    // resuming fetch, scoped to the connection.
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(12));
+    let snap = fold.snapshot();
+    let det = snap
+        .detections
+        .iter()
+        .find(|d| d.kind == AntiPatternKind::SlowConsumerPollStall)
+        .expect("SlowConsumerPollStall");
+    assert_eq!(det.scope, "conn=7");
+    assert_eq!(det.severity, Severity::Warn);
+    assert!(det.detail.contains("11.0s"), "detail: {}", det.detail);
+}
+
+#[test]
+fn slow_consumer_poll_stall_ignores_short_gaps_and_startup() {
+    let mut fold = AntiPatternsFold::default();
+    let f = frame("fr", "t", 8, 9092);
+    let t0 = Instant::now();
+    // A long first inter-fetch gap before the cadence is established
+    // (only 1 prior fetch) must NOT fire — that's startup, not a stall.
+    fold.on_fetch_request(&f, t0);
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(30));
+    // Then a healthy 500ms cadence, well under the threshold.
+    fold.on_fetch_request(
+        &f,
+        t0 + Duration::from_secs(30) + Duration::from_millis(500),
+    );
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(31));
+    fold.on_fetch_request(
+        &f,
+        t0 + Duration::from_secs(31) + Duration::from_millis(500),
+    );
+    assert!(
+        fold.snapshot()
+            .detections
+            .iter()
+            .all(|d| d.kind != AntiPatternKind::SlowConsumerPollStall),
+        "no stall should fire for startup gap or healthy cadence",
+    );
+}
+
+#[test]
+fn detector_config_override_changes_poll_stall_threshold() {
+    // Same fetch pattern that fires at the 10s default must NOT fire
+    // when poll_stall_gap is raised to a real max.poll.interval.ms
+    // (300s) — proves the config injection path reaches the detector.
+    let cfg = DetectorConfig {
+        poll_stall_gap_ms: 300_000,
+        ..DetectorConfig::default()
+    };
+    let mut fold = AntiPatternsFold::new(cfg);
+    let f = frame("fr", "t", 9, 9092);
+    let t0 = Instant::now();
+    fold.on_fetch_request(&f, t0);
+    fold.on_fetch_request(&f, t0 + Duration::from_millis(500));
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(1));
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(12)); // 11s gap < 300s
+    assert!(
+        fold.snapshot()
+            .detections
+            .iter()
+            .all(|d| d.kind != AntiPatternKind::SlowConsumerPollStall),
+        "raised poll_stall_gap should suppress an 11s gap",
+    );
+    // A 301s gap clears the raised bar.
+    fold.on_fetch_request(&f, t0 + Duration::from_secs(12) + Duration::from_secs(301));
+    assert!(
+        fold.snapshot()
+            .detections
+            .iter()
+            .any(|d| d.kind == AntiPatternKind::SlowConsumerPollStall),
+        "a gap beyond the configured interval should fire",
+    );
+}
+
+#[test]
+fn detector_config_persists_and_reloads() {
+    use crate::anti_patterns::DetectorConfig;
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("detector_config.json");
+    // Missing file → defaults.
+    assert_eq!(
+        DetectorConfig::load_or_default(&path),
+        DetectorConfig::default()
+    );
+    // Save a tweaked config, reload, expect equality.
+    let cfg = DetectorConfig {
+        poll_stall_gap_ms: 300_000,
+        overcommit_rate_per_sec: 9.0,
+        ..DetectorConfig::default()
+    };
+    cfg.save(&path).unwrap();
+    assert_eq!(DetectorConfig::load_or_default(&path), cfg);
+    // Corrupt file → defaults, no panic.
+    std::fs::write(&path, b"{ not json").unwrap();
+    assert_eq!(
+        DetectorConfig::load_or_default(&path),
+        DetectorConfig::default()
     );
 }
 

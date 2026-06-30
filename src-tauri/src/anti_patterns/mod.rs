@@ -31,6 +31,7 @@
 //! be computed without unbounded growth. Snapshot is a cheap clone of
 //! the current detections; the GUI polls it from the Expert tab.
 
+mod config;
 mod detectors;
 mod fold;
 mod kafka_errors;
@@ -39,6 +40,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
+pub use config::DetectorConfig;
 pub use fold::AntiPatternsFold;
 
 use schemars::JsonSchema;
@@ -127,6 +129,13 @@ pub enum AntiPatternKind {
     /// rolling window — coordinator unstable or client churning
     /// connections.
     CoordinatorChurn,
+    /// An established `Fetch` stream on a connection went silent for a
+    /// long stretch then resumed — the consumer stopped calling `poll()`
+    /// between fetches. If the gap exceeds `max.poll.interval.ms` the
+    /// broker evicts the member and the group rebalances. The trivago
+    /// 2026 "83% fewer pods" shape: slow record processing stalled the
+    /// poll loop, which read on dashboards as a broker/scaling problem.
+    SlowConsumerPollStall,
 }
 
 impl AntiPatternKind {
@@ -158,6 +167,7 @@ impl AntiPatternKind {
             Self::AclDeny => "ACL deny",
             Self::UnknownTopicPollLoop => "Unknown-topic poll loop",
             Self::CoordinatorChurn => "Coordinator churn",
+            Self::SlowConsumerPollStall => "Slow consumer poll stall",
         }
     }
 }

@@ -33,7 +33,8 @@ export type AntiPatternKind =
   | "commitDuringRebalance"
   | "aclDeny"
   | "unknownTopicPollLoop"
-  | "coordinatorChurn";
+  | "coordinatorChurn"
+  | "slowConsumerPollStall";
 
 export type Severity = "warn" | "note";
 
@@ -110,5 +111,7 @@ export function kindLabel(kind: AntiPatternKind): string {
       return "Unknown-topic poll loop";
     case "coordinatorChurn":
       return "Coordinator churn";
+    case "slowConsumerPollStall":
+      return "Slow consumer poll stall";
   }
 }

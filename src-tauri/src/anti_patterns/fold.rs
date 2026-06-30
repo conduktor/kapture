@@ -7,17 +7,22 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use crate::anti_patterns::state::{
-    severity_rank, ConnectionCounters, DetectionKey, DetectionState, FetchShape, HandshakeState,
-    LeakWindow, ProduceCodecStats, ProduceShape, RollingWindow, SaslState, TxnState,
-    CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
+    severity_rank, ConnectionCounters, DetectionKey, DetectionState, FetchPollState, FetchShape,
+    HandshakeState, LeakWindow, ProduceCodecStats, ProduceShape, RollingWindow, SaslState,
+    TxnState, CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
 };
-use crate::anti_patterns::{AntiPatternKind, AntiPatternsSnapshot, Detection, Severity};
+use crate::anti_patterns::{
+    AntiPatternKind, AntiPatternsSnapshot, Detection, DetectorConfig, Severity,
+};
 use crate::correlator::ProtoFrame;
 use crate::proto_summary::FrameSummary;
 
 /// Incremental detector fold. One per `ProtoCorrelator`.
 #[derive(Debug, Default)]
 pub struct AntiPatternsFold {
+    /// User-tunable thresholds. Defaults reproduce the historical
+    /// constants, so a default-built fold behaves as before.
+    pub(super) config: DetectorConfig,
     pub(super) detections: HashMap<DetectionKey, DetectionState>,
     /// Per-group commit timestamps in the rolling window.
     pub(super) commits_per_group: HashMap<String, RollingWindow>,
@@ -44,6 +49,8 @@ pub struct AntiPatternsFold {
     pub(super) autocommit_intervals: HashMap<String, Vec<Instant>>,
     /// Per-connection fetch response shape + rate.
     pub(super) fetch_shape: HashMap<i32, FetchShape>,
+    /// Per-connection `FetchRequest` cadence (slow-poll-stall detector).
+    pub(super) fetch_poll: HashMap<i32, FetchPollState>,
     /// Per-connection fetch-session error window.
     pub(super) fetch_session_errors: HashMap<i32, RollingWindow>,
     /// Per-connection MetadataRequest timestamps.
@@ -77,6 +84,16 @@ pub struct AntiPatternsFold {
 }
 
 impl AntiPatternsFold {
+    /// Build a fold with explicit detector thresholds. Use
+    /// `AntiPatternsFold::default()` for the historical defaults.
+    #[must_use]
+    pub fn new(config: DetectorConfig) -> Self {
+        Self {
+            config,
+            ..Self::default()
+        }
+    }
+
     /// Absorb one frame. Mirrors `SessionFold::absorb`. Side-effect:
     /// may upsert one or more detections.
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
@@ -113,6 +130,7 @@ impl AntiPatternsFold {
             self.txn_state.remove(conn);
             self.sasl_state.remove(conn);
             self.fetch_shape.remove(conn);
+            self.fetch_poll.remove(conn);
             self.fetch_session_errors.remove(conn);
             self.metadata_requests.remove(conn);
             self.acl_deny_window.remove(conn);
@@ -217,12 +235,8 @@ impl AntiPatternsFold {
             FrameSummary::LeaveGroupResponse { error_code, .. } => {
                 self.on_auth_error_response(frame, "LeaveGroup", *error_code, now);
             }
-            FrameSummary::FetchRequest {
-                min_bytes,
-                session_epoch,
-                ..
-            } => {
-                self.on_fetch_request(frame, *min_bytes, *session_epoch);
+            FrameSummary::FetchRequest { .. } => {
+                self.on_fetch_request(frame, now);
             }
             FrameSummary::FetchResponse {
                 error_code,
@@ -346,6 +360,7 @@ impl AntiPatternsFold {
         self.txn_state.clear();
         self.autocommit_intervals.clear();
         self.fetch_shape.clear();
+        self.fetch_poll.clear();
         self.fetch_session_errors.clear();
         self.metadata_requests.clear();
         self.kip848_ports.clear();
