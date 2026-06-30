@@ -10,6 +10,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::anti_patterns::DetectorConfig;
 use crate::correlator::{ProtoCorrelator, ProtoFrame};
 use crate::filter::CompiledFilter;
+#[cfg(unix)]
 use crate::jvm_tap::JvmTapHandle;
 use crate::message::CapturedMessage;
 use crate::profiles::ProfileStore;
@@ -67,10 +68,25 @@ struct Inner {
     /// Mutually exclusive with `proxy`: at most one capture source
     /// feeds `correlator` at a time. The JVM tap path installs this
     /// in place of `proxy`; the proxy path installs `proxy` in place
-    /// of this.
+    /// of this. Unix-only — the tap transport is a Unix domain socket.
+    #[cfg(unix)]
     jvm_tap: Option<JvmTapHandle>,
     correlator: Option<Arc<ProtoCorrelator>>,
     started_at: Option<Instant>,
+}
+
+impl Inner {
+    /// Whether a JVM tap session is active. Always `false` on non-Unix
+    /// where the tap feature is compiled out.
+    #[cfg(unix)]
+    const fn tap_active(&self) -> bool {
+        self.jvm_tap.is_some()
+    }
+    #[cfg(not(unix))]
+    #[allow(clippy::unused_self)]
+    const fn tap_active(&self) -> bool {
+        false
+    }
 }
 
 impl AppState {
@@ -149,6 +165,7 @@ impl AppState {
     /// have verified via `try_claim_proxy_slot` that the capture slot
     /// is free — the tap is mutually exclusive with a running proxy
     /// because both share the single `correlator` field.
+    #[cfg(unix)]
     pub fn install_jvm_tap(&self, handle: JvmTapHandle, correlator: Arc<ProtoCorrelator>) {
         {
             let mut guard = self.inner.lock();
@@ -161,6 +178,7 @@ impl AppState {
 
     /// Take ownership of the running JVM tap, if any, and clear the
     /// associated correlator + start time. Mirrors `take_proxy()`.
+    #[cfg(unix)]
     pub fn take_jvm_tap(&self) -> Option<JvmTapHandle> {
         let taken = {
             let mut guard = self.inner.lock();
@@ -182,13 +200,14 @@ impl AppState {
     /// vice versa).
     #[allow(dead_code)] // exposed for future GUI/MCP consumers
     pub fn is_jvm_tapping(&self) -> bool {
-        self.inner.lock().jvm_tap.is_some()
+        self.inner.lock().tap_active()
     }
 
     /// Read the path the active JVM tap listener is bound to.
     /// `None` when no tap is running. Used by `attach_jvm_tap_agent`
     /// to feed the right socket path into the target JVM via
     /// `vm.loadAgent(jar, "kapture.tap.socket=...")`.
+    #[cfg(unix)]
     pub fn jvm_tap_socket_path(&self) -> Option<std::path::PathBuf> {
         self.inner
             .lock()
@@ -209,7 +228,7 @@ impl AppState {
 
     pub fn is_capturing(&self) -> bool {
         let inner = self.inner.lock();
-        let has_capture = inner.proxy.is_some() || inner.jvm_tap.is_some();
+        let has_capture = inner.proxy.is_some() || inner.tap_active();
         drop(inner);
         has_capture || self.proxy_pending.load(Ordering::Acquire)
     }
@@ -225,7 +244,7 @@ impl AppState {
     /// shared slot is the invariant the name describes.
     pub fn try_claim_proxy_slot(&self) -> bool {
         let inner = self.inner.lock();
-        let already_running = inner.proxy.is_some() || inner.jvm_tap.is_some();
+        let already_running = inner.proxy.is_some() || inner.tap_active();
         drop(inner);
         if already_running {
             return false;

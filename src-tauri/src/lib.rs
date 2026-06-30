@@ -6,6 +6,10 @@ mod decode;
 mod error;
 mod filter;
 mod jvm_processes;
+// JVM tap mode transports plaintext bytes over a Unix domain socket, so
+// the listener only compiles on Unix. On Windows the tap commands are
+// stubbed (see `jvm_tap_commands`) and the feature is hidden in the UI.
+#[cfg(unix)]
 mod jvm_tap;
 mod jvm_tap_commands;
 mod mcp;
@@ -39,6 +43,7 @@ mod state;
 pub mod example_api {
     pub use crate::anti_patterns::{AntiPatternKind, AntiPatternsSnapshot, Detection, Severity};
     pub use crate::correlator::{ProtoCorrelator, ProtoFrameSummary};
+    #[cfg(unix)]
     pub use crate::jvm_tap::{JvmTapConfig, JvmTapHandle};
     pub use crate::message::CapturedMessage;
     pub use crate::proto_event::ProtoDirection;

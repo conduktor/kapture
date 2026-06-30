@@ -1,5 +1,7 @@
 import type { JSX } from "react";
 
+import { useIsWindows } from "../lib/platform";
+
 interface Props {
   /** User picked tap mode → parent closes this dialog and opens the
    * JVM picker (`TapDialog`). */
@@ -28,6 +30,8 @@ interface Props {
  * lay out the tradeoff in a single sentence each.
  */
 export function ModePickerDialog({ onPickTap, onPickProxy, onCancel }: Props): JSX.Element {
+  // JVM tap mode is Unix-only; on Windows only proxy mode is offered.
+  const isWindows = useIsWindows();
   return (
     <div className="dialog-backdrop" onClick={onCancel} role="presentation">
       <div
@@ -53,16 +57,18 @@ export function ModePickerDialog({ onPickTap, onPickProxy, onCancel }: Props): J
         </p>
 
         <div className="mode-picker__cards">
-          <button type="button" className="mode-card" onClick={onPickTap}>
-            <div className="mode-card__icon" aria-hidden="true">
-              ⌖
-            </div>
-            <div className="mode-card__title">Connect to my existing Java apps</div>
-            <div className="mode-card__desc">
-              Inject the Kapture agent into a running Java Kafka client. No proxy, no cert swap. TLS
-              stays end-to-end with the real broker.
-            </div>
-          </button>
+          {!isWindows ? (
+            <button type="button" className="mode-card" onClick={onPickTap}>
+              <div className="mode-card__icon" aria-hidden="true">
+                ⌖
+              </div>
+              <div className="mode-card__title">Connect to my existing Java apps</div>
+              <div className="mode-card__desc">
+                Inject the Kapture agent into a running Java Kafka client. No proxy, no cert swap.
+                TLS stays end-to-end with the real broker.
+              </div>
+            </button>
+          ) : null}
 
           <button type="button" className="mode-card" onClick={onPickProxy}>
             <div className="mode-card__icon" aria-hidden="true">

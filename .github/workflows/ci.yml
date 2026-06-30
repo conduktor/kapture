@@ -86,6 +86,31 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
 
+  windows-check:
+    name: Windows (cargo check)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    # Linux/macOS build the app in release.yml; Windows only got built at
+    # tag time, so a Windows-only compile break (e.g. Unix-domain-socket
+    # code) slipped to release. This cheap `cargo check` catches that on
+    # every push/PR. JVM tap mode is cfg(unix); on Windows the tap
+    # commands are stubbed, so the lib + bins must still compile.
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@1.95.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: cargo check (lib + bins)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --all-features
+
   anti-patterns-integration:
     name: Anti-patterns integration (7/7 real brokers)
     runs-on: ubuntu-latest
