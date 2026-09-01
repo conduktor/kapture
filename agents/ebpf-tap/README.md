@@ -9,7 +9,8 @@ decoding remain in Kapture's bounded userspace analyzer.
 The implementation covers `SSL_read`, `SSL_write`, `SSL_read_ex`, and
 `SSL_write_ex`. It also collects PID-scoped connect failures, best-effort TCP
 retransmits, and scheduler off-CPU time. BPF program run counts and runtime are
-printed when the loader exits (when supported by the kernel).
+enabled with `BPF_ENABLE_STATS` and printed when the loader exits (when
+supported by the kernel and privilege policy).
 
 ## Build on Linux
 

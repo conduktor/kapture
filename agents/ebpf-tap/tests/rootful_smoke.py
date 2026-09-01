@@ -280,10 +280,20 @@ def exercise(loader_path: Path) -> None:
             _, ring_drops, read_faults, oversize_calls = map(int, loss_match.groups())
             if ring_drops != 0 or read_faults != 0 or oversize_calls != 1:
                 raise RuntimeError(f"unexpected tap loss counters: {loss_match.group(0)}")
+            runtime_stats = re.findall(
+                r"program=ssl_(?:read|write)(?:_ex)?_(?:enter|exit) "
+                r"runs=(\d+) runtime_ns=(\d+)",
+                loader_stderr,
+            )
+            if not runtime_stats or sum(int(runs) for runs, _ in runtime_stats) == 0:
+                raise RuntimeError(f"OpenSSL BPF run counters stayed at zero: {loader_stderr}")
+            if sum(int(runtime) for _, runtime in runtime_stats) == 0:
+                raise RuntimeError(f"OpenSSL BPF runtime stayed at zero: {loader_stderr}")
             print(
                 "rootful smoke passed: "
                 f"{loss_match.group(1)} events, {sum(lengths[READ])} read bytes, "
-                f"{sum(lengths[WRITE])} write bytes, oversize fail-closed"
+                f"{sum(lengths[WRITE])} write bytes, oversize fail-closed, "
+                f"{sum(int(runtime) for _, runtime in runtime_stats)} BPF runtime ns"
             )
         finally:
             listener.close()

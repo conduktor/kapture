@@ -395,10 +395,18 @@ int main(int argc, char **argv)
         kapture_tls_bpf__destroy(skeleton);
         return EXIT_FAILURE;
     }
+    int stats_fd = bpf_enable_stats(BPF_STATS_RUN_TIME);
+    if (stats_fd < 0) {
+        fprintf(stderr,
+                "kapture-ebpf-tap: BPF runtime statistics unavailable: %s\n",
+                strerror(-stats_fd));
+    }
     uint32_t zero = 0;
     uint32_t target = (uint32_t)options.pid;
     if (bpf_map_update_elem(bpf_map__fd(skeleton->maps.target_tgid), &zero, &target, BPF_ANY) != 0) {
         fprintf(stderr, "kapture-ebpf-tap: cannot configure target PID: %s\n", strerror(errno));
+        if (stats_fd >= 0)
+            close(stats_fd);
         kapture_tls_bpf__destroy(skeleton);
         return EXIT_FAILURE;
     }
@@ -472,5 +480,7 @@ cleanup:
     for (size_t index = 0; index < link_count; ++index)
         bpf_link__destroy(links[index]);
     kapture_tls_bpf__destroy(skeleton);
+    if (stats_fd >= 0)
+        close(stats_fd);
     return error == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
