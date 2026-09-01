@@ -1,6 +1,6 @@
 import type { JSX } from "react";
 
-import { useIsWindows } from "../lib/platform";
+import { useIsLinux, useIsWindows } from "../lib/platform";
 
 interface Props {
   /** User picked tap mode → parent closes this dialog and opens the
@@ -9,6 +9,8 @@ interface Props {
   /** User picked proxy mode → parent closes this dialog and opens
    * the proxy config (`ConnectionDialog`). */
   onPickProxy: () => void;
+  /** Linux-only OpenSSL/eBPF tap. */
+  onPickEbpf: () => void;
   /** Close without picking; the user lands on the empty inspector
    * and can use the TopBar buttons later. */
   onCancel: () => void;
@@ -29,9 +31,15 @@ interface Props {
  * (JVM-only? remote client? chaos testing?). The card descriptions
  * lay out the tradeoff in a single sentence each.
  */
-export function ModePickerDialog({ onPickTap, onPickProxy, onCancel }: Props): JSX.Element {
+export function ModePickerDialog({
+  onPickTap,
+  onPickProxy,
+  onPickEbpf,
+  onCancel,
+}: Props): JSX.Element {
   // JVM tap mode is Unix-only; on Windows only proxy mode is offered.
   const isWindows = useIsWindows();
+  const isLinux = useIsLinux();
   return (
     <div className="dialog-backdrop" onClick={onCancel} role="presentation">
       <div
@@ -66,6 +74,19 @@ export function ModePickerDialog({ onPickTap, onPickProxy, onCancel }: Props): J
               <div className="mode-card__desc">
                 Inject the Kapture agent into a running Java Kafka client. No proxy, no cert swap.
                 TLS stays end-to-end with the real broker.
+              </div>
+            </button>
+          ) : null}
+
+          {isLinux ? (
+            <button type="button" className="mode-card" onClick={onPickEbpf}>
+              <div className="mode-card__icon" aria-hidden="true">
+                ⎈
+              </div>
+              <div className="mode-card__title">Tap a Linux OpenSSL process</div>
+              <div className="mode-card__desc">
+                Attach PID-scoped eBPF uprobes at the TLS boundary. No application injection; kernel
+                and symbol support are checked before capture.
               </div>
             </button>
           ) : null}

@@ -21,6 +21,8 @@ const rate = Number(arg("--rate", "1000"));
 const durationSeconds = Number(arg("--duration", "30"));
 const payloadBytes = Number(arg("--payload-bytes", "1024"));
 const maxInFlight = Number(arg("--max-in-flight", "10000"));
+const injectStallAtSeconds = Number(arg("--inject-stall-at", "-1"));
+const injectStallMs = Number(arg("--inject-stall-ms", "0"));
 
 if (
   !Number.isFinite(rate) ||
@@ -30,7 +32,10 @@ if (
   !Number.isSafeInteger(payloadBytes) ||
   payloadBytes < 0 ||
   !Number.isSafeInteger(maxInFlight) ||
-  maxInFlight <= 0
+  maxInFlight <= 0 ||
+  !Number.isFinite(injectStallAtSeconds) ||
+  !Number.isFinite(injectStallMs) ||
+  injectStallMs < 0
 ) {
   throw new Error("rate/duration must be positive; payload-bytes/max-in-flight valid integers");
 }
@@ -45,7 +50,10 @@ class LogHistogram {
 
   record(milliseconds) {
     const micros = Math.max(1, milliseconds * 1000);
-    const index = Math.min(this.buckets.length - 1, Math.max(0, Math.floor(Math.log2(micros) * 16)));
+    const index = Math.min(
+      this.buckets.length - 1,
+      Math.max(0, Math.floor(Math.log2(micros) * 16)),
+    );
     this.buckets[index] += 1n;
     this.count += 1;
     this.min = Math.min(this.min, milliseconds);
@@ -97,6 +105,7 @@ let failed = 0;
 let overloadDrops = 0;
 let maxObservedInFlight = 0;
 let maxRss = process.memoryUsage().rss;
+let stallInjected = false;
 
 await producer.connect();
 const cpuStart = process.cpuUsage();
@@ -140,6 +149,18 @@ const launch = (sequence, intendedAt) => {
 let sequence = 0;
 while (sequence < target) {
   const now = performance.now();
+  if (
+    !stallInjected &&
+    injectStallAtSeconds >= 0 &&
+    injectStallMs > 0 &&
+    now - startedAt >= injectStallAtSeconds * 1000
+  ) {
+    stallInjected = true;
+    // Deliberately stop the scheduler thread. The catch-up loop below
+    // still offers every intended arrival afterwards, so the pause
+    // appears in scheduling/response tails rather than as a lower rate.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, injectStallMs);
+  }
   const intendedAt = startedAt + sequence * intervalMs;
   if (now < intendedAt) {
     await sleep(Math.min(10, intendedAt - now));
@@ -162,7 +183,16 @@ const cpu = process.cpuUsage(cpuStart);
 console.log(
   JSON.stringify(
     {
-      config: { broker, topic, rate, durationSeconds, payloadBytes, maxInFlight },
+      config: {
+        broker,
+        topic,
+        rate,
+        durationSeconds,
+        payloadBytes,
+        maxInFlight,
+        injectStallAtSeconds,
+        injectStallMs,
+      },
       offered: target,
       acknowledged,
       failed,

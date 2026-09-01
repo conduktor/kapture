@@ -16,6 +16,14 @@ node tools/perf/open-loop-producer.mjs --broker localhost:<kapture-port> --rate 
 ```
 
 The first command is the direct baseline; the second targets Kapture's proxy.
+Verify the harness itself with a deliberate 500 ms scheduler stall: `offered`
+must remain `rate × duration` and p99/p999 scheduling/response latency must show
+the pause instead of hiding it as reduced throughput.
+
+```sh
+node tools/perf/open-loop-producer.mjs --rate 1000 --duration 10 --inject-stall-at 3 --inject-stall-ms 500
+```
+
 For JVM tap overhead, run the same Java producer workload once without the
 agent, once with the agent while Kapture is stopped, and once connected:
 
@@ -23,6 +31,10 @@ agent, once with the agent while Kapture is stopped, and once connected:
 java -jar producer-benchmark.jar
 java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar -jar producer-benchmark.jar
 ```
+
+On Linux, repeat the direct workload with the PID-scoped OpenSSL agent from
+`agents/ebpf-tap`. Capture its per-program run/runtime counters at exit in
+addition to the normal latency, CPU, RSS and loss metrics.
 
 Keep offered rate, duration, payload, acknowledgements, compression and JVM
 fixed. Report the harness JSON plus Kapture CPU/RSS and capture-health counters.

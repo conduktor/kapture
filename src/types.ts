@@ -71,7 +71,7 @@ export interface ProtoFrame {
   captured: number;
   /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
   rttMs: number;
-  /** Delay inside an external tap before Kapture received the frame. */
+  /** Observation-to-Rust delay for an external tap. */
   captureLagMs: number;
   /** Capture-to-bounded-analyzer delay, including external tap queueing. */
   analysisLagMs: number;
@@ -374,6 +374,16 @@ export interface CaptureStats {
   throughputPerSec: number;
   /** Drops/sec over the last stats tick. Sustained > 0 = hemorrhage. */
   dropsPerSec: number;
+}
+
+export interface EbpfTarget {
+  pid: number;
+  command: string;
+  libraryPath: string;
+}
+
+export interface EbpfTapStatus extends EbpfTarget {
+  socketPath: string;
 }
 
 export type SaslMechanism = "PLAIN" | "SCRAM-SHA-256" | "SCRAM-SHA-512";

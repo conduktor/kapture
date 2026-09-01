@@ -2362,6 +2362,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "rmcp",
+ "rustix",
  "rustls",
  "rustls-pemfile",
  "schemars 1.2.1",

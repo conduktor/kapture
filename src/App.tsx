@@ -12,6 +12,7 @@ import { McpModal } from "./components/McpModal";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { ModePickerDialog } from "./components/ModePickerDialog";
 import { TapDialog } from "./components/TapDialog";
+import { EbpfTapDialog } from "./components/EbpfTapDialog";
 import { buildProxyHandlers, buildTapHandlers } from "./lib/captureLifecycle";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { FilterMenu, type FilterTarget } from "./components/FilterMenu";
@@ -128,6 +129,7 @@ function App(): JSX.Element {
   const [snippetsOpen, setSnippetsOpen] = useState(false);
   const [mcpOpen, setMcpOpen] = useState(false);
   const [tapDialogOpen, setTapDialogOpen] = useState(false);
+  const [ebpfDialogOpen, setEbpfDialogOpen] = useState(false);
   // Mode picker is the first-contact surface on launch: two big
   // buttons ("Connect to my existing Java apps" / "Proxy a Kafka
   // cluster") so the user picks tap or proxy explicitly without
@@ -781,6 +783,9 @@ function App(): JSX.Element {
         onOpenTap={() => {
           setTapDialogOpen(true);
         }}
+        onOpenEbpf={() => {
+          setEbpfDialogOpen(true);
+        }}
         onClear={handleClear}
         proxyStatus={connection.proxyStatus}
         tapStatus={connection.tapStatus}
@@ -1014,6 +1019,20 @@ function App(): JSX.Element {
           pending={connection.status === "connecting"}
         />
       ) : null}
+      {ebpfDialogOpen ? (
+        <EbpfTapDialog
+          onTapStarting={handleTapStarting}
+          onTapStarted={(info) => {
+            setEbpfDialogOpen(false);
+            handleTapStarted(info);
+          }}
+          onTapError={handleTapError}
+          onCancel={() => {
+            setEbpfDialogOpen(false);
+          }}
+          pending={connection.status === "connecting"}
+        />
+      ) : null}
       {modePickerOpen && connection.status !== "connected" ? (
         <ModePickerDialog
           onPickTap={() => {
@@ -1023,6 +1042,10 @@ function App(): JSX.Element {
           onPickProxy={() => {
             setModePickerOpen(false);
             setEditing(true);
+          }}
+          onPickEbpf={() => {
+            setModePickerOpen(false);
+            setEbpfDialogOpen(true);
           }}
           onCancel={() => {
             setModePickerOpen(false);

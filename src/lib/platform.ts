@@ -34,3 +34,14 @@ export function useIsWindows(): boolean {
   }, []);
   return isWindows;
 }
+
+/** `true` only on Linux, where the optional libbpf tap can run. */
+export function useIsLinux(): boolean {
+  const [isLinux, setIsLinux] = useState(false);
+  useEffect(() => {
+    void getOs().then((os) => {
+      setIsLinux(os === "linux");
+    });
+  }, []);
+  return isLinux;
+}

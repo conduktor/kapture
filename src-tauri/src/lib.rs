@@ -3,6 +3,7 @@ mod avro;
 mod commands;
 mod correlator;
 mod decode;
+mod ebpf_tap_commands;
 mod error;
 mod filter;
 mod jvm_processes;
@@ -119,6 +120,8 @@ pub fn run() {
             jvm_tap_commands::stop_jvm_tap,
             jvm_tap_commands::list_local_jvms,
             jvm_tap_commands::attach_jvm_tap_agent,
+            ebpf_tap_commands::list_ebpf_targets,
+            ebpf_tap_commands::start_ebpf_tap,
             commands::snapshot,
             commands::inspect_message_by_id,
             commands::proto_frames,

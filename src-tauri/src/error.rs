@@ -26,6 +26,9 @@ pub enum KaptureError {
     #[error("jvm-tap: {0}")]
     JvmTap(String),
 
+    #[error("ebpf-tap: {0}")]
+    EbpfTap(String),
+
     #[error("filter: {0}")]
     Filter(#[from] FilterError),
 

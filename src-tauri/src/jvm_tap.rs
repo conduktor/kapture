@@ -47,6 +47,7 @@ const MAX_REASSEMBLY_BUFFER: usize = 8 * 1024 * 1024;
 /// Header on every UDS frame from the agent. See module-level docs.
 const FRAME_HEADER_LEN: usize = 1 + 8 + 8 + 4 + 4;
 const DIRECTION_HEALTH: u8 = 2;
+const MAX_REASONABLE_UDS_TRANSIT_NANOS: u64 = 60_000_000_000;
 
 /// Per-Kafka-frame length cap. Defensive: matches the proxy's
 /// `PROTO_PAYLOAD_CAP` order of magnitude. Anything bigger than this
@@ -124,6 +125,15 @@ pub struct JvmTapHandle {
 }
 
 impl JvmTapHandle {
+    /// Subscribe an auxiliary producer (for example the Linux eBPF
+    /// loader) to this listener's lifecycle. The producer must stop
+    /// when the receiver becomes true so `stop()` cannot leave probes
+    /// attached after the UDS reader has gone away.
+    #[must_use]
+    pub fn stop_receiver(&self) -> watch::Receiver<bool> {
+        self.stop_tx.subscribe()
+    }
+
     /// Start a UDS listener at `config.socket_path` and feed every
     /// captured Kafka frame into `correlator`.
     ///
@@ -433,6 +443,8 @@ async fn run_agent_session(
             }
         }
 
+        let received_nanos = monotonic_nanos();
+
         if direction == DIRECTION_HEALTH {
             if payload.len() != 8 {
                 return Err(io::Error::new(
@@ -450,7 +462,9 @@ async fn run_agent_session(
             continue;
         }
 
-        let capture_lag_ms = emitted_nanos.saturating_sub(observed_nanos) as f64 / 1_000_000.0;
+        let capture_lag_ms =
+            capture_to_rust_lag_nanos(observed_nanos, emitted_nanos, received_nanos) as f64
+                / 1_000_000.0;
 
         if let Err(err) = process_payload(
             &mut session,
@@ -469,6 +483,28 @@ async fn run_agent_session(
             );
             return Ok(());
         }
+    }
+}
+
+fn monotonic_nanos() -> u64 {
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Monotonic);
+    u64::try_from(now.tv_sec)
+        .unwrap_or(0)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(u64::try_from(now.tv_nsec).unwrap_or(0))
+}
+
+const fn capture_to_rust_lag_nanos(observed: u64, emitted: u64, received: u64) -> u64 {
+    let uds_transit = received.saturating_sub(emitted);
+    // HotSpot System.nanoTime(), bpf_ktime_get_ns() and Rust's
+    // CLOCK_MONOTONIC share the host monotonic clock on supported tap
+    // platforms. Synthetic tests and an exotic JVM clock source can
+    // violate that assumption; in that case preserve the trustworthy
+    // observation→writer component rather than report a multi-day lag.
+    if received >= emitted && uds_transit <= MAX_REASONABLE_UDS_TRANSIT_NANOS {
+        received.saturating_sub(observed)
+    } else {
+        emitted.saturating_sub(observed)
     }
 }
 

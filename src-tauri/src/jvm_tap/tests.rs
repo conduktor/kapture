@@ -617,3 +617,16 @@ async fn socket_file_is_created_owner_only() {
     );
     handle.stop().await;
 }
+
+#[test]
+fn capture_lag_includes_uds_transit_on_shared_monotonic_clock() {
+    assert_eq!(capture_to_rust_lag_nanos(1_000, 1_250, 1_400), 400);
+}
+
+#[test]
+fn capture_lag_falls_back_for_incompatible_synthetic_clock() {
+    assert_eq!(
+        capture_to_rust_lag_nanos(1_000, 1_250, 1_250 + MAX_REASONABLE_UDS_TRANSIT_NANOS + 1),
+        250
+    );
+}

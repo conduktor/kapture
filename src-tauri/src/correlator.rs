@@ -167,7 +167,7 @@ pub struct ProtoFrame {
     pub captured: usize,
     /// Round-trip time in milliseconds. Only meaningful on `Recv`.
     pub rtt_ms: f64,
-    /// Capture-to-agent-writer delay. Zero outside external tap modes.
+    /// Capture-to-Rust delay. Zero for the in-process proxy path.
     pub capture_lag_ms: f64,
     /// Capture-to-analysis delay. Includes bounded analyzer queueing and,
     /// for external taps, the agent-writer delay above.

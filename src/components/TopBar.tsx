@@ -1,6 +1,6 @@
 import type { JSX } from "react";
 import type { ProxyStatus } from "../types";
-import { useIsWindows } from "../lib/platform";
+import { useIsLinux, useIsWindows } from "../lib/platform";
 
 interface Props {
   filter: string;
@@ -12,6 +12,8 @@ interface Props {
   /** Open the JVM tap picker. Visible only when not capturing —
    * once a session is active, Stop terminates it regardless of mode. */
   onOpenTap: () => void;
+  /** Open the Linux eBPF/OpenSSL process picker. */
+  onOpenEbpf: () => void;
   onClear: () => void;
   proxyStatus: ProxyStatus | null;
   /** When a tap session is active, the cluster pill flips to
@@ -39,6 +41,7 @@ export function TopBar({
   capturing,
   onToggleCapture,
   onOpenTap,
+  onOpenEbpf,
   onClear,
   proxyStatus,
   tapStatus,
@@ -51,6 +54,7 @@ export function TopBar({
   // JVM tap mode is Unix-only (Unix-domain-socket transport); hide its
   // entry point on Windows, where the backend command is stubbed out.
   const isWindows = useIsWindows();
+  const isLinux = useIsLinux();
   // Cluster pill: show `{listenAddr} → {upstream}` when the proxy
   // is up, `tap PID X` when a JVM tap is active, "not connected"
   // otherwise. "proxy" / "tap" wording is intentionally minimal —
@@ -117,6 +121,16 @@ export function TopBar({
             title="Inject the Kapture agent into a running Java Kafka client (no proxy)"
           >
             Tap JVM
+          </button>
+        ) : null}
+        {!capturing && isLinux ? (
+          <button
+            type="button"
+            className="btn"
+            onClick={onOpenEbpf}
+            title="Attach PID-scoped OpenSSL eBPF probes (no proxy)"
+          >
+            Tap eBPF
           </button>
         ) : null}
         <button type="button" className="btn" onClick={onClear}>
