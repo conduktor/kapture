@@ -44,9 +44,11 @@ your Java client ─────────TLS────────▶ real 
 
 Works against Confluent Cloud, MSK, Azure Event Hubs, your local docker — anything the Java client can talk to. SSL and PLAINTEXT listeners both covered.
 
-Caveats: tap mode requires Kapture and the client on the same host (the UDS is local). JVM only (`librdkafka` and Go static `crypto/tls` taps via eBPF uprobes are on the roadmap). The agent stays resident in the JVM until the process exits — there is no clean detach.
+Caveats: tap mode requires Kapture and the client on the same host. JVM clients
+use the resident agent; Linux processes exposing OpenSSL can use the PID-scoped
+eBPF tap. Static Go `crypto/tls` and Rust `rustls` clients are not yet covered.
 
-### Proxy mode — any client, any host, optional chaos
+### Proxy mode — any client, local reconfiguration
 
 Point your client at `127.0.0.1:9092`, Kapture forwards every byte upstream and copies a decoded view to the inspector.
 
@@ -57,9 +59,19 @@ your client ──▶ 127.0.0.1:9092 ──▶ real broker
                 Kapture inspector (live)
 ```
 
-No instrumentation, no SDK swap, no broker plugin. The client doesn't know it's there. SASL/PLAIN, SASL/SCRAM-SHA-256/512, TLS, and mTLS upstream are all passed through correctly.
+No instrumentation, no SDK swap, no broker plugin. Kapture can establish TLS
+upstream and authenticate to Kafka with SASL/PLAIN or SASL/SCRAM-SHA-256/512.
+When Kapture uses configured upstream credentials, Kafka sees that service
+account and applies its ACLs.
 
-Pick proxy mode when: the client is non-JVM, on a different machine, or you need to _modify_ the traffic (latency injection, error codes, fault testing — that work is in the roadmap as "Chaos"). Proxy mode terminates TLS, which means provisioning a cert the client trusts — that's the cost tap mode avoids.
+Pick proxy mode when the client runtime has no compatible tap, or when changing
+its local Kafka connection is acceptable.
+
+Today the local client → Kapture listener is plaintext on `127.0.0.1`; the
+application must change its bootstrap and local security protocol. Incoming TLS
+and an explicit choice between forwarding the client's SASL identity or using a
+Kapture-managed service account are roadmap items. Client-certificate identity
+(mTLS) cannot be delegated without making its private key available to Kapture.
 
 ## What you get
 
@@ -137,8 +149,12 @@ wire shapes and JVM tap invocation.
 
 ## Roadmap
 
-- **eBPF taps.** `librdkafka` family (Python, Node, Ruby, .NET, C++) via `SSL_write`/`SSL_read` uprobes; Go static `crypto/tls` via RET-scan uprobes. Linux only. Combined with the JVM tap already shipped, target is ~95% of the production Kafka client market observable without provisioning a cert.
+- **More eBPF taps.** OpenSSL/`librdkafka` processes are supported on Linux;
+  static Go `crypto/tls` binaries would require a separate RET-scan tap.
 - **Chaos.** Inject latency, error codes, connection drops at the proxy layer to validate client behaviour under adversarial conditions. Toxiproxy, but Kafka-aware.
+- **Incoming proxy TLS + auth identity.** Serve TLS on Kapture's local listeners,
+  then either forward the client's Kafka SASL exchange or authenticate upstream
+  with a configured service account whose ACLs apply.
 - **Time-travel debugger.** Breakpoints by predicate against Kafka Streams / Flink consumers; step through messages; inspect state stores.
 
 Full backlog with shirt sizes in [docs/ROADMAP.md](docs/ROADMAP.md). Background and design notes on the JVM tap in the [five-part blog series](docs/blog/).
