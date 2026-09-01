@@ -121,27 +121,29 @@ await producer.connect();
 // UNKNOWN_TOPIC_OR_PARTITION while auto-creation converges, hence the bounded
 // setup-only retry even though measured sends never retry.
 let warmupError;
-for (let attempt = 1; attempt <= 10; attempt += 1) {
-  try {
-    await producer.send({
-      topic,
-      messages: Array.from({ length: warmupMessages }, (_, sequence) => ({
-        key: `warmup-${sequence}`,
-        value,
-      })),
-    });
-    warmupError = undefined;
-    break;
-  } catch (error) {
-    warmupError = error;
-    if (attempt < 10) await sleep(250);
+for (let sequence = 0; sequence < warmupMessages; sequence += 1) {
+  for (let attempt = 1; attempt <= 10; attempt += 1) {
+    try {
+      // Keep the same one-message Produce shape as the measured operation.
+      // Batching all warm-up payloads would make a valid 1 MiB case look like
+      // a single 10 MiB record batch and trip broker max.message.bytes.
+      await producer.send({
+        topic,
+        messages: [{ key: `warmup-${sequence}`, value }],
+      });
+      warmupError = undefined;
+      break;
+    } catch (error) {
+      warmupError = error;
+      if (attempt < 10) await sleep(250);
+    }
   }
-}
-if (warmupError) {
-  await producer.disconnect();
-  throw new Error(`Kafka warm-up failed after 10 attempts: ${warmupError.message}`, {
-    cause: warmupError,
-  });
+  if (warmupError) {
+    await producer.disconnect();
+    throw new Error(`Kafka warm-up failed after 10 attempts: ${warmupError.message}`, {
+      cause: warmupError,
+    });
+  }
 }
 
 const cpuStart = process.cpuUsage();

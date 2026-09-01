@@ -39,6 +39,7 @@ struct Args {
     listen_port: u16,
     bind: IpAddr,
     seconds: u64,
+    quiet: bool,
     sasl_mechanism: String,
     sasl_username: Option<String>,
     sasl_password: Option<String>,
@@ -49,6 +50,7 @@ fn parse_args() -> Result<Args, String> {
     let mut listen_port: u16 = 9092;
     let mut bind: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
     let mut seconds: u64 = 60;
+    let mut quiet = false;
     let mut sasl_mechanism = "PLAIN".to_owned();
     let mut sasl_username: Option<String> = None;
     let mut sasl_password: Option<String> = None;
@@ -71,6 +73,7 @@ fn parse_args() -> Result<Args, String> {
                 let v = iter.next().ok_or("--seconds needs a value")?;
                 seconds = v.parse().map_err(|e| format!("--seconds: {e}"))?;
             }
+            "--quiet" => quiet = true,
             "--sasl-mechanism" => {
                 sasl_mechanism = iter.next().ok_or("--sasl-mechanism needs a value")?;
             }
@@ -81,7 +84,8 @@ fn parse_args() -> Result<Args, String> {
                 sasl_password = Some(iter.next().ok_or("--sasl-password needs a value")?);
             }
             "-h" | "--help" => {
-                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--bind IP] [--seconds N] [--sasl-mechanism PLAIN|SCRAM-SHA-256|SCRAM-SHA-512] [--sasl-username U --sasl-password P]\n\
+                println!("usage: proxy_smoke [--upstream HOST:PORT] [--listen PORT] [--bind IP] [--seconds N] [--quiet] [--sasl-mechanism PLAIN|SCRAM-SHA-256|SCRAM-SHA-512] [--sasl-username U --sasl-password P]\n\
+                          --quiet suppresses per-record/frame output for performance runs.\n\
                           --bind defaults to 127.0.0.1. WARN: 0.0.0.0 exposes the proxy on all interfaces with no auth — only for short bounded smokes (use with --seconds <N>).");
                 std::process::exit(0);
             }
@@ -98,6 +102,7 @@ fn parse_args() -> Result<Args, String> {
         listen_port,
         bind,
         seconds,
+        quiet,
         sasl_mechanism,
         sasl_username,
         sasl_password,
@@ -155,12 +160,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = build_proxy_config(&args)?;
     let captured_count = Arc::new(AtomicUsize::new(0));
     let captured_count_for_sink = Arc::clone(&captured_count);
+    let quiet = args.quiet;
     let sink: RecordSink = Arc::new(move |msg: CapturedMessage| {
         captured_count_for_sink.fetch_add(1, Ordering::Relaxed);
-        println!(
-            "RECORD topic={} partition={} offset={} key={:?} size={}",
-            msg.topic, msg.partition, msg.offset, msg.key, msg.size_bytes,
-        );
+        if !quiet {
+            println!(
+                "RECORD topic={} partition={} offset={} key={:?} size={}",
+                msg.topic, msg.partition, msg.offset, msg.key, msg.size_bytes,
+            );
+        }
     });
     let handle = ProxyHandle::start(cfg, Arc::clone(&correlator), sink).await?;
     println!(
@@ -187,7 +195,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ = tick.tick() => {
                 let summaries = correlator.summaries(500);
-                if summaries.len() > already_printed {
+                if !args.quiet && summaries.len() > already_printed {
                     for s in summaries.iter().skip(already_printed) {
                         let dir = match s.direction {
                             ProtoDirection::Send => "->",

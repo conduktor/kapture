@@ -15,11 +15,25 @@ node tools/perf/open-loop-producer.mjs --broker localhost:19092 --rate 1000 --du
 node tools/perf/open-loop-producer.mjs --broker localhost:<kapture-port> --rate 1000 --duration 30 --payload-bytes 1024
 ```
 
+For a transport/analyzer-only proxy run without renderer or terminal-I/O
+noise, start the headless smoke with `--quiet` in a separate shell:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --profile profiling \
+  --example proxy_smoke -- --upstream localhost:29092 --listen 39090 \
+  --seconds 60 --quiet
+```
+
 The first command is the direct baseline; the second targets Kapture's proxy.
 The harness performs a small setup-only warm-up before starting its clocks so
 topic auto-creation and initial metadata discovery do not contaminate the
 latency distribution. Override its size with `--warmup-messages`; use the same
 value for every side of a comparison.
+
+The 1 MiB payload case needs broker/topic `max.message.bytes` above 1 MiB to
+leave room for Kafka record-batch overhead (2 MiB is sufficient for this
+harness). A `MESSAGE_TOO_LARGE` result is a configuration failure, not a
+latency sample.
 
 Verify the harness itself with a deliberate 500 ms scheduler stall: `offered`
 must remain `rate × duration` and p99/p999 scheduling/response latency must show
