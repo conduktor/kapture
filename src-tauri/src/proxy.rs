@@ -18,6 +18,7 @@ use std::time::Instant;
 
 #[cfg(test)]
 use bytes::Bytes;
+use chrono::Utc;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -584,6 +585,8 @@ pub fn build_proto_event_at(
                 payload
             };
             ProtoEvent {
+                observed_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                queued_at: Instant::now(),
                 direction: ProtoDirection::Send,
                 api_key: api_key_i32,
                 api_version: header.map_or(-1, |h| i32::from(h.api_version)),
@@ -607,6 +610,8 @@ pub fn build_proto_event_at(
             let pending = corr_map.take_response(corr_id);
             let rtt_ms = pending.map_or(0.0, |p| p.rtt_at(Instant::now(), observed_nanos));
             ProtoEvent {
+                observed_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                queued_at: Instant::now(),
                 direction: ProtoDirection::Recv,
                 api_key: pending.map_or(-1, |p| i32::from(p.header.api_key)),
                 api_version: pending.map_or(-1, |p| i32::from(p.header.api_version)),

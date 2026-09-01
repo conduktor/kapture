@@ -8,6 +8,8 @@ interface Props {
   stats: CaptureStats;
   /** 1Hz proxy snapshot, polled at the App level and shared with BrokersTab. */
   proxy: ProxyStatusSummary | null;
+  /** Latest protocol frame's capture→analysis and capture→renderer lag. */
+  captureLatency: { analysisMs: number; renderMs: number } | null;
 }
 
 /**
@@ -19,7 +21,7 @@ interface Props {
  * The proxy snapshot is owned by App.tsx (see the lifted `proxy_status`
  * poll) so a single 1 Hz tick feeds both this row and the Brokers tab.
  */
-export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
+export function StatusBar({ connection, stats, proxy, captureLatency }: Props): JSX.Element {
   const isConnected = connection.status === "connected";
   // Empty placeholder keeps the row reserved when disconnected.
   if (!isConnected) {
@@ -108,6 +110,31 @@ export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
           </span>
         </>
       ) : null}
+      {captureLatency !== null ? (
+        <>
+          <span className="statusbar__sep" aria-hidden="true">
+            ·
+          </span>
+          <span
+            className={
+              captureLatency.renderMs >= 2_000
+                ? "statusbar__group statusbar__group--warn"
+                : "statusbar__group"
+            }
+            title={`Observation → bounded analyzer: ${captureLatency.analysisMs.toFixed(1)} ms. Observation → renderer: ${captureLatency.renderMs.toFixed(1)} ms (includes the 1 Hz UI polling interval). Kafka RTT is measured independently at the wire boundary.`}
+          >
+            render lag {formatLag(captureLatency.renderMs)}
+          </span>
+        </>
+      ) : null}
+      {stats.drops > 0 ? (
+        <>
+          <span className="statusbar__sep" aria-hidden="true">
+            ·
+          </span>
+          <CaptureHealth stats={stats} />
+        </>
+      ) : null}
       <span className="statusbar__spacer" />
       <button
         type="button"
@@ -133,5 +160,49 @@ export function StatusBar({ connection, stats, proxy }: Props): JSX.Element {
         github
       </button>
     </footer>
+  );
+}
+
+function formatLag(milliseconds: number): string {
+  return milliseconds < 1_000
+    ? `${Math.round(milliseconds).toLocaleString()}ms`
+    : `${(milliseconds / 1_000).toFixed(1)}s`;
+}
+
+function CaptureHealth({ stats }: { stats: CaptureStats }): JSX.Element {
+  const incomplete =
+    stats.oversizedDrops +
+    stats.uiSummaryDrops +
+    stats.analyzerDrops +
+    stats.recordExtractionDrops +
+    stats.agentDrops;
+  const details = [
+    ["history evictions", stats.bufferEvictions],
+    ["oversized records", stats.oversizedDrops],
+    ["UI summaries", stats.uiSummaryDrops],
+    ["protocol analyzer", stats.analyzerDrops],
+    ["record extraction", stats.recordExtractionDrops],
+    ["external agent", stats.agentDrops],
+  ]
+    .filter((entry) => entry[1] !== 0)
+    .map(([label, count]) => `${label}: ${Number(count).toLocaleString()}`)
+    .join("; ");
+  const activeLoss = stats.dropsPerSec > 0;
+  const label =
+    incomplete > 0
+      ? `capture incomplete · ${incomplete.toLocaleString()} lost`
+      : `history · ${stats.bufferEvictions.toLocaleString()} evicted`;
+  return (
+    <span
+      className={
+        activeLoss
+          ? "statusbar__group statusbar__group--danger"
+          : "statusbar__group statusbar__group--warn"
+      }
+      title={`${details}. ${activeLoss ? `${stats.dropsPerSec.toFixed(1)} drops/s in the last tick. ` : ""}Kafka forwarding remains non-blocking; these counters describe inspector loss, not broker data loss.`}
+      role="status"
+    >
+      {label}
+    </span>
   );
 }

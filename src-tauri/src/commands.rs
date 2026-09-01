@@ -598,13 +598,23 @@ pub async fn stop_proxy(state: State<'_, AppState>) -> Result<()> {
     Ok(())
 }
 
+const PINNED_ROW_LIMIT: usize = 5_000;
+// Pause may add at most 128 MiB of cloned capture payloads in total.
+// Hash-map buckets and duplicated short id keys add a small documented
+// allocator/index overhead on top of these retained-payload estimates.
+const PINNED_MESSAGE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+const PINNED_PROTO_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+
 /// Snapshot both rings into the `AppState` pinned maps. Shared by
 /// pause and `stop_proxy` so detail lookups keep resolving after
 /// the live rings either evict the row or vanish entirely.
 pub fn pin_capture_snapshot(state: &AppState) {
+    let filter = state.filter.read().clone();
     let messages: std::collections::HashMap<String, CapturedMessage> = state
         .buffer
-        .snapshot()
+        .recent_filtered_with_budget(PINNED_ROW_LIMIT, PINNED_MESSAGE_BYTE_BUDGET, |message| {
+            filter.as_ref().is_none_or(|filter| filter.matches(message))
+        })
         .into_iter()
         .map(|m| (m.id.clone(), m))
         .collect();
@@ -612,7 +622,7 @@ pub fn pin_capture_snapshot(state: &AppState) {
     let frames: std::collections::HashMap<String, ProtoFrame> = state
         .correlator()
         .map(|c| {
-            c.frames_snapshot()
+            c.frames_snapshot_with_budget(PINNED_ROW_LIMIT, PINNED_PROTO_BYTE_BUDGET)
                 .into_iter()
                 .map(|f| (f.id.clone(), f))
                 .collect()

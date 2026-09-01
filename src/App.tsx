@@ -151,6 +151,10 @@ function App(): JSX.Element {
   // first tick lands).
   const [proxyStatusSummary, setProxyStatusSummary] = useState<ProxyStatusSummary | null>(null);
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
+  const [captureLatency, setCaptureLatency] = useState<{
+    analysisMs: number;
+    renderMs: number;
+  } | null>(null);
   const protoCursorRef = useRef<string | null>(null);
   const [sessionStats, setSessionStats] = useState<SessionStats>({
     client: null,
@@ -334,6 +338,17 @@ function App(): JSX.Element {
           invoke<AntiPatternsSnapshot>("anti_patterns"),
         ]);
         if (!cancelled) {
+          const newest = delta.frames.at(-1);
+          if (newest !== undefined) {
+            const rustObservedAt = Date.parse(newest.timestamp);
+            const rustToRenderMs = Number.isNaN(rustObservedAt)
+              ? 0
+              : Math.max(0, Date.now() - rustObservedAt);
+            setCaptureLatency({
+              analysisMs: newest.analysisLagMs,
+              renderMs: newest.captureLagMs + rustToRenderMs,
+            });
+          }
           protoCursorRef.current = delta.nextCursor;
           setProtoFrames((current) => {
             const next = delta.reset ? delta.frames : current.concat(delta.frames);
@@ -612,6 +627,7 @@ function App(): JSX.Element {
     messagesRef.current = [];
     setMessages([]);
     setProtoFrames([]);
+    setCaptureLatency(null);
     protoCursorRef.current = null;
     setSelectedId(null);
     setSelectedFrameId(null);
@@ -953,7 +969,12 @@ function App(): JSX.Element {
           )}
         </div>
       </main>
-      <StatusBar connection={connection} stats={stats} proxy={proxyStatusSummary} />
+      <StatusBar
+        connection={connection}
+        stats={stats}
+        proxy={proxyStatusSummary}
+        captureLatency={captureLatency}
+      />
       {snippetsOpen && connection.status === "connected" && connection.proxyStatus !== null ? (
         <SnippetsModal
           listenAddr={connection.proxyStatus.listenAddr}

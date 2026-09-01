@@ -1,4 +1,5 @@
 import { useState, type JSX, type MouseEvent } from "react";
+import { List, type RowComponentProps } from "react-window";
 import type { ProtoFrameDetail } from "../types";
 import { formatBytes } from "../lib/formatBytes";
 import { formatRtt } from "../lib/formatRtt";
@@ -14,6 +15,10 @@ import type { DecodedFieldPair, ProtoFilterMode } from "../lib/protoFilter";
  */
 type AddDecodedFn = (pair: DecodedFieldPair, mode: ProtoFilterMode) => void;
 
+const PROTO_BYTES_PER_ROW = 16;
+const PROTO_HEX_ROW_HEIGHT = 18;
+const EAGER_COMPOUND_CHILDREN = 32;
+
 interface Props {
   frame: ProtoFrameDetail | null;
   onAddDecodedFilter?: AddDecodedFn;
@@ -27,13 +32,9 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
       </section>
     );
   }
-  // Group hex into 16-byte rows for readability.
-  const rows = chunkHex(frame.payloadHex, 16);
+  const hexRowCount = Math.ceil(frame.payloadHex.length / (PROTO_BYTES_PER_ROW * 2));
   const decoded = frame.decodedJson;
   const frameClipboard = buildFrameClipboard(frame);
-  const decodedClipboard =
-    decoded !== undefined && decoded !== null ? JSON.stringify(decoded, null, 2) : null;
-  const hexClipboard = rows.map((r) => r.hex).join("\n");
   return (
     <section className="layers" aria-label="Frame detail">
       {frame.frameError !== undefined ? (
@@ -75,36 +76,40 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           {frame.captureLagMs > 0 ? (
             <Field name="capture_lag" value={`${frame.captureLagMs.toFixed(3)} ms`} />
           ) : null}
+          <Field name="analysis_lag" value={`${frame.analysisLagMs.toFixed(3)} ms`} />
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
-      {decoded !== undefined && decoded !== null && decodedClipboard !== null ? (
+      {decoded !== undefined && decoded !== null ? (
         <DecodedTree
           decoded={decoded}
           apiName={frame.apiName}
-          clipboardText={decodedClipboard}
+          clipboardText={() => JSON.stringify(decoded, null, 2)}
           {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
         />
       ) : null}
-      {rows.length > 0 ? (
+      {hexRowCount > 0 ? (
         <details
           className="layer"
           {...(decoded !== undefined && decoded !== null ? {} : { open: true })}
         >
           <summary className="layer__title">
             <span className="layer__title-text">payload — hex view</span>
-            <LayerCopyButton text={hexClipboard} label="payload hex" />
+            <LayerCopyButton
+              text={() => formatHexClipboard(frame.payloadHex)}
+              label="payload hex"
+            />
           </summary>
           <div className="layer__body">
-            <pre className="proto-hex">
-              {rows.map((row, i) => (
-                <span key={i} className="proto-hex__row">
-                  <span className="proto-hex__off">{(i * 16).toString(16).padStart(6, "0")}</span>
-                  <span className="proto-hex__hex">{row.hex}</span>
-                  <span className="proto-hex__ascii">{row.ascii}</span>
-                </span>
-              ))}
-            </pre>
+            <List
+              className="proto-hex"
+              style={{ height: Math.min(hexRowCount * PROTO_HEX_ROW_HEIGHT + 16, 320) }}
+              rowComponent={ProtoHexRow}
+              rowCount={hexRowCount}
+              rowHeight={PROTO_HEX_ROW_HEIGHT}
+              rowProps={{ payloadHex: frame.payloadHex }}
+              overscanCount={12}
+            />
           </div>
         </details>
       ) : null}
@@ -139,6 +144,7 @@ function buildFrameClipboard(frame: ProtoFrameDetail): string {
   if (frame.captureLagMs > 0) {
     lines.push(`capture_lag: ${frame.captureLagMs.toFixed(3)} ms`);
   }
+  lines.push(`analysis_lag: ${frame.analysisLagMs.toFixed(3)} ms`);
   lines.push(`timestamp: ${frame.timestamp}`);
   return lines.join("\n");
 }
@@ -147,12 +153,19 @@ function buildFrameClipboard(frame: ProtoFrameDetail): string {
  *  Stops the click from toggling the `<details>` so the user doesn't
  *  collapse the section they're trying to copy. Brief "copied"
  *  affordance, then back to "copy" — no toast, no modal. */
-function LayerCopyButton({ text, label }: { text: string; label: string }): JSX.Element {
+function LayerCopyButton({
+  text,
+  label,
+}: {
+  text: string | (() => string);
+  label: string;
+}): JSX.Element {
   const [copied, setCopied] = useState(false);
   const onClick = (e: MouseEvent<HTMLButtonElement>): void => {
     e.preventDefault();
     e.stopPropagation();
-    void navigator.clipboard.writeText(text).then(() => {
+    const clipboardText = typeof text === "function" ? text() : text;
+    void navigator.clipboard.writeText(clipboardText).then(() => {
       setCopied(true);
       window.setTimeout(() => {
         setCopied(false);
@@ -258,7 +271,7 @@ function DecodedTree({
 }: {
   decoded: unknown;
   apiName: string;
-  clipboardText: string;
+  clipboardText: string | (() => string);
   onAddDecodedFilter?: AddDecodedFn;
 }): JSX.Element {
   // The layer already provides the top-level disclosure (`apiName`).
@@ -273,6 +286,13 @@ function DecodedTree({
     body =
       entries.length === 0 ? (
         <span className="muted">empty</span>
+      ) : entries.length > EAGER_COMPOUND_CHILDREN ? (
+        <JsonObjectNode
+          node={decoded as Record<string, unknown>}
+          name="body"
+          path={[]}
+          {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+        />
       ) : (
         <>
           {entries.map(([key, value]) => (
@@ -350,56 +370,22 @@ function JsonNodeView({
     // descent. The cast is a typing nudge; runtime is identical.
     const items = node as unknown[];
     return (
-      <details className="tree-node" open>
-        <summary className="tree-node__summary">
-          <span className="field__name">{name ?? ""}</span>
-          <span className="field__value">[{items.length}]</span>
-        </summary>
-        <div className="tree-node__children">
-          {items.length === 0 ? (
-            <span className="muted">empty</span>
-          ) : (
-            items.map((item, i) => (
-              <JsonNodeView
-                key={i}
-                node={item}
-                name={`[${String(i)}]`}
-                // Array index isn't a JSON-path segment — the matcher
-                // descends arrays per-element on the same path. So
-                // children inherit the path unchanged.
-                path={path}
-                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-              />
-            ))
-          )}
-        </div>
-      </details>
+      <JsonArrayNode
+        items={items}
+        name={name}
+        path={path}
+        {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+      />
     );
   }
   if (node !== null && typeof node === "object") {
-    const entries = Object.entries(node as Record<string, unknown>);
     return (
-      <details className="tree-node" open>
-        <summary className="tree-node__summary">
-          <span className="field__name">{name ?? ""}</span>
-          <span className="field__value">{entries.length === 0 ? "{}" : ""}</span>
-        </summary>
-        <div className="tree-node__children">
-          {entries.length === 0 ? (
-            <span className="muted">empty</span>
-          ) : (
-            entries.map(([key, value]) => (
-              <JsonNodeView
-                key={key}
-                node={value}
-                name={key}
-                path={[...path, key]}
-                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
-              />
-            ))
-          )}
-        </div>
-      </details>
+      <JsonObjectNode
+        node={node as Record<string, unknown>}
+        name={name}
+        path={path}
+        {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+      />
     );
   }
   // Leaf: build the path/value pair from the accumulated segment
@@ -422,6 +408,99 @@ function JsonNodeView({
       pair={pair}
       {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
     />
+  );
+}
+
+function JsonArrayNode({
+  items,
+  name,
+  path,
+  onAddDecodedFilter,
+}: {
+  items: unknown[];
+  name?: string | undefined;
+  path: string[];
+  onAddDecodedFilter?: AddDecodedFn | undefined;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(items.length <= EAGER_COMPOUND_CHILDREN);
+  return (
+    <details
+      className="tree-node"
+      open={expanded}
+      onToggle={(event) => {
+        setExpanded(event.currentTarget.open);
+      }}
+    >
+      <summary className="tree-node__summary">
+        <span className="field__name">{name ?? ""}</span>
+        <span className="field__value">[{items.length}]</span>
+      </summary>
+      {expanded ? (
+        <div className="tree-node__children">
+          {items.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            items.map((item, i) => (
+              <JsonNodeView
+                key={i}
+                node={item}
+                name={`[${String(i)}]`}
+                path={path}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
+          )}
+        </div>
+      ) : null}
+    </details>
+  );
+}
+
+function JsonObjectNode({
+  node,
+  name,
+  path,
+  onAddDecodedFilter,
+}: {
+  node: Record<string, unknown>;
+  name?: string | undefined;
+  path: string[];
+  onAddDecodedFilter?: AddDecodedFn | undefined;
+}): JSX.Element {
+  const keys = Object.keys(node);
+  const [expanded, setExpanded] = useState(keys.length <= EAGER_COMPOUND_CHILDREN);
+  return (
+    <details
+      className="tree-node"
+      open={expanded}
+      onToggle={(event) => {
+        setExpanded(event.currentTarget.open);
+      }}
+    >
+      <summary className="tree-node__summary">
+        <span className="field__name">{name ?? ""}</span>
+        <span className="field__value">
+          {keys.length === 0 ? "{}" : `{${String(keys.length)}}`}
+        </span>
+      </summary>
+      {expanded ? (
+        <div className="tree-node__children">
+          {keys.length === 0 ? (
+            <span className="muted">empty</span>
+          ) : (
+            keys.map((key) => (
+              <JsonNodeView
+                key={key}
+                node={node[key]}
+                name={key}
+                path={[...path, key]}
+                {...(onAddDecodedFilter ? { onAddDecodedFilter } : {})}
+              />
+            ))
+          )}
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -453,26 +532,42 @@ function leafMatchValue(node: unknown): string | null {
   return null;
 }
 
-interface HexRow {
-  hex: string;
-  ascii: string;
+function ProtoHexRow({
+  ariaAttributes,
+  index,
+  style,
+  payloadHex,
+}: RowComponentProps<{ payloadHex: string }>): JSX.Element {
+  const firstByte = index * PROTO_BYTES_PER_ROW;
+  const chunk = payloadHex.slice(firstByte * 2, (firstByte + PROTO_BYTES_PER_ROW) * 2);
+  let grouped = "";
+  let ascii = "";
+  for (let i = 0; i < chunk.length; i += 2) {
+    if (i > 0) grouped += " ";
+    const cell = chunk.slice(i, i + 2);
+    grouped += cell;
+    const byte = Number.parseInt(cell, 16);
+    ascii += byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : ".";
+  }
+  return (
+    <div className="proto-hex__row" style={style} {...ariaAttributes}>
+      <span className="proto-hex__off">{firstByte.toString(16).padStart(6, "0")}</span>
+      <span className="proto-hex__hex">{grouped}</span>
+      <span className="proto-hex__ascii">{ascii}</span>
+    </div>
+  );
 }
 
-function chunkHex(hexStr: string, bytesPerRow: number): HexRow[] {
-  const rows: HexRow[] = [];
-  // Two hex chars per byte → row stride is bytesPerRow * 2 chars.
-  const stride = bytesPerRow * 2;
-  for (let i = 0; i < hexStr.length; i += stride) {
-    const chunk = hexStr.slice(i, i + stride);
-    // Group bytes with spaces for readability.
-    const grouped = chunk.match(/.{2}/g)?.join(" ") ?? chunk;
-    // ASCII-printable view: substitute non-printable bytes with `.`.
-    let ascii = "";
-    for (let j = 0; j < chunk.length; j += 2) {
-      const byte = Number.parseInt(chunk.slice(j, j + 2), 16);
-      ascii += byte >= 0x20 && byte < 0x7f ? String.fromCharCode(byte) : ".";
+function formatHexClipboard(payloadHex: string): string {
+  const stride = PROTO_BYTES_PER_ROW * 2;
+  const rows: string[] = [];
+  for (let offset = 0; offset < payloadHex.length; offset += stride) {
+    const chunk = payloadHex.slice(offset, offset + stride);
+    const cells: string[] = [];
+    for (let i = 0; i < chunk.length; i += 2) {
+      cells.push(chunk.slice(i, i + 2));
     }
-    rows.push({ hex: grouped, ascii });
+    rows.push(cells.join(" "));
   }
-  return rows;
+  return rows.join("\n");
 }

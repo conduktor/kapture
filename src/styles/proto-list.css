@@ -457,8 +457,7 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
 
 /* Hex view inside the protocol detail panel */
 .proto-hex {
-  display: flex;
-  flex-direction: column;
+  display: block;
   font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.5;
@@ -469,6 +468,7 @@ section.msglist[aria-label="Protocol frames"] .proto__col {
   margin: 0;
   overflow-x: auto;
   white-space: pre;
+  box-sizing: border-box;
 }
 .proto-hex__row {
   display: grid;

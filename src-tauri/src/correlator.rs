@@ -21,7 +21,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use chrono::Utc;
 use parking_lot::{Mutex, RwLock};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -83,6 +82,8 @@ pub struct ProtoFrameSummary {
     pub captured: usize,
     pub rtt_ms: f64,
     pub capture_lag_ms: f64,
+    /// Observation-to-analyzer delay, including external-agent queueing.
+    pub analysis_lag_ms: f64,
     /// Typed structured projection of the decoded body for the APIs
     /// the Session Activity tab cares about. `None` when the api isn't
     /// projected, when the bytes were truncated past the body, or when
@@ -131,6 +132,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             captured: f.captured,
             rtt_ms: f.rtt_ms,
             capture_lag_ms: f.capture_lag_ms,
+            analysis_lag_ms: f.analysis_lag_ms,
             summary: f.summary.clone(),
             frame_error: f.frame_error.clone(),
         }
@@ -167,6 +169,9 @@ pub struct ProtoFrame {
     pub rtt_ms: f64,
     /// Capture-to-agent-writer delay. Zero outside external tap modes.
     pub capture_lag_ms: f64,
+    /// Capture-to-analysis delay. Includes bounded analyzer queueing and,
+    /// for external taps, the agent-writer delay above.
+    pub analysis_lag_ms: f64,
     /// Set when the proxy accepted the client TCP but couldn't reach
     /// upstream — the frame was read off the client side but never
     /// forwarded. The string is the upstream-connect error reason
@@ -460,7 +465,7 @@ impl ProtoCorrelator {
             };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
-                timestamp: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                timestamp: event.observed_at.clone(),
                 direction: event.direction,
                 api_key: event.api_key,
                 api_name: ProtoEvent::api_name_with_direction(event.api_key, event.direction),
@@ -472,6 +477,11 @@ impl ProtoCorrelator {
                 captured,
                 rtt_ms: event.rtt_ms,
                 capture_lag_ms: event.capture_lag_ms,
+                analysis_lag_ms: event
+                    .queued_at
+                    .elapsed()
+                    .as_secs_f64()
+                    .mul_add(1_000.0, event.capture_lag_ms),
                 frame_error: event.frame_error.clone(),
                 payload_hex: String::new(),
                 raw_payload,
@@ -620,13 +630,29 @@ impl ProtoCorrelator {
         self.frames.lock().items.len()
     }
 
-    /// Clone every `ProtoFrame` currently in the ring buffer, including
-    /// payload bytes and decoded body. Used by the pause-pinning path
-    /// in `AppState` so the frontend can still resolve a selected row
-    /// after the live ring evicts it.
+    /// Clone recent frames for pause-pinning within an explicit retained
+    /// payload budget. Newest frames win; an individual frame that does
+    /// not fit is skipped without preventing smaller older frames from
+    /// being retained.
     #[must_use]
-    pub fn frames_snapshot(&self) -> Vec<ProtoFrame> {
-        self.frames.lock().items.iter().cloned().collect()
+    pub fn frames_snapshot_with_budget(&self, limit: usize, byte_budget: usize) -> Vec<ProtoFrame> {
+        let frames = self.frames.lock();
+        let mut retained = 0usize;
+        let mut output = Vec::with_capacity(limit.min(frames.items.len()));
+        for frame in frames.items.iter().rev() {
+            if output.len() >= limit {
+                break;
+            }
+            let incoming = frame.estimated_storage_bytes();
+            if incoming > byte_budget.saturating_sub(retained) {
+                continue;
+            }
+            retained = retained.saturating_add(incoming);
+            output.push(frame.clone());
+        }
+        drop(frames);
+        output.reverse();
+        output
     }
 
     /// Drain the entire frame ring buffer + reset the per-connection
@@ -683,6 +709,8 @@ mod tests {
 
     fn ev(direction: ProtoDirection, api_key: i32, connection_id: i32, rtt_ms: f64) -> ProtoEvent {
         ProtoEvent {
+            observed_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            queued_at: std::time::Instant::now(),
             direction,
             api_key,
             api_version: 11,
@@ -741,5 +769,25 @@ mod tests {
         assert_eq!(detail.payload_hex, "deadbeef");
         // Materializing the detached detail must not expand the ring.
         assert!(c.frames.lock().items.back().unwrap().payload_hex.is_empty());
+    }
+
+    #[test]
+    fn protocol_pause_snapshot_respects_byte_budget() {
+        let c = ProtoCorrelator::new();
+        c.record_event(&ev(ProtoDirection::Send, 99, 0, 0.0));
+        c.record_event(&ev(ProtoDirection::Send, 99, 0, 0.0));
+        c.record_event(&ev(ProtoDirection::Send, 99, 0, 0.0));
+
+        let one_row_budget = c
+            .frames
+            .lock()
+            .items
+            .back()
+            .unwrap()
+            .estimated_storage_bytes();
+        let latest_id = c.summaries(1)[0].id.clone();
+        let snapshot = c.frames_snapshot_with_budget(10, one_row_budget);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, latest_id);
     }
 }

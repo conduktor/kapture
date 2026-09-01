@@ -1,9 +1,8 @@
 /* ---------- HexDump ---------- */
 .hex {
-  overflow: auto;
+  overflow: hidden;
   font-family: var(--mono);
   font-size: 12px;
-  padding: 10px 14px;
   background: var(--bg-subtle);
 }
 .hex--empty {
@@ -15,7 +14,11 @@
   display: grid;
   grid-template-columns: 80px 1fr 200px;
   gap: 16px;
-  padding: 1px 0;
+  padding: 1px 14px;
+  box-sizing: border-box;
+}
+.hex__virtual {
+  height: 100%;
 }
 .hex__offset {
   color: var(--text-faint);

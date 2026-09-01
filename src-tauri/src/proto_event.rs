@@ -11,6 +11,7 @@
 
 use schemars::JsonSchema;
 use serde::Serialize;
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -22,6 +23,13 @@ pub enum ProtoDirection {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProtoEvent {
+    /// Wall-clock timestamp taken when Rust observed the frame, before
+    /// it enters the bounded analyzer queue. External taps separately
+    /// report their observation-to-Rust lag below.
+    pub observed_at: String,
+    /// Monotonic queue baseline; never serialized across IPC.
+    #[serde(skip)]
+    pub queued_at: Instant,
     pub direction: ProtoDirection,
     pub api_key: i32,
     pub api_version: i32,

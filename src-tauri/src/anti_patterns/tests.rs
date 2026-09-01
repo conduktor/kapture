@@ -33,6 +33,7 @@ fn frame(id: &str, ts: &str, connection_id: i32, local_port: u16) -> ProtoFrame 
         captured: 0,
         rtt_ms: 0.0,
         capture_lag_ms: 0.0,
+        analysis_lag_ms: 0.0,
         frame_error: None,
         payload_hex: String::new(),
         raw_payload: Vec::new(),

@@ -113,6 +113,7 @@ impl RingBuffer {
         state.items.push_back(message);
     }
 
+    #[cfg(test)]
     pub fn snapshot(&self) -> Vec<CapturedMessage> {
         let state = self.inner.read();
         state.items.iter().cloned().collect()
@@ -215,6 +216,42 @@ impl RingBuffer {
             if keep(msg) {
                 out.push(msg.clone());
             }
+        }
+        out.reverse();
+        out
+    }
+
+    /// Bounded pause snapshot. In addition to the row count, cap the
+    /// retained payload estimate of the cloned messages. Iteration is
+    /// newest-first so the most useful rows win when the budget fills.
+    /// The small `HashMap` key/bucket overhead added by the caller is
+    /// accounted separately in its documented snapshot budget.
+    #[allow(clippy::significant_drop_tightening)]
+    pub fn recent_filtered_with_budget<F>(
+        &self,
+        limit: usize,
+        byte_budget: usize,
+        mut keep: F,
+    ) -> Vec<CapturedMessage>
+    where
+        F: FnMut(&CapturedMessage) -> bool,
+    {
+        let state = self.inner.read();
+        let mut out: Vec<CapturedMessage> = Vec::with_capacity(limit.min(state.items.len()));
+        let mut retained = 0usize;
+        for msg in state.items.iter().rev() {
+            if out.len() >= limit {
+                break;
+            }
+            if !keep(msg) {
+                continue;
+            }
+            let incoming = msg.estimated_storage_bytes();
+            if incoming > byte_budget.saturating_sub(retained) {
+                continue;
+            }
+            retained = retained.saturating_add(incoming);
+            out.push(msg.clone());
         }
         out.reverse();
         out
@@ -352,6 +389,19 @@ mod tests {
         );
         let none_match = buf.recent_filtered(10, |_| false);
         assert!(none_match.is_empty());
+    }
+
+    #[test]
+    fn pause_snapshot_budget_keeps_newest_rows_that_fit() {
+        let buf = RingBuffer::new(10);
+        let one_row_budget = msg("a").estimated_storage_bytes();
+        buf.push(msg("a"));
+        buf.push(msg("b"));
+        buf.push(msg("c"));
+
+        let snapshot = buf.recent_filtered_with_budget(10, one_row_budget, |_| true);
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].id, "c");
     }
 
     #[test]

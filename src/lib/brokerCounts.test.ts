@@ -18,6 +18,7 @@ function frame(localPort: number, direction: "send" | "recv", id: string): Proto
     captured: 50,
     rttMs: 0,
     captureLagMs: 0,
+    analysisLagMs: 0,
   };
 }
 

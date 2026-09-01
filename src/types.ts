@@ -73,6 +73,8 @@ export interface ProtoFrame {
   rttMs: number;
   /** Delay inside an external tap before Kapture received the frame. */
   captureLagMs: number;
+  /** Capture-to-bounded-analyzer delay, including external tap queueing. */
+  analysisLagMs: number;
   /**
    * Typed projection of the decoded body for APIs the Session
    * Activity tab aggregates. `undefined` for non-projected APIs or

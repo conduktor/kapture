@@ -122,6 +122,80 @@ fn decode_one<T: Decodable + serde::Serialize>(
     Some(value)
 }
 
+/// Produce/Fetch record batches can fill the entire 64 KiB captured
+/// prefix. Remove their `Bytes` fields from the typed structure before
+/// serde sees them; otherwise `bytes/serde` first allocates a JSON
+/// number for every byte, only for `elide_records` to throw that array
+/// away immediately afterwards.
+fn decode_produce_request(buf: &mut Bytes, version: i16) -> Option<serde_json::Value> {
+    let msg = ProduceRequest::decode(buf, version).ok()?;
+    serialize_produce_request_without_records(msg)
+}
+
+fn serialize_produce_request_without_records(mut msg: ProduceRequest) -> Option<serde_json::Value> {
+    let lengths: Vec<Vec<Option<usize>>> = msg
+        .topic_data
+        .iter_mut()
+        .map(|topic| {
+            topic
+                .partition_data
+                .iter_mut()
+                .map(|partition| partition.records.take().map(|records| records.len()))
+                .collect()
+        })
+        .collect();
+    let mut value = serde_json::to_value(&msg).ok()?;
+    patch_record_lengths(&mut value, "topic_data", "partition_data", &lengths);
+    elide_records(&mut value);
+    Some(value)
+}
+
+fn decode_fetch_response(buf: &mut Bytes, version: i16) -> Option<serde_json::Value> {
+    let mut msg = FetchResponse::decode(buf, version).ok()?;
+    let lengths: Vec<Vec<Option<usize>>> = msg
+        .responses
+        .iter_mut()
+        .map(|topic| {
+            topic
+                .partitions
+                .iter_mut()
+                .map(|partition| partition.records.take().map(|records| records.len()))
+                .collect()
+        })
+        .collect();
+    let mut value = serde_json::to_value(&msg).ok()?;
+    patch_record_lengths(&mut value, "responses", "partitions", &lengths);
+    elide_records(&mut value);
+    Some(value)
+}
+
+fn patch_record_lengths(
+    value: &mut serde_json::Value,
+    topics_field: &str,
+    partitions_field: &str,
+    lengths: &[Vec<Option<usize>>],
+) {
+    let Some(topics) = value
+        .get_mut(topics_field)
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    for (topic, topic_lengths) in topics.iter_mut().zip(lengths) {
+        let Some(partitions) = topic
+            .get_mut(partitions_field)
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        for (partition, length) in partitions.iter_mut().zip(topic_lengths) {
+            if let (Some(object), Some(length)) = (partition.as_object_mut(), length) {
+                object.insert("records".to_owned(), record_elision(*length));
+            }
+        }
+    }
+}
+
 /// Replace any `records: Bytes` field in the JSON tree with a
 /// compact placeholder. With the `bytes/serde` feature enabled, the
 /// crate's `bytes::Bytes` serialises as a JSON array of `u8`s — for
@@ -175,6 +249,10 @@ fn elision_for(value: &serde_json::Value) -> Option<serde_json::Value> {
     if !all_bytes {
         return None;
     }
+    Some(record_elision(length))
+}
+
+fn record_elision(length: usize) -> serde_json::Value {
     let mut placeholder = serde_json::Map::new();
     placeholder.insert(
         "length".to_owned(),
@@ -184,7 +262,7 @@ fn elision_for(value: &serde_json::Value) -> Option<serde_json::Value> {
         "_elided".to_owned(),
         serde_json::Value::String("record_batch".to_owned()),
     );
-    Some(serde_json::Value::Object(placeholder))
+    serde_json::Value::Object(placeholder)
 }
 
 // Both dispatch tables below are EXHAUSTIVE on `ApiKey` by design:
@@ -215,7 +293,7 @@ fn elision_for(value: &serde_json::Value) -> Option<serde_json::Value> {
 #[allow(clippy::too_many_lines, clippy::match_same_arms)]
 fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_json::Value> {
     match api {
-        ApiKey::Produce => decode_one::<ProduceRequest>(buf, version),
+        ApiKey::Produce => decode_produce_request(buf, version),
         ApiKey::Fetch => decode_one::<FetchRequest>(buf, version),
         ApiKey::ListOffsets => decode_one::<ListOffsetsRequest>(buf, version),
         ApiKey::Metadata => decode_one::<MetadataRequest>(buf, version),
@@ -331,7 +409,7 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_js
 fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_json::Value> {
     match api {
         ApiKey::Produce => decode_one::<ProduceResponse>(buf, version),
-        ApiKey::Fetch => decode_one::<FetchResponse>(buf, version),
+        ApiKey::Fetch => decode_fetch_response(buf, version),
         ApiKey::ListOffsets => decode_one::<ListOffsetsResponse>(buf, version),
         ApiKey::Metadata => decode_one::<MetadataResponse>(buf, version),
         ApiKey::OffsetCommit => decode_one::<OffsetCommitResponse>(buf, version),
@@ -450,6 +528,7 @@ fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_j
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::doc_markdown)]
 mod tests {
     use super::*;
+    use kafka_protocol::messages::produce_request::{PartitionProduceData, TopicProduceData};
 
     /// Exact bytes captured from a Confluent Cloud broker rejecting an
     /// ApiVersionsRequest v5: response is framed as v0 with
@@ -514,6 +593,26 @@ mod tests {
             records.get("_elided").and_then(serde_json::Value::as_str),
             Some("record_batch")
         );
+    }
+
+    #[test]
+    fn produce_records_are_removed_before_json_serialization() {
+        let mut partition = PartitionProduceData::default();
+        partition.records = Some(Bytes::from(vec![0xabu8; 64 * 1024]));
+        let mut topic = TopicProduceData::default();
+        topic.partition_data.push(partition);
+        let mut request = ProduceRequest::default();
+        request.topic_data.push(topic);
+
+        let value = serialize_produce_request_without_records(request).unwrap();
+        let records = value
+            .pointer("/topic_data/0/partition_data/0/records")
+            .unwrap();
+        assert_eq!(
+            records.get("length").and_then(serde_json::Value::as_u64),
+            Some(64 * 1024)
+        );
+        assert!(!records.is_array());
     }
 
     /// Defensive: a hypothetical future schema that names a *non*-byte
