@@ -8,7 +8,9 @@ use tracing::info;
 use serde::Deserialize;
 
 use crate::anti_patterns::{AntiPatternsSnapshot, DetectorConfig};
-use crate::correlator::{ProtoCorrelator, ProtoFrame, ProtoFrameSummary};
+use crate::correlator::{
+    DecodedBodyResult, ProtoCorrelator, ProtoFrame, ProtoFrameSummary, ProtoFramesDelta,
+};
 use crate::error::{KaptureError, Result};
 use crate::filter::CompiledFilter;
 use crate::message::{CapturedMessage, MessageSummary};
@@ -97,8 +99,9 @@ const MESSAGE_BATCH_FLUSH_LEN: usize = 256;
 /// reusing it.
 fn emit_message_batch(
     app: &AppHandle,
+    buffer: &crate::ring_buffer::RingBuffer,
     filter: &Arc<parking_lot::RwLock<Option<crate::filter::CompiledFilter>>>,
-    pending: &mut Vec<crate::message::CapturedMessage>,
+    pending: &mut Vec<String>,
 ) {
     if pending.is_empty() {
         return;
@@ -109,11 +112,13 @@ fn emit_message_batch(
         let guard = filter.read();
         let f = guard.as_ref().cloned();
         drop(guard);
-        pending
-            .drain(..)
-            .filter(|m| f.as_ref().is_none_or(|f| f.matches(m)))
-            .map(|m| MessageSummary::from_full(&m))
-            .collect()
+        let summaries = buffer.project_recent_ids(pending, |message| {
+            f.as_ref()
+                .is_none_or(|filter| filter.matches(message))
+                .then(|| MessageSummary::from_full(message))
+        });
+        pending.clear();
+        summaries
     };
     if !summaries.is_empty() {
         let _ = app.emit("kapture:messages", &summaries);
@@ -360,14 +365,13 @@ pub async fn start_proxy_impl(
     let filter = Arc::clone(&state.filter);
     // IPC batching: per-event `emit` saturated the Tauri channel under
     // load (>5k msg/s caused producer-side latency to balloon to >5s).
-    // Sink pushes into an unbounded mpsc; a batcher task drains it on
+    // Sink pushes only ids into a bounded mpsc; a batcher task resolves
+    // summaries from the authoritative ring and drains on
     // a 50 ms timer or when the buffer hits MESSAGE_BATCH_FLUSH_LEN —
     // whichever first — and emits a single `kapture:messages` event
-    // with a Vec. Filter eval moves out of the sink hot path into the
-    // batcher (sink stays as small as possible so the proxy pump's
-    // tail-call latency doesn't blow up under load).
-    let (msg_tx, mut msg_rx) =
-        tokio::sync::mpsc::unbounded_channel::<crate::message::CapturedMessage>();
+    // with a Vec. Full payloads exist only in the byte-bounded ring,
+    // never in a second IPC backlog.
+    let (msg_tx, mut msg_rx) = tokio::sync::mpsc::channel::<String>(2048);
     // Schema-resolver wiring: when the session has an SR client,
     // spawn a task that drains `(message_id, schema_id)` enqueued by
     // the sink, fetches the schema, and patches the ring-buffer
@@ -393,30 +397,32 @@ pub async fn start_proxy_impl(
         if has_ref && resolver_tx.is_none() {
             message.schema_kind = Some("NO_REGISTRY".to_owned());
         }
-        buffer.push(message.clone());
+        let message_id = message.id.clone();
         // Enqueue resolution. Header GUID path takes precedence over
         // legacy id path (mirrors `decode_on_inspect`); both paths
         // cannot coexist on a single record per the producer
         // contract (CP 8.1.1+ DualSchemaIdDeserializer).
-        if let Some(tx) = resolver_tx.as_ref() {
-            let schema_ref = message
-                .schema_guid
-                .as_deref()
-                .map(|g| crate::schema_resolver::SchemaRef::Guid(g.to_owned()))
-                .or_else(|| message.schema_id.map(crate::schema_resolver::SchemaRef::Id));
-            if let Some(r) = schema_ref {
-                let _ = tx.try_send((message.id.clone(), r));
+        let schema_ref = message
+            .schema_guid
+            .as_deref()
+            .map(|g| crate::schema_resolver::SchemaRef::Guid(g.to_owned()))
+            .or_else(|| message.schema_id.map(crate::schema_resolver::SchemaRef::Id));
+        buffer.push(message);
+        if let (Some(tx), Some(schema_ref)) = (resolver_tx.as_ref(), schema_ref) {
+            let _ = tx.try_send((message_id.clone(), schema_ref));
+        }
+        match msg_tx.try_send(message_id) {
+            Ok(()) | Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                buffer.record_ui_summary_drop();
             }
         }
-        // unbounded send only fails when the receiver is gone (proxy
-        // stopped) — at that point dropping the message is correct.
-        let _ = msg_tx.send(message);
     });
     let app_for_batcher = app.clone();
     let filter_for_batcher = Arc::clone(&filter);
+    let buffer_for_batcher = Arc::clone(&state.buffer);
     tauri::async_runtime::spawn(async move {
-        let mut pending: Vec<crate::message::CapturedMessage> =
-            Vec::with_capacity(MESSAGE_BATCH_FLUSH_LEN);
+        let mut pending: Vec<String> = Vec::with_capacity(MESSAGE_BATCH_FLUSH_LEN);
         let mut flush_timer = tokio::time::interval(MESSAGE_BATCH_FLUSH_INTERVAL);
         flush_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -430,17 +436,17 @@ pub async fn start_proxy_impl(
                     if n == 0 {
                         // channel closed — stop_proxy dropped the sender.
                         if !pending.is_empty() {
-                            emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                            emit_message_batch(&app_for_batcher, &buffer_for_batcher, &filter_for_batcher, &mut pending);
                         }
                         break;
                     }
                     if pending.len() >= MESSAGE_BATCH_FLUSH_LEN {
-                        emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                        emit_message_batch(&app_for_batcher, &buffer_for_batcher, &filter_for_batcher, &mut pending);
                     }
                 }
                 _ = flush_timer.tick() => {
                     if !pending.is_empty() {
-                        emit_message_batch(&app_for_batcher, &filter_for_batcher, &mut pending);
+                        emit_message_batch(&app_for_batcher, &buffer_for_batcher, &filter_for_batcher, &mut pending);
                     }
                 }
             }
@@ -666,6 +672,24 @@ pub fn proto_frames(state: State<'_, AppState>, limit: Option<u32>) -> Vec<Proto
         .unwrap_or_default()
 }
 
+#[tauri::command]
+pub fn proto_frames_delta(
+    state: State<'_, AppState>,
+    after_id: Option<String>,
+    limit: Option<u32>,
+) -> ProtoFramesDelta {
+    let cap = limit.map_or(5000_usize, |n| (n as usize).min(5000));
+    if let Some(correlator) = state.correlator() {
+        correlator.summaries_delta(after_id.as_deref(), cap)
+    } else {
+        ProtoFramesDelta {
+            frames: Vec::new(),
+            reset: after_id.is_none(),
+            next_cursor: after_id,
+        }
+    }
+}
+
 /// Persistent session aggregate (client lib, topics, groups,
 /// errors). Folded incrementally so it survives ring eviction.
 #[tauri::command]
@@ -693,17 +717,48 @@ pub fn anti_patterns(state: State<'_, AppState>) -> AntiPatternsSnapshot {
 /// evicts them or the correlator is dropped.
 #[tauri::command]
 pub fn proto_frame_detail(state: State<'_, AppState>, id: String) -> Option<ProtoFrame> {
-    state
+    let mut frame = state
         .pinned_proto_frame(&id)
-        .or_else(|| state.correlator().and_then(|c| c.frame_detail(&id)))
+        .or_else(|| state.correlator().and_then(|c| c.frame_detail(&id)))?;
+    // Live details are already materialized by the correlator; pinned
+    // snapshots intentionally retain only raw bytes and need the same
+    // lazy expansion here.
+    frame.materialize_detail();
+    Some(frame)
+}
+
+#[tauri::command]
+pub fn proto_frame_decoded_batch(
+    state: State<'_, AppState>,
+    mut ids: Vec<String>,
+) -> Vec<DecodedBodyResult> {
+    ids.truncate(256);
+    let mut results = state.correlator().map_or_else(
+        || {
+            ids.iter()
+                .map(|id| DecodedBodyResult {
+                    id: id.clone(),
+                    decoded_json: None,
+                })
+                .collect()
+        },
+        |correlator| correlator.decoded_bodies(&ids),
+    );
+    for result in &mut results {
+        if let Some(frame) = state.pinned_proto_frame(&result.id) {
+            result.decoded_json = frame.decoded_body();
+        }
+    }
+    results
 }
 
 #[tauri::command]
 pub fn snapshot(state: State<'_, AppState>) -> Vec<MessageSummary> {
-    let snap = state.buffer.snapshot();
     let filter = state.filter.read().clone();
-    snap.into_iter()
-        .filter(|m| filter.as_ref().is_none_or(|f| f.matches(m)))
+    state
+        .buffer
+        .recent_filtered(5_000, |m| filter.as_ref().is_none_or(|f| f.matches(m)))
+        .into_iter()
         .map(|m| MessageSummary::from_full(&m))
         .collect()
 }
@@ -737,7 +792,28 @@ pub fn stats(state: State<'_, AppState>) -> CaptureStats {
     } else {
         0.0
     };
-    state.buffer.stats(throughput)
+    capture_stats(&state, throughput, 0.0)
+}
+
+pub fn capture_stats(
+    state: &AppState,
+    throughput_per_sec: f64,
+    drops_per_sec: f64,
+) -> CaptureStats {
+    let mut stats = state
+        .buffer
+        .stats_with_drops_rate(throughput_per_sec, drops_per_sec);
+    if let Some(correlator) = state.correlator() {
+        stats.analyzer_drops = correlator.analyzer_drops();
+        stats.record_extraction_drops = correlator.record_extraction_drops();
+        stats.agent_drops = correlator.agent_drops();
+    }
+    stats.drops = stats
+        .drops
+        .saturating_add(stats.analyzer_drops)
+        .saturating_add(stats.record_extraction_drops)
+        .saturating_add(stats.agent_drops);
+    stats
 }
 
 #[tauri::command]
@@ -846,7 +922,7 @@ fn spawn_stats_emitter(app: &AppHandle) {
             if !state.is_capturing() {
                 break;
             }
-            let snapshot = state.buffer.stats(0.0);
+            let snapshot = capture_stats(&state, 0.0, 0.0);
             let now = std::time::Instant::now();
             let dt = now.duration_since(last_tick).as_secs_f64().max(0.001);
             let total_delta = snapshot.total_received.saturating_sub(last_total);
@@ -858,9 +934,7 @@ fn spawn_stats_emitter(app: &AppHandle) {
             last_total = snapshot.total_received;
             last_drops = snapshot.drops;
             last_tick = now;
-            let stats = state
-                .buffer
-                .stats_with_drops_rate(throughput, drops_per_sec);
+            let stats = capture_stats(&state, throughput, drops_per_sec);
             let _ = app.emit("kapture:stats", &stats);
         }
     });

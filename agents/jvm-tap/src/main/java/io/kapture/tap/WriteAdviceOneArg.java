@@ -25,21 +25,27 @@ public class WriteAdviceOneArg {
     public static void enter(@Advice.This Object self,
                              @Advice.Argument(0) ByteBuffer[] srcs) {
         if (srcs == null) return;
-        int total = 0;
+        long total = 0;
         for (ByteBuffer b : srcs) {
             if (b != null) total += b.remaining();
         }
-        if (total == 0) return;
-        byte[] payload = new byte[total];
-        int off = 0;
-        for (ByteBuffer b : srcs) {
-            if (b == null) continue;
-            int n = b.remaining();
-            if (n == 0) continue;
-            ByteBuffer dup = b.duplicate();
-            dup.get(payload, off, n);
-            off += n;
+        if (!TapPublisher.tryReserve(total)) return;
+        boolean published = false;
+        try {
+            byte[] payload = new byte[(int) total];
+            int off = 0;
+            for (ByteBuffer b : srcs) {
+                if (b == null) continue;
+                int n = b.remaining();
+                if (n == 0) continue;
+                ByteBuffer dup = b.duplicate();
+                dup.get(payload, off, n);
+                off += n;
+            }
+            TapPublisher.publishReserved(self, (byte) 0, payload);
+            published = true;
+        } finally {
+            if (!published) TapPublisher.releaseReservation(total);
         }
-        TapPublisher.capture(self, (byte) 0, payload);
     }
 }

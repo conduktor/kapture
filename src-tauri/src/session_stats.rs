@@ -26,6 +26,8 @@ use crate::proto_summary::FrameSummary;
 /// stays in the proto ring; this is the at-a-glance summary in the
 /// Session Activity tab.
 const ERRORS_CAP: usize = 200;
+const LATENCY_HISTOGRAM_BUCKETS: usize = 256;
+const LATENCY_BUCKETS_PER_OCTAVE: f64 = 8.0;
 
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +88,21 @@ pub struct ErrorEvent {
     pub group_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LatencyStats {
+    pub local_port: u16,
+    pub api_key: i32,
+    pub api_name: String,
+    pub count: u64,
+    pub min_ms: f64,
+    pub max_ms: f64,
+    pub p50_ms: f64,
+    pub p95_ms: f64,
+    pub p99_ms: f64,
+    pub p999_ms: f64,
+}
+
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStats {
@@ -94,6 +111,7 @@ pub struct SessionStats {
     pub topics: Vec<TopicStats>,
     pub groups: Vec<GroupStats>,
     pub errors: Vec<ErrorEvent>,
+    pub latencies: Vec<LatencyStats>,
 }
 
 #[derive(Debug, Default)]
@@ -104,6 +122,69 @@ pub struct SessionFold {
     topics: HashMap<String, TopicAcc>,
     groups: HashMap<String, GroupAcc>,
     errors: VecDeque<ErrorEvent>,
+    /// Mergeable fixed-memory log histograms keyed by broker listener
+    /// and API. Eight buckets per power-of-two octave (~9% steps).
+    latencies: HashMap<(u16, i32), FixedLatencyHistogram>,
+}
+
+#[derive(Debug)]
+struct FixedLatencyHistogram {
+    buckets: Vec<u64>,
+    count: u64,
+    min_ms: f64,
+    max_ms: f64,
+    api_name: String,
+}
+
+impl FixedLatencyHistogram {
+    fn new(api_name: String) -> Self {
+        Self {
+            buckets: vec![0; LATENCY_HISTOGRAM_BUCKETS],
+            count: 0,
+            min_ms: f64::INFINITY,
+            max_ms: 0.0,
+            api_name,
+        }
+    }
+
+    fn record(&mut self, milliseconds: f64) {
+        let micros = (milliseconds * 1_000.0).max(1.0);
+        let raw = (micros.log2() * LATENCY_BUCKETS_PER_OCTAVE).floor();
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let index = (raw.max(0.0) as usize).min(LATENCY_HISTOGRAM_BUCKETS - 1);
+        self.buckets[index] = self.buckets[index].saturating_add(1);
+        self.count = self.count.saturating_add(1);
+        self.min_ms = self.min_ms.min(milliseconds);
+        self.max_ms = self.max_ms.max(milliseconds);
+    }
+
+    fn quantile(&self, quantile: f64) -> f64 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        #[allow(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss
+        )]
+        let target = ((self.count as f64 * quantile).ceil() as u64).max(1);
+        let mut seen = 0u64;
+        for (index, count) in self.buckets.iter().enumerate() {
+            seen = seen.saturating_add(*count);
+            if seen >= target {
+                #[allow(clippy::cast_precision_loss)]
+                let exponent = (index + 1) as f64 / LATENCY_BUCKETS_PER_OCTAVE;
+                return exponent.exp2() / 1_000.0;
+            }
+        }
+        self.max_ms
+    }
+}
+
+impl Default for FixedLatencyHistogram {
+    fn default() -> Self {
+        Self::new(String::new())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -141,6 +222,13 @@ impl SessionFold {
     #[allow(clippy::too_many_lines)]
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
         *self.connections.entry(frame.local_port).or_insert(0) += 1;
+        if matches!(frame.direction, crate::proto_event::ProtoDirection::Recv) && frame.rtt_ms > 0.0
+        {
+            self.latencies
+                .entry((frame.local_port, frame.api_key))
+                .or_insert_with(|| FixedLatencyHistogram::new(frame.api_name.clone()))
+                .record(frame.rtt_ms);
+        }
         let Some(s) = summary else { return };
         match s {
             FrameSummary::ApiVersionsRequest {
@@ -317,12 +405,31 @@ impl SessionFold {
             .collect();
         groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
 
+        let mut latencies: Vec<LatencyStats> = self
+            .latencies
+            .iter()
+            .map(|((local_port, api_key), histogram)| LatencyStats {
+                local_port: *local_port,
+                api_key: *api_key,
+                api_name: histogram.api_name.clone(),
+                count: histogram.count,
+                min_ms: histogram.min_ms,
+                max_ms: histogram.max_ms,
+                p50_ms: histogram.quantile(0.50),
+                p95_ms: histogram.quantile(0.95),
+                p99_ms: histogram.quantile(0.99),
+                p999_ms: histogram.quantile(0.999),
+            })
+            .collect();
+        latencies.sort_by_key(|latency| (latency.local_port, latency.api_key));
+
         SessionStats {
             client: self.client.clone(),
             connections,
             topics,
             groups,
             errors: self.errors.iter().cloned().collect(),
+            latencies,
         }
     }
 
@@ -332,5 +439,6 @@ impl SessionFold {
         self.topics.clear();
         self.groups.clear();
         self.errors.clear();
+        self.latencies.clear();
     }
 }

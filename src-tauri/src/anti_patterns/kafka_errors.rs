@@ -59,6 +59,17 @@ pub const fn is_fetch_session_error(code: i16) -> bool {
     matches!(code, INVALID_FETCH_SESSION_EPOCH | INVALID_SESSION_ID)
 }
 
+/// Transient errors for which healthy clients normally retry. A high
+/// rolling rate is a retry storm even when each individual retry is
+/// correct.
+#[must_use]
+pub const fn is_retriable(code: i16) -> bool {
+    matches!(
+        code,
+        3 | 5 | 6 | 7 | 13 | 14 | 15 | 16 | 19 | 20 | 47 | 56 | 70 | 71
+    )
+}
+
 /// Short name used in detection messages.
 #[must_use]
 pub const fn name(code: i16) -> &'static str {

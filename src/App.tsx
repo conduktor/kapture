@@ -43,6 +43,7 @@ import type {
   KafkaMessageDetail,
   ProtoFrame,
   ProtoFrameDetail,
+  ProtoFramesDelta,
   ProxyStatusSummary,
 } from "./types";
 import { useSchemaResolvedListener } from "./lib/useSchemaResolvedListener";
@@ -60,6 +61,12 @@ const INITIAL_STATS: CaptureStats = {
   bufferBytes: 0,
   bufferByteCapacity: 256 * 1024 * 1024,
   drops: 0,
+  bufferEvictions: 0,
+  oversizedDrops: 0,
+  uiSummaryDrops: 0,
+  analyzerDrops: 0,
+  recordExtractionDrops: 0,
+  agentDrops: 0,
   throughputPerSec: 0,
   dropsPerSec: 0,
 };
@@ -144,12 +151,14 @@ function App(): JSX.Element {
   // first tick lands).
   const [proxyStatusSummary, setProxyStatusSummary] = useState<ProxyStatusSummary | null>(null);
   const [protoFrames, setProtoFrames] = useState<ProtoFrame[]>([]);
+  const protoCursorRef = useRef<string | null>(null);
   const [sessionStats, setSessionStats] = useState<SessionStats>({
     client: null,
     connections: [],
     topics: [],
     groups: [],
     errors: [],
+    latencies: [],
   });
   const [antiPatterns, setAntiPatterns] = useState<AntiPatternsSnapshot>(EMPTY_ANTI_PATTERNS);
   const [selectedFrameId, setSelectedFrameId] = useState<string | null>(null);
@@ -267,6 +276,11 @@ function App(): JSX.Element {
         for (const m of event.payload) {
           pending.push(m);
         }
+        // requestAnimationFrame is suspended in hidden/minimized windows.
+        // Keep the pre-render queue bounded even if no frame fires for hours.
+        if (pending.length > UI_MAX_MESSAGES) {
+          pending.splice(0, pending.length - UI_MAX_MESSAGES);
+        }
         if (!rafScheduled) {
           rafScheduled = true;
           window.requestAnimationFrame(flush);
@@ -303,18 +317,28 @@ function App(): JSX.Element {
       return;
     }
     let cancelled = false;
+    let tickRunning = false;
+    protoCursorRef.current = null;
     const tick = async (): Promise<void> => {
-      if (pausedRef.current) {
+      if (pausedRef.current || tickRunning) {
         return;
       }
+      tickRunning = true;
       try {
-        const [frames, stats, ap] = await Promise.all([
-          invoke<ProtoFrame[]>("proto_frames", { limit: 5000 }),
+        const [delta, stats, ap] = await Promise.all([
+          invoke<ProtoFramesDelta>("proto_frames_delta", {
+            afterId: protoCursorRef.current,
+            limit: 5000,
+          }),
           invoke<SessionStats>("session_stats"),
           invoke<AntiPatternsSnapshot>("anti_patterns"),
         ]);
         if (!cancelled) {
-          setProtoFrames(frames);
+          protoCursorRef.current = delta.nextCursor;
+          setProtoFrames((current) => {
+            const next = delta.reset ? delta.frames : current.concat(delta.frames);
+            return next.slice(-UI_MAX_MESSAGES);
+          });
           setSessionStats(stats);
           setAntiPatterns(ap);
         }
@@ -322,6 +346,8 @@ function App(): JSX.Element {
         if (!cancelled) {
           console.warn("proto_frames poll failed", err);
         }
+      } finally {
+        tickRunning = false;
       }
     };
     void tick();
@@ -586,6 +612,7 @@ function App(): JSX.Element {
     messagesRef.current = [];
     setMessages([]);
     setProtoFrames([]);
+    protoCursorRef.current = null;
     setSelectedId(null);
     setSelectedFrameId(null);
   };

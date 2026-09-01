@@ -26,13 +26,12 @@ use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::warn;
 
 use crate::correlator::ProtoCorrelator;
-use crate::message::CapturedMessage;
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proxy_handle::RecordSink;
 use crate::proxy_provisioner::BrokerProvisioner;
 use crate::proxy_records::{
-    extract_from_fetch_response, extract_from_produce_request, extract_produce_offsets,
-    extracted_to_captured,
+    extract_from_fetch_response_bytes, extract_produce_offsets_bytes,
+    extract_produce_request_bytes, extracted_to_captured, ExtractedRecord,
 };
 use crate::proxy_redact::{redact_sasl_authenticate_body, API_KEY_SASL_AUTHENTICATE};
 use crate::proxy_topic_ids::TopicIdMap;
@@ -45,6 +44,8 @@ pub const PROTO_PAYLOAD_CAP: usize = 64 * 1024;
 /// the offending proxy connection instead of growing the correlation
 /// map unboundedly.
 pub const MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: usize = 8192;
+const MAX_PENDING_PRODUCE_RECORDS: usize = 100_000;
+const MAX_PENDING_PRODUCE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -158,11 +159,17 @@ pub fn peek_request_header(frame: &[u8]) -> Option<RequestHeaderPeek> {
 pub struct PendingRequest {
     pub header: RequestHeaderPeek,
     pub sent_at: Instant,
+    pub observed_nanos: Option<u64>,
 }
 
 impl PendingRequest {
     #[must_use]
-    pub fn rtt_at(&self, now: Instant) -> f64 {
+    pub fn rtt_at(&self, now: Instant, observed_nanos: Option<u64>) -> f64 {
+        if let (Some(request), Some(response)) = (self.observed_nanos, observed_nanos) {
+            if response >= request {
+                return (response - request) as f64 / 1_000_000.0;
+            }
+        }
         let elapsed = now.saturating_duration_since(self.sent_at);
         // ms with fractional precision, like the proto-hook path.
         elapsed.as_secs_f64() * 1000.0
@@ -181,7 +188,17 @@ pub struct CorrelationMap {
 }
 
 impl CorrelationMap {
+    #[cfg(test)]
     pub fn record_request(&self, corr_id: i32, header: RequestHeaderPeek) -> io::Result<()> {
+        self.record_request_at(corr_id, header, None)
+    }
+
+    pub fn record_request_at(
+        &self,
+        corr_id: i32,
+        header: RequestHeaderPeek,
+        observed_nanos: Option<u64>,
+    ) -> io::Result<()> {
         let mut inner = self.inner.lock();
         if !inner.contains_key(&corr_id) && inner.len() >= MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION {
             return Err(io::Error::other(format!(
@@ -193,6 +210,7 @@ impl CorrelationMap {
             PendingRequest {
                 header,
                 sent_at: Instant::now(),
+                observed_nanos,
             },
         );
         drop(inner);
@@ -201,6 +219,10 @@ impl CorrelationMap {
 
     pub fn take_response(&self, corr_id: i32) -> Option<PendingRequest> {
         self.inner.lock().remove(&corr_id)
+    }
+
+    pub fn discard_request(&self, corr_id: i32) {
+        self.inner.lock().remove(&corr_id);
     }
 }
 
@@ -321,11 +343,13 @@ where
     // The bucket holds (record, partition, index_within_partition);
     // final offset = base_offset_for_(topic, partition) + index.
     //
-    // acks=0 producers never get a response → the bucket lingers for
-    // the connection's lifetime and is dropped when the function
-    // returns. That's fine in practice (kafkajs/librdkafka default to
-    // acks=1+); a memory cap is a follow-up if it ever shows up.
-    let mut pending_produce: HashMap<i32, Vec<(CapturedMessage, i32, usize)>> = HashMap::new();
+    // `acks=0` is emitted immediately (offset unknown) and removed from
+    // the correlation map because no response can arrive. Acked requests
+    // are held as raw `Bytes`-backed records under explicit count + byte
+    // budgets; expensive hex/JSON materialization waits for the response.
+    let mut pending_produce: HashMap<i32, Vec<(ExtractedRecord, i32, usize)>> = HashMap::new();
+    let mut pending_produce_records = 0usize;
+    let mut pending_produce_bytes = 0usize;
 
     loop {
         tokio::select! {
@@ -343,7 +367,12 @@ where
                 )?;
                 let req_api_key = i16::try_from(event.api_key).unwrap_or(-1);
                 let req_api_version = i16::try_from(event.api_version).unwrap_or(-1);
-                correlator.record_event(&event);
+                let corr_id = event.corr_id;
+                // Forward first. Analysis and record extraction are
+                // observability work and must not inflate broker-facing
+                // request latency.
+                upstream_framed.send(bytes.clone()).await?;
+                correlator.enqueue_event(event);
                 if req_api_key == 0 {
                     // Produce request — extract records before forwarding.
                     // v13+ replaced the topic-name field with topic_id
@@ -353,26 +382,53 @@ where
                     // Hold the records in `pending_produce` instead of
                     // emitting; the matching response side fills in the
                     // broker-assigned offset and pushes them downstream.
-                    let records =
-                        extract_from_produce_request(req_api_version, &bytes, &topic_ids);
-                    if !records.is_empty() {
-                        let mut bucket: Vec<(CapturedMessage, i32, usize)> =
-                            Vec::with_capacity(records.len());
+                    if let Some(request) =
+                        extract_produce_request_bytes(req_api_version, bytes.clone(), &topic_ids)
+                    {
+                        let records_bytes = request.records.iter().fold(0usize, |total, record| {
+                            total.saturating_add(record.retained_payload_bytes())
+                        });
+                        if request.acks == 0 {
+                            corr_map.discard_request(corr_id);
+                            for mut record in request.records {
+                                record.offset = -1;
+                                record_sink(extracted_to_captured(record, conn_id.0));
+                            }
+                            continue;
+                        }
+                        if pending_produce_records.saturating_add(request.records.len())
+                            > MAX_PENDING_PRODUCE_RECORDS
+                            || pending_produce_bytes.saturating_add(records_bytes)
+                                > MAX_PENDING_PRODUCE_BYTES
+                        {
+                            correlator.record_extraction_drop(request.records.len());
+                            continue;
+                        }
+                        let mut bucket: Vec<(ExtractedRecord, i32, usize)> =
+                            Vec::with_capacity(request.records.len());
                         // Track per-partition counter so we can compute
                         // each record's index within its partition: final
                         // offset = base_offset(partition) + index.
                         let mut idx_per_partition: HashMap<i32, usize> = HashMap::new();
-                        for rec in records {
+                        for rec in request.records {
                             let partition = rec.partition;
                             let idx = idx_per_partition.entry(partition).or_insert(0);
-                            let captured = extracted_to_captured(rec, conn_id.0);
-                            bucket.push((captured, partition, *idx));
+                            bucket.push((rec, partition, *idx));
                             *idx += 1;
                         }
-                        pending_produce.insert(event.corr_id, bucket);
+                        pending_produce_records = pending_produce_records.saturating_add(bucket.len());
+                        pending_produce_bytes = pending_produce_bytes.saturating_add(records_bytes);
+                        if let Some(replaced) = pending_produce.insert(corr_id, bucket) {
+                            pending_produce_records = pending_produce_records.saturating_sub(replaced.len());
+                            pending_produce_bytes = pending_produce_bytes.saturating_sub(
+                                replaced.iter().fold(0usize, |total, (record, _, _)| {
+                                    total.saturating_add(record.retained_payload_bytes())
+                                }),
+                            );
+                            correlator.record_extraction_drop(replaced.len());
+                        }
                     }
                 }
-                upstream_framed.send(bytes).await?;
             }
             // Upstream → client (with rewrite)
             frame = upstream_framed.next() => {
@@ -388,50 +444,8 @@ where
                 )?;
                 let api_key = i16::try_from(event.api_key).unwrap_or(-1);
                 let api_version = i16::try_from(event.api_version).unwrap_or(-1);
-                correlator.record_event(&event);
-                if api_key == 0 {
-                    // Produce response — back-fill broker-assigned
-                    // offsets onto the records we held from the matching
-                    // request, then emit. If no pending bucket exists
-                    // (e.g. extraction failed earlier), this is a no-op.
-                    if let Some(bucket) = pending_produce.remove(&event.corr_id) {
-                        let offsets =
-                            extract_produce_offsets(api_version, &bytes, &topic_ids);
-                        for (mut msg, partition, idx) in bucket {
-                            if let Some(&base) = offsets.get(&(msg.topic.clone(), partition)) {
-                                // base + idx fits in i64 for any realistic
-                                // batch — Kafka offsets are i64 and the
-                                // index is bounded by the request batch
-                                // size (well below i64::MAX). try_from
-                                // pacifies the (theoretical) usize→i64
-                                // wrap on 64-bit targets without
-                                // changing observable behaviour.
-                                let idx_i64 = i64::try_from(idx).unwrap_or(i64::MAX);
-                                msg.offset = base.saturating_add(idx_i64);
-                            }
-                            record_sink(msg);
-                        }
-                    }
-                }
-                if api_key == 1 {
-                    // Fetch response — extract records before forwarding.
-                    // `bytes` is the codec output (no wire size prefix);
-                    // it starts at the ResponseHeader, which is what
-                    // `extract_from_fetch_response` expects. Stamp the
-                    // (corr_id, connection_id) of this very response
-                    // frame onto each record so the Messages tab can
-                    // jump back to it.
-                    for rec in extract_from_fetch_response(
-                        api_version,
-                        &bytes,
-                        &topic_ids,
-                        event.corr_id,
-                        event.connection_id,
-                    ) {
-                        record_sink(extracted_to_captured(rec, conn_id.0));
-                    }
-                }
-
+                let corr_id = event.corr_id;
+                let event_connection_id = event.connection_id;
                 let forward = if api_key >= 0 {
                     match crate::proxy_rewrite::rewrite_response(
                         api_key,
@@ -453,6 +467,56 @@ where
                     bytes.clone()
                 };
                 client_framed.send(forward).await?;
+                correlator.enqueue_event(event);
+                if api_key == 0 {
+                    // Produce response — back-fill broker-assigned
+                    // offsets onto the records we held from the matching
+                    // request, then emit. If no pending bucket exists
+                    // (e.g. extraction failed earlier), this is a no-op.
+                    if let Some(bucket) = pending_produce.remove(&corr_id) {
+                        pending_produce_records = pending_produce_records.saturating_sub(bucket.len());
+                        pending_produce_bytes = pending_produce_bytes.saturating_sub(
+                            bucket.iter().fold(0usize, |total, (record, _, _)| {
+                                total.saturating_add(record.retained_payload_bytes())
+                            }),
+                        );
+                        let offsets =
+                            extract_produce_offsets_bytes(api_version, bytes.clone(), &topic_ids)
+                                .unwrap_or_default();
+                        for (mut record, partition, idx) in bucket {
+                            if let Some(&base) = offsets.get(&(record.topic.clone(), partition)) {
+                                // base + idx fits in i64 for any realistic
+                                // batch — Kafka offsets are i64 and the
+                                // index is bounded by the request batch
+                                // size (well below i64::MAX). try_from
+                                // pacifies the (theoretical) usize→i64
+                                // wrap on 64-bit targets without
+                                // changing observable behaviour.
+                                let idx_i64 = i64::try_from(idx).unwrap_or(i64::MAX);
+                                record.offset = base.saturating_add(idx_i64);
+                            }
+                            record_sink(extracted_to_captured(record, conn_id.0));
+                        }
+                    }
+                }
+                if api_key == 1 {
+                    // Fetch response — extract records before forwarding.
+                    // `bytes` is the codec output (no wire size prefix);
+                    // it starts at the ResponseHeader, which is what
+                    // `extract_from_fetch_response` expects. Stamp the
+                    // (corr_id, connection_id) of this very response
+                    // frame onto each record so the Messages tab can
+                    // jump back to it.
+                    for rec in extract_from_fetch_response_bytes(
+                        api_version,
+                        bytes.clone(),
+                        &topic_ids,
+                        corr_id,
+                        event_connection_id,
+                    ).unwrap_or_default() {
+                        record_sink(extracted_to_captured(rec, conn_id.0));
+                    }
+                }
             }
         }
     }
@@ -477,6 +541,19 @@ pub fn build_proto_event(
     frame: &[u8],
     corr_map: &CorrelationMap,
 ) -> io::Result<ProtoEvent> {
+    build_proto_event_at(dir, conn_id, local_port, frame, corr_map, None, 0.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_proto_event_at(
+    dir: ProxyDirection,
+    conn_id: ConnectionId,
+    local_port: u16,
+    frame: &[u8],
+    corr_map: &CorrelationMap,
+    observed_nanos: Option<u64>,
+    capture_lag_ms: f64,
+) -> io::Result<ProtoEvent> {
     let body_len_i32 = i32::try_from(frame.len()).unwrap_or(i32::MAX);
     let payload_size = frame.len() + 4;
     let body_take = frame.len().min(PROTO_PAYLOAD_CAP - 4);
@@ -493,7 +570,7 @@ pub fn build_proto_event(
         ProxyDirection::ClientToUpstream => {
             let header = peek_request_header(frame);
             if let Some(h) = header {
-                corr_map.record_request(h.corr_id, h)?;
+                corr_map.record_request_at(h.corr_id, h, observed_nanos)?;
             }
             let api_key_i32 = header.map_or(-1, |h| i32::from(h.api_key));
             // Redact SaslAuthenticate request bodies BEFORE we hand the
@@ -515,6 +592,7 @@ pub fn build_proto_event(
                 local_port,
                 payload_size,
                 rtt_ms: 0.0,
+                capture_lag_ms,
                 payload: inspector_payload,
                 frame_error: None,
             }
@@ -527,7 +605,7 @@ pub fn build_proto_event(
                 0
             };
             let pending = corr_map.take_response(corr_id);
-            let rtt_ms = pending.map_or(0.0, |p| p.rtt_at(Instant::now()));
+            let rtt_ms = pending.map_or(0.0, |p| p.rtt_at(Instant::now(), observed_nanos));
             ProtoEvent {
                 direction: ProtoDirection::Recv,
                 api_key: pending.map_or(-1, |p| i32::from(p.header.api_key)),
@@ -537,6 +615,7 @@ pub fn build_proto_event(
                 local_port,
                 payload_size,
                 rtt_ms,
+                capture_lag_ms,
                 payload,
                 frame_error: None,
             }

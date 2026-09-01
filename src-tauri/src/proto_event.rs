@@ -37,6 +37,9 @@ pub struct ProtoEvent {
     pub local_port: u16,
     pub payload_size: usize,
     pub rtt_ms: f64,
+    /// Delay between capture in the observed process and emission to
+    /// Kapture. Zero for the in-process proxy path.
+    pub capture_lag_ms: f64,
     /// Captured wire-payload prefix. Empty if the proxy elected not to
     /// copy bytes (zero-length frame).
     pub payload: Vec<u8>,

@@ -14,7 +14,9 @@ use crate::anti_patterns::fold::AntiPatternsFold;
 use crate::anti_patterns::{AntiPatternKind, DetectorConfig, Severity};
 use crate::correlator::ProtoFrame;
 use crate::proto_event::ProtoDirection;
-use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
+use crate::proto_summary::{
+    FrameSummary, PartitionBytes, ProducePartitionError, TopicPartitionError,
+};
 
 fn frame(id: &str, ts: &str, connection_id: i32, local_port: u16) -> ProtoFrame {
     ProtoFrame {
@@ -30,8 +32,10 @@ fn frame(id: &str, ts: &str, connection_id: i32, local_port: u16) -> ProtoFrame 
         size: 0,
         captured: 0,
         rtt_ms: 0.0,
+        capture_lag_ms: 0.0,
         frame_error: None,
         payload_hex: String::new(),
+        raw_payload: Vec::new(),
         decoded_json: None,
         summary: None,
     }
@@ -47,6 +51,7 @@ fn produce(
     FrameSummary::ProduceRequest {
         topics: vec!["t".into()],
         partitions: vec![],
+        partition_bytes: vec![],
         record_count,
         batch_bytes: 100,
         batch_count: 1,
@@ -883,4 +888,170 @@ fn gc_drops_stale_per_connection_state() {
     assert!(!fold.produce_codec.contains_key(&42));
     assert!(!fold.produce_shape.contains_key(&42));
     assert!(!fold.last_seen.contains_key(&42));
+}
+
+#[test]
+fn hung_request_appears_at_timeout_and_response_clears_it() {
+    let cfg = DetectorConfig {
+        hung_request_timeout_ms: 0,
+        ..DetectorConfig::default()
+    };
+    let mut fold = AntiPatternsFold::new(cfg);
+    let mut request = frame("req", "2026-05-19T10:00:00Z", 77, 9092);
+    request.corr_id = 123;
+    fold.absorb(&request, Some(&produce(1, 1, Some(1), Some(9), false)));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::HungRequests));
+
+    let mut response = frame("resp", "2026-05-19T10:00:01Z", 77, 9092);
+    response.direction = ProtoDirection::Recv;
+    response.corr_id = 123;
+    fold.absorb(&response, None);
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::HungRequests));
+}
+
+#[test]
+fn in_flight_thresholds_have_a_clean_boundary() {
+    let cfg = DetectorConfig {
+        in_flight_saturation_threshold: 3,
+        idempotent_produce_in_flight_threshold: 2,
+        hung_request_timeout_ms: u64::MAX,
+        ..DetectorConfig::default()
+    };
+    let mut fold = AntiPatternsFold::new(cfg);
+    for corr_id in 1..=2 {
+        let mut request = frame(&format!("req-{corr_id}"), "t", 5, 9092);
+        request.corr_id = corr_id;
+        fold.absorb(&request, Some(&produce(1, 1, Some(1), Some(42), false)));
+    }
+    assert!(fold.snapshot().detections.iter().all(|d| {
+        !matches!(
+            d.kind,
+            AntiPatternKind::InFlightSaturation | AntiPatternKind::ExcessiveIdempotentInFlight
+        )
+    }));
+    let mut third = frame("req-3", "t", 5, 9092);
+    third.corr_id = 3;
+    fold.absorb(&third, Some(&produce(1, 1, Some(1), Some(42), false)));
+    let snapshot = fold.snapshot();
+    assert!(snapshot
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::InFlightSaturation));
+    assert!(snapshot
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::ExcessiveIdempotentInFlight));
+}
+
+#[test]
+fn read_uncommitted_requires_transactional_traffic() {
+    let mut fold = AntiPatternsFold::default();
+    let fetch = FrameSummary::FetchRequest {
+        topics: vec!["orders".into()],
+        min_bytes: 1,
+        max_wait_ms: 500,
+        isolation_level: 0,
+        session_id: 0,
+        session_epoch: 0,
+    };
+    let consumer = frame("fetch", "t", 1, 9092);
+    fold.absorb(&consumer, Some(&fetch));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::ReadUncommittedTransactional));
+    let producer = frame("produce", "t", 2, 9092);
+    fold.absorb(&producer, Some(&produce(1, -1, Some(1), Some(42), true)));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::ReadUncommittedTransactional));
+}
+
+#[test]
+fn partition_skew_fires_only_after_sample_and_ratio_thresholds() {
+    let cfg = DetectorConfig {
+        partition_skew_min_bytes: 100,
+        partition_skew_min_samples: 4,
+        partition_skew_ratio: 0.80,
+        ..DetectorConfig::default()
+    };
+    let mut fold = AntiPatternsFold::new(cfg);
+    let mut summary = produce(1, 1, Some(1), Some(42), false);
+    let FrameSummary::ProduceRequest {
+        ref mut partition_bytes,
+        ..
+    } = summary
+    else {
+        unreachable!()
+    };
+    *partition_bytes = vec![
+        PartitionBytes {
+            topic: "orders".into(),
+            partition: 0,
+            bytes: 90,
+        },
+        PartitionBytes {
+            topic: "orders".into(),
+            partition: 1,
+            bytes: 10,
+        },
+    ];
+    let f = frame("skew", "t", 3, 9092);
+    fold.absorb(&f, Some(&summary));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::PartitionSkew));
+    fold.absorb(&f, Some(&summary));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::PartitionSkew));
+}
+
+#[test]
+fn retry_storm_fires_on_threshold_not_single_error() {
+    let cfg = DetectorConfig {
+        retry_storm_threshold: 3,
+        ..DetectorConfig::default()
+    };
+    let mut fold = AntiPatternsFold::new(cfg);
+    let response = FrameSummary::ProduceResponse {
+        errors: vec![ProducePartitionError {
+            topic: "orders".into(),
+            partition: 0,
+            error_code: 6,
+            current_leader_id: None,
+        }],
+        throttle_time_ms: 0,
+    };
+    let mut f = frame("retry", "t", 4, 9092);
+    f.direction = ProtoDirection::Recv;
+    for _ in 0..2 {
+        fold.absorb(&f, Some(&response));
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::RetryStorm));
+    fold.absorb(&f, Some(&response));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::RetryStorm));
 }

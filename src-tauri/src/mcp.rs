@@ -328,7 +328,7 @@ impl KaptureMcp {
         let throughput = total as f64 / elapsed;
         Ok(Json(StatsResponse {
             capturing: state.is_capturing(),
-            stats: state.buffer.stats(throughput),
+            stats: crate::commands::capture_stats(&state, throughput, 0.0),
         }))
     }
 
@@ -433,8 +433,10 @@ impl KaptureMcp {
         Parameters(InspectParams { id }): Parameters<InspectParams>,
     ) -> Result<Json<InspectResponse>, ErrorData> {
         let state = self.state()?;
-        let snap = state.buffer.snapshot();
-        let message = snap.into_iter().find(|m| m.id == id);
+        let message = state.buffer.find_by_id(&id).map(|mut message| {
+            message.materialize_detail();
+            message
+        });
         Ok(Json(InspectResponse {
             found: message.is_some(),
             message,
@@ -471,9 +473,12 @@ impl KaptureMcp {
     ) -> Result<Json<InspectFrameResponse>, ErrorData> {
         let state = self.state()?;
         let frame = state
-            .correlator()
-            .and_then(|c| c.frame_detail(&id))
-            .map(redact_frame_for_mcp);
+            .pinned_proto_frame(&id)
+            .or_else(|| state.correlator().and_then(|c| c.frame_detail(&id)))
+            .map(|mut frame| {
+                frame.materialize_detail();
+                redact_frame_for_mcp(frame)
+            });
         Ok(Json(InspectFrameResponse {
             found: frame.is_some(),
             frame,
@@ -787,6 +792,7 @@ impl ServerHandler for KaptureMcp {
 /// fields are suffixed with `…[+N more]` so the agent sees the
 /// elision was deliberate and not corruption.
 fn trim_message_for_snapshot(mut m: CapturedMessage) -> CapturedMessage {
+    m.materialize_detail();
     m.raw_hex = trim_string(&m.raw_hex, SNAPSHOT_RAW_HEX_PREVIEW_LIMIT);
     m.payload = trim_decoded(m.payload);
     if let Some(k) = m.key.as_mut() {
@@ -881,6 +887,7 @@ fn redact_frame_for_mcp(mut f: ProtoFrame) -> ProtoFrame {
         SASL_HANDSHAKE_API_KEY | SASL_AUTHENTICATE_API_KEY
     ) {
         f.payload_hex = String::new();
+        f.raw_payload.clear();
         f.captured = 0;
         f.decoded_json = Some(serde_json::Value::String(
             "[redacted: SASL credentials]".to_owned(),

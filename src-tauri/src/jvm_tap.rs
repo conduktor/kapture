@@ -6,7 +6,8 @@
 //!
 //! ```text
 //!   u8   direction      (0 = outgoing/write, 1 = incoming/read)
-//!   u64  nanos_since    (System.nanoTime() — monotonic, not wall-clock)
+//!   u64  observed_nanos (System.nanoTime() at Kafka read/write advice)
+//!   u64  emitted_nanos  (System.nanoTime() on the UDS writer thread)
 //!   u32  connection_id  (per agent process; not globally unique)
 //!   u32  payload_len
 //!   ...  payload bytes
@@ -35,7 +36,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tracing::{debug, info, warn};
 
 use crate::correlator::ProtoCorrelator;
-use crate::proxy::{build_proto_event, ConnectionId, CorrelationMap, ProxyDirection};
+use crate::proxy::{build_proto_event_at, ConnectionId, CorrelationMap, ProxyDirection};
 
 /// Maximum bytes we are willing to hold per `(connection, direction)`
 /// reassembly buffer. A well-behaved client never has more than one
@@ -44,7 +45,8 @@ use crate::proxy::{build_proto_event, ConnectionId, CorrelationMap, ProxyDirecti
 const MAX_REASSEMBLY_BUFFER: usize = 8 * 1024 * 1024;
 
 /// Header on every UDS frame from the agent. See module-level docs.
-const FRAME_HEADER_LEN: usize = 1 + 8 + 4 + 4;
+const FRAME_HEADER_LEN: usize = 1 + 8 + 8 + 4 + 4;
+const DIRECTION_HEALTH: u8 = 2;
 
 /// Per-Kafka-frame length cap. Defensive: matches the proxy's
 /// `PROTO_PAYLOAD_CAP` order of magnitude. Anything bigger than this
@@ -321,6 +323,7 @@ impl AgentSession {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn run_agent_session(
     mut stream: UnixStream,
     correlator: Arc<ProtoCorrelator>,
@@ -362,17 +365,37 @@ async fn run_agent_session(
         }
 
         let direction = header_buf[0];
-        let payload_len = u32::from_le_bytes([
-            header_buf[13],
-            header_buf[14],
-            header_buf[15],
-            header_buf[16],
-        ]) as usize;
-        let agent_conn_id = u32::from_le_bytes([
+        let observed_nanos = u64::from_le_bytes([
+            header_buf[1],
+            header_buf[2],
+            header_buf[3],
+            header_buf[4],
+            header_buf[5],
+            header_buf[6],
+            header_buf[7],
+            header_buf[8],
+        ]);
+        let emitted_nanos = u64::from_le_bytes([
             header_buf[9],
             header_buf[10],
             header_buf[11],
             header_buf[12],
+            header_buf[13],
+            header_buf[14],
+            header_buf[15],
+            header_buf[16],
+        ]);
+        let payload_len = u32::from_le_bytes([
+            header_buf[21],
+            header_buf[22],
+            header_buf[23],
+            header_buf[24],
+        ]) as usize;
+        let agent_conn_id = u32::from_le_bytes([
+            header_buf[17],
+            header_buf[18],
+            header_buf[19],
+            header_buf[20],
         ]);
 
         if payload_len == 0 {
@@ -410,11 +433,32 @@ async fn run_agent_session(
             }
         }
 
+        if direction == DIRECTION_HEALTH {
+            if payload.len() != 8 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "jvm-tap: health payload must be one u64",
+                ));
+            }
+            let drops = u64::from_le_bytes(payload.as_slice().try_into().map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "jvm-tap: invalid health payload",
+                )
+            })?);
+            correlator.record_agent_drops(drops);
+            continue;
+        }
+
+        let capture_lag_ms = emitted_nanos.saturating_sub(observed_nanos) as f64 / 1_000_000.0;
+
         if let Err(err) = process_payload(
             &mut session,
             &correlator,
             agent_conn_id,
             direction,
+            observed_nanos,
+            capture_lag_ms,
             &payload,
         ) {
             warn!(
@@ -433,6 +477,8 @@ fn process_payload(
     correlator: &Arc<ProtoCorrelator>,
     agent_conn_id: u32,
     direction: u8,
+    observed_nanos: u64,
+    capture_lag_ms: f64,
     payload: &[u8],
 ) -> io::Result<()> {
     let proxy_dir = match direction {
@@ -503,8 +549,16 @@ fn process_payload(
         // local_port = 0: the agent path is not behind a proxy
         // listener. The `ProtoEvent` docstring carries the same
         // defensive default for non-proxy sources.
-        let event = build_proto_event(proxy_dir, conn_id, 0, &body, &corr_map)?;
-        correlator.record_event(&event);
+        let event = build_proto_event_at(
+            proxy_dir,
+            conn_id,
+            0,
+            &body,
+            &corr_map,
+            (observed_nanos != 0).then_some(observed_nanos),
+            capture_lag_ms,
+        )?;
+        correlator.enqueue_event(event);
     }
 
     // Reclaim the allocation when reassembly fully drains. `split_to`

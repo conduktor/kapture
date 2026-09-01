@@ -37,6 +37,33 @@ pub struct DecodedField {
     pub value: DecodedValue,
 }
 
+impl DecodedValue {
+    /// Estimated bytes retained by heap allocations below this value.
+    /// Inline enum/field storage is counted by the owning vector or
+    /// `CapturedMessage`; this method accounts for String and Vec buffers.
+    #[must_use]
+    pub fn estimated_heap_bytes(&self) -> usize {
+        match self {
+            Self::Primitive { value, .. } => value.capacity(),
+            Self::Bytes { hex, .. } => hex.capacity(),
+            Self::Object { fields } => fields
+                .capacity()
+                .saturating_mul(std::mem::size_of::<DecodedField>())
+                .saturating_add(fields.iter().fold(0usize, |total, field| {
+                    total
+                        .saturating_add(field.name.capacity())
+                        .saturating_add(field.value.estimated_heap_bytes())
+                })),
+            Self::Array { items } => items
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Self>())
+                .saturating_add(items.iter().fold(0usize, |total, item| {
+                    total.saturating_add(item.estimated_heap_bytes())
+                })),
+        }
+    }
+}
+
 /// Decode a payload using the JSON heuristic, falling back to bytes.
 pub fn decode_payload(bytes: Option<&[u8]>) -> DecodedValue {
     let Some(bytes) = bytes else {
@@ -54,6 +81,25 @@ pub fn decode_payload(bytes: Option<&[u8]>) -> DecodedValue {
     serde_json::from_slice::<Value>(bytes).map_or_else(
         |_| DecodedValue::Bytes {
             hex: hex::encode(bytes),
+            length: bytes.len(),
+        },
+        |value| from_json(&value),
+    )
+}
+
+/// Capture-path decode. JSON remains structurally useful for filters;
+/// opaque binary values keep only their length because the owning
+/// message already retains the raw bytes. Detail inspection fills hex.
+pub fn decode_payload_lazy_bytes(bytes: Option<&[u8]>) -> DecodedValue {
+    let Some(bytes) = bytes else {
+        return DecodedValue::Bytes {
+            hex: String::new(),
+            length: 0,
+        };
+    };
+    serde_json::from_slice::<Value>(bytes).map_or_else(
+        |_| DecodedValue::Bytes {
+            hex: String::new(),
             length: bytes.len(),
         },
         |value| from_json(&value),

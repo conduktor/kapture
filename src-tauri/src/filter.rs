@@ -657,6 +657,7 @@ mod tests {
                 ],
             },
             raw_hex: String::new(),
+            raw_bytes: Vec::new(),
             fetch: Some(crate::correlator::FetchMetadata {
                 api_key: 1,
                 api_name: "FetchResponse".to_owned(),

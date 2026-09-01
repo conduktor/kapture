@@ -71,6 +71,8 @@ export interface ProtoFrame {
   captured: number;
   /** Round-trip time in ms. Only meaningful when `direction === "recv"`. */
   rttMs: number;
+  /** Delay inside an external tap before Kapture received the frame. */
+  captureLagMs: number;
   /**
    * Typed projection of the decoded body for APIs the Session
    * Activity tab aggregates. `undefined` for non-projected APIs or
@@ -159,6 +161,17 @@ export interface ProtoFrameDetail extends ProtoFrame {
    * view.
    */
   decodedJson?: unknown;
+}
+
+export interface ProtoFramesDelta {
+  frames: ProtoFrame[];
+  reset: boolean;
+  nextCursor: string | null;
+}
+
+export interface DecodedBodyResult {
+  id: string;
+  decodedJson: unknown;
 }
 
 /**
@@ -350,6 +363,12 @@ export interface CaptureStats {
   bufferBytes: number;
   bufferByteCapacity: number;
   drops: number;
+  bufferEvictions: number;
+  oversizedDrops: number;
+  uiSummaryDrops: number;
+  analyzerDrops: number;
+  recordExtractionDrops: number;
+  agentDrops: number;
   throughputPerSec: number;
   /** Drops/sec over the last stats tick. Sustained > 0 = hemorrhage. */
   dropsPerSec: number;

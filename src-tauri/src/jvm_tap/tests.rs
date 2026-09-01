@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
+use crate::proto_event::ProtoDirection;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
@@ -16,14 +17,46 @@ async fn write_agent_frame(
     agent_conn_id: u32,
     payload: &[u8],
 ) -> io::Result<()> {
+    write_agent_frame_at(stream, direction, agent_conn_id, 0, 0, payload).await
+}
+
+async fn write_agent_frame_at(
+    stream: &mut UnixStream,
+    direction: u8,
+    agent_conn_id: u32,
+    observed_nanos: u64,
+    emitted_nanos: u64,
+    payload: &[u8],
+) -> io::Result<()> {
     let mut header = Vec::with_capacity(FRAME_HEADER_LEN);
     header.push(direction);
-    header.extend_from_slice(&0u64.to_le_bytes()); // nanos — ignored by the listener
+    header.extend_from_slice(&observed_nanos.to_le_bytes());
+    header.extend_from_slice(&emitted_nanos.to_le_bytes());
     header.extend_from_slice(&agent_conn_id.to_le_bytes());
     let len = u32::try_from(payload.len()).unwrap();
     header.extend_from_slice(&len.to_le_bytes());
     stream.write_all(&header).await?;
     stream.write_all(payload).await
+}
+
+#[tokio::test]
+async fn health_frame_reports_agent_drops() {
+    let (handle, correlator, path) = fresh_tap().await;
+    let mut stream = UnixStream::connect(&path).await.unwrap();
+    write_agent_frame(&mut stream, DIRECTION_HEALTH, 0, &17u64.to_le_bytes())
+        .await
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while correlator.agent_drops() != 17 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("health frame should be consumed");
+
+    drop(stream);
+    handle.stop().await;
 }
 
 /// Build a minimal Kafka request frame: 4-byte BE length prefix
@@ -223,7 +256,8 @@ async fn agent_disconnect_after_header_does_not_hang() {
     let payload_len = 1024u32;
     let mut header = Vec::with_capacity(FRAME_HEADER_LEN);
     header.push(0); // direction = write
-    header.extend_from_slice(&0u64.to_le_bytes());
+    header.extend_from_slice(&0u64.to_le_bytes()); // observed nanos
+    header.extend_from_slice(&0u64.to_le_bytes()); // emitted nanos
     header.extend_from_slice(&7u32.to_le_bytes()); // agent_conn_id
     header.extend_from_slice(&payload_len.to_le_bytes());
     stream.write_all(&header).await.unwrap();
@@ -422,6 +456,54 @@ async fn request_and_response_with_same_corr_id_are_paired() {
     handle.stop().await;
 }
 
+#[tokio::test]
+async fn monotonic_timestamps_exclude_agent_writer_queueing_from_rtt() {
+    let (handle, correlator, path) = fresh_tap().await;
+    let mut stream = UnixStream::connect(&path).await.unwrap();
+    let req = make_api_versions_request_frame(8080);
+    write_agent_frame_at(&mut stream, 0, 44, 1_000_000_000, 2_000_000_000, &req)
+        .await
+        .unwrap();
+
+    // Wall time deliberately differs from the 25 ms observation RTT.
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    let mut resp_frame = 4u32.to_be_bytes().to_vec();
+    resp_frame.extend_from_slice(&8080i32.to_be_bytes());
+    write_agent_frame_at(
+        &mut stream,
+        1,
+        44,
+        1_025_000_000,
+        3_000_000_000,
+        &resp_frame,
+    )
+    .await
+    .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while correlator.frame_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let frames = correlator.summaries(10);
+    let send = frames
+        .iter()
+        .find(|frame| matches!(frame.direction, ProtoDirection::Send))
+        .unwrap();
+    let recv = frames
+        .iter()
+        .find(|frame| matches!(frame.direction, ProtoDirection::Recv))
+        .unwrap();
+    assert!((recv.rtt_ms - 25.0).abs() < f64::EPSILON);
+    assert!((send.capture_lag_ms - 1_000.0).abs() < f64::EPSILON);
+    assert!((recv.capture_lag_ms - 1_975.0).abs() < f64::EPSILON);
+
+    drop(stream);
+    handle.stop().await;
+}
+
 /// `process_payload` must reject NEW `agent_conn_id`s once the
 /// per-session cap is reached. Existing entries are unaffected —
 /// LRU-evicting an in-progress reassembly buffer would corrupt
@@ -438,13 +520,14 @@ async fn per_session_conn_cap_drops_new_agent_conn_ids_past_the_limit() {
     // Seed the session up to the cap with empty entries.
     let frame = make_api_versions_request_frame(7);
     for i in 0..u32::try_from(MAX_AGENT_CONN_IDS_PER_SESSION).unwrap() {
-        process_payload(&mut session, &correlator, i, 0, &frame).unwrap();
+        process_payload(&mut session, &correlator, i, 0, 0, 0.0, &frame).unwrap();
     }
+    correlator.flush_analysis().await;
     assert_eq!(session.conn_ids.len(), MAX_AGENT_CONN_IDS_PER_SESSION);
     let frames_at_cap = correlator.frame_count();
     // One MORE agent_conn_id past the cap — must be dropped.
     let beyond = u32::try_from(MAX_AGENT_CONN_IDS_PER_SESSION).unwrap();
-    process_payload(&mut session, &correlator, beyond, 0, &frame).unwrap();
+    process_payload(&mut session, &correlator, beyond, 0, 0, 0.0, &frame).unwrap();
     assert_eq!(
         session.conn_ids.len(),
         MAX_AGENT_CONN_IDS_PER_SESSION,
@@ -458,7 +541,8 @@ async fn per_session_conn_cap_drops_new_agent_conn_ids_past_the_limit() {
     // An EXISTING agent_conn_id must still work after we hit the cap.
     let existing = 42u32;
     let before = correlator.frame_count();
-    process_payload(&mut session, &correlator, existing, 0, &frame).unwrap();
+    process_payload(&mut session, &correlator, existing, 0, 0, 0.0, &frame).unwrap();
+    correlator.flush_analysis().await;
     assert_eq!(
         correlator.frame_count(),
         before + 1,
@@ -490,8 +574,14 @@ async fn reassembly_buffer_capacity_shrinks_after_large_frame_drains() {
     frame.extend_from_slice(&(-1i16).to_be_bytes()); // null client_id
     frame.extend_from_slice(&vec![0u8; body_size - 10]);
 
-    process_payload(&mut session, &correlator, 9, 0, &frame).unwrap();
-    assert_eq!(correlator.frame_count(), 1, "frame should have decoded");
+    process_payload(&mut session, &correlator, 9, 0, 0, 0.0, &frame).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while correlator.frame_count() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("bounded analyzer should drain");
 
     let buf = session
         .buffers

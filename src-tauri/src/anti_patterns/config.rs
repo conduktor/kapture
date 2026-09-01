@@ -32,14 +32,16 @@ use crate::anti_patterns::state::{
     ACL_DENY_THRESHOLD, AUTOCOMMIT_INTERVAL_MS, AUTOCOMMIT_INTERVAL_TOLERANCE,
     AUTOCOMMIT_MIN_SAMPLES, COMPRESSION_OFF_MIN_RATE, COMPRESSION_OFF_MIN_SAMPLES,
     COOPERATIVE_STICKY_CHURN_THRESHOLD, COORDINATOR_CHURN_THRESHOLD,
-    FETCH_SESSION_ERRORS_THRESHOLD, METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC,
+    FETCH_SESSION_ERRORS_THRESHOLD, HUNG_REQUEST_TIMEOUT, IDEMPOTENT_PRODUCE_IN_FLIGHT_THRESHOLD,
+    IN_FLIGHT_SATURATION_THRESHOLD, METADATA_STORM_MIN_SAMPLES, METADATA_STORM_RATE_PER_SEC,
     NON_IDEMPOTENT_MIN_SAMPLES, OFFSET_OUT_OF_RANGE_THRESHOLD, OVERCOMMIT_MIN_SAMPLES,
-    OVERCOMMIT_RATE_PER_SEC, POLL_STALL_GAP, POLL_STALL_MIN_FETCHES,
+    OVERCOMMIT_RATE_PER_SEC, PARTITION_SKEW_MIN_BYTES, PARTITION_SKEW_MIN_SAMPLES,
+    PARTITION_SKEW_RATIO, POLL_STALL_GAP, POLL_STALL_MIN_FETCHES,
     PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
     PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS, REBALANCE_JOINS_IN_WINDOW,
-    SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES, TIGHT_FETCH_MIN_RATE,
-    TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE, TINY_BATCH_MIN_SAMPLES,
-    TINY_BATCH_RECORDS_PER_PRODUCE, UNKNOWN_TOPIC_POLL_THRESHOLD,
+    RETRY_STORM_THRESHOLD, SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES,
+    TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE,
+    TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE, UNKNOWN_TOPIC_POLL_THRESHOLD,
 };
 
 /// Tunable thresholds for the anti-pattern detectors. Serialized into a
@@ -93,6 +95,13 @@ pub struct DetectorConfig {
     pub unknown_topic_poll_threshold: usize,
     pub offset_out_of_range_threshold: usize,
     pub acl_deny_threshold: usize,
+    pub hung_request_timeout_ms: u64,
+    pub in_flight_saturation_threshold: usize,
+    pub idempotent_produce_in_flight_threshold: usize,
+    pub retry_storm_threshold: usize,
+    pub partition_skew_min_bytes: u64,
+    pub partition_skew_min_samples: u32,
+    pub partition_skew_ratio: f64,
 }
 
 impl Default for DetectorConfig {
@@ -128,6 +137,14 @@ impl Default for DetectorConfig {
             unknown_topic_poll_threshold: UNKNOWN_TOPIC_POLL_THRESHOLD,
             offset_out_of_range_threshold: OFFSET_OUT_OF_RANGE_THRESHOLD,
             acl_deny_threshold: ACL_DENY_THRESHOLD,
+            hung_request_timeout_ms: u64::try_from(HUNG_REQUEST_TIMEOUT.as_millis())
+                .unwrap_or(30_000),
+            in_flight_saturation_threshold: IN_FLIGHT_SATURATION_THRESHOLD,
+            idempotent_produce_in_flight_threshold: IDEMPOTENT_PRODUCE_IN_FLIGHT_THRESHOLD,
+            retry_storm_threshold: RETRY_STORM_THRESHOLD,
+            partition_skew_min_bytes: PARTITION_SKEW_MIN_BYTES,
+            partition_skew_min_samples: PARTITION_SKEW_MIN_SAMPLES,
+            partition_skew_ratio: PARTITION_SKEW_RATIO,
         }
     }
 }

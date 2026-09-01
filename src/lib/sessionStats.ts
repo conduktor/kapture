@@ -45,12 +45,26 @@ export interface ErrorEvent {
   groupId?: string;
 }
 
+export interface LatencyStats {
+  localPort: number;
+  apiKey: number;
+  apiName: string;
+  count: number;
+  minMs: number;
+  maxMs: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  p999Ms: number;
+}
+
 export interface SessionStats {
   client: ClientInfo | null;
   connections: ConnectionInfo[];
   topics: TopicStats[];
   groups: GroupStats[];
   errors: ErrorEvent[];
+  latencies: LatencyStats[];
 }
 
 export const EMPTY_SESSION_STATS: SessionStats = {
@@ -59,6 +73,7 @@ export const EMPTY_SESSION_STATS: SessionStats = {
   topics: [],
   groups: [],
   errors: [],
+  latencies: [],
 };
 
 /**

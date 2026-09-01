@@ -17,12 +17,171 @@ use crate::anti_patterns::kafka_errors as kerr;
 use crate::anti_patterns::state::{RATE_QUEUE_CAP, RATE_WINDOW};
 use crate::anti_patterns::{AntiPatternKind, Severity};
 use crate::correlator::ProtoFrame;
-use crate::proto_summary::{FrameSummary, ProducePartitionError, TopicPartitionError};
+use crate::proto_summary::{
+    FrameSummary, PartitionBytes, ProducePartitionError, TopicPartitionError,
+};
 
 /// `ConsumerGroupHeartbeat` API key — used to gate KIP-848 detection.
 const API_KEY_CONSUMER_GROUP_HEARTBEAT: i16 = 68;
 
 impl AntiPatternsFold {
+    pub(super) fn mark_transactional_traffic(&mut self, frame: &ProtoFrame) {
+        self.transactional_ports.insert(frame.local_port);
+        if self.read_uncommitted_ports.contains(&frame.local_port) {
+            self.upsert(
+                AntiPatternKind::ReadUncommittedTransactional,
+                format!("port={}", frame.local_port),
+                Severity::Warn,
+                "read_uncommitted consumer with transactional traffic".into(),
+                "Transactional records and a read_uncommitted Fetch were observed on the same broker listener; aborted records may be exposed.".into(),
+                frame,
+            );
+        }
+    }
+
+    pub(super) fn mark_read_uncommitted(&mut self, frame: &ProtoFrame) {
+        self.read_uncommitted_ports.insert(frame.local_port);
+        if self.transactional_ports.contains(&frame.local_port) {
+            self.upsert(
+                AntiPatternKind::ReadUncommittedTransactional,
+                format!("port={}", frame.local_port),
+                Severity::Warn,
+                "read_uncommitted consumer with transactional traffic".into(),
+                "FetchRequest isolation_level=0 while transactional traffic is active; aborted records may be exposed.".into(),
+                frame,
+            );
+        }
+    }
+
+    pub(super) fn check_partition_skew(
+        &mut self,
+        frame: &ProtoFrame,
+        partitions: &[PartitionBytes],
+    ) {
+        const MAX_TRACKED_TOPICS: usize = 10_000;
+        for partition in partitions {
+            if !self.partition_traffic.contains_key(&partition.topic)
+                && self.partition_traffic.len() >= MAX_TRACKED_TOPICS
+            {
+                continue;
+            }
+            let (samples, total, count, hottest_partition, hottest_bytes) = {
+                let traffic = self
+                    .partition_traffic
+                    .entry(partition.topic.clone())
+                    .or_default();
+                traffic.samples = traffic.samples.saturating_add(1);
+                traffic.total_bytes = traffic.total_bytes.saturating_add(partition.bytes);
+                let entry = traffic
+                    .bytes_by_partition
+                    .entry(partition.partition)
+                    .or_insert(0);
+                *entry = entry.saturating_add(partition.bytes);
+                let hottest = traffic
+                    .bytes_by_partition
+                    .iter()
+                    .max_by_key(|(_, bytes)| *bytes)
+                    .map_or(
+                        (partition.partition, partition.bytes),
+                        |(partition, bytes)| (*partition, *bytes),
+                    );
+                (
+                    traffic.samples,
+                    traffic.total_bytes,
+                    traffic.bytes_by_partition.len(),
+                    hottest.0,
+                    hottest.1,
+                )
+            };
+            if samples < self.config.partition_skew_min_samples
+                || total < self.config.partition_skew_min_bytes
+                || count < 2
+            {
+                continue;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let share = hottest_bytes as f64 / total as f64;
+            if share >= self.config.partition_skew_ratio {
+                self.upsert(
+                    AntiPatternKind::PartitionSkew,
+                    partition.topic.clone(),
+                    Severity::Warn,
+                    format!("Partition skew on {}", partition.topic),
+                    format!(
+                        "Partition {hottest_partition} carries {:.1}% of {} observed Produce bytes across {count} partitions.",
+                        share * 100.0,
+                        total
+                    ),
+                    frame,
+                );
+            }
+        }
+    }
+
+    pub(super) fn check_retry_storm(
+        &mut self,
+        frame: &ProtoFrame,
+        summary: &FrameSummary,
+        now: Instant,
+    ) {
+        let mut retriable = 0usize;
+        let mut count_code = |code: i16| {
+            if kerr::is_retriable(code) {
+                retriable = retriable.saturating_add(1);
+            }
+        };
+        match summary {
+            FrameSummary::ProduceResponse { errors, .. } => {
+                for error in errors {
+                    count_code(error.error_code);
+                }
+            }
+            FrameSummary::FetchResponse {
+                error_code, errors, ..
+            } => {
+                count_code(*error_code);
+                for error in errors {
+                    count_code(error.error_code);
+                }
+            }
+            FrameSummary::OffsetCommitResponse { errors, .. } => {
+                for error in errors {
+                    count_code(error.error_code);
+                }
+            }
+            FrameSummary::FindCoordinatorResponse { error_code, .. }
+            | FrameSummary::JoinGroupResponse { error_code, .. }
+            | FrameSummary::SyncGroupResponse { error_code, .. }
+            | FrameSummary::HeartbeatResponse { error_code, .. }
+            | FrameSummary::LeaveGroupResponse { error_code, .. } => count_code(*error_code),
+            _ => {}
+        }
+        if retriable == 0 {
+            return;
+        }
+        let count = {
+            let window = self
+                .retry_windows
+                .entry((frame.connection_id, frame.api_key))
+                .or_default();
+            let mut count = window.len();
+            for _ in 0..retriable {
+                count = window.push_and_count(now);
+            }
+            count
+        };
+        if count >= self.config.retry_storm_threshold {
+            self.upsert(
+                AntiPatternKind::RetryStorm,
+                format!("conn={}:api={}", frame.connection_id, frame.api_key),
+                Severity::Warn,
+                format!("Retriable-error storm on {}", frame.api_name),
+                format!("{count} retriable errors in the rolling 60s window; retries may be amplifying broker pressure."),
+                frame,
+            );
+        }
+    }
+
     // ---------- Producer-side detectors ----------
 
     pub(super) fn on_init_producer_id(

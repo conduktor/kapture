@@ -368,6 +368,7 @@ mod tests {
                 length: 0,
             },
             raw_hex: String::new(),
+            raw_bytes: Vec::new(),
             fetch: None,
             connection_id: None,
         }
@@ -387,7 +388,9 @@ mod tests {
             size: 0,
             captured: 0,
             rtt_ms: 0.0,
+            capture_lag_ms: 0.0,
             payload_hex: String::new(),
+            raw_payload: Vec::new(),
             decoded_json: None,
             summary: None,
             frame_error: None,

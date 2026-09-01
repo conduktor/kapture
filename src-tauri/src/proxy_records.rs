@@ -25,7 +25,7 @@ use kafka_protocol::records::RecordBatchDecoder;
 use uuid::Uuid;
 
 use crate::correlator::FetchMetadata;
-use crate::decode::{decode_payload, render_hex};
+use crate::decode::decode_payload_lazy_bytes;
 use crate::message::{CapturedMessage, KafkaHeader};
 use crate::proto_event::{ProtoDirection, ProtoEvent};
 use crate::proxy_topic_ids::TopicIdMap;
@@ -66,6 +66,25 @@ pub struct ExtractedRecord {
     pub fetch_connection_id: Option<i32>,
 }
 
+impl ExtractedRecord {
+    #[must_use]
+    pub fn retained_payload_bytes(&self) -> usize {
+        self.key.as_ref().map_or(0, Bytes::len)
+            + self.value.as_ref().map_or(0, Bytes::len)
+            + self
+                .headers
+                .iter()
+                .map(|(key, value)| key.len() + value.as_ref().map_or(0, Bytes::len))
+                .sum::<usize>()
+    }
+}
+
+#[derive(Debug)]
+pub struct ExtractedProduceRequest {
+    pub acks: i16,
+    pub records: Vec<ExtractedRecord>,
+}
+
 /// Decode the Produce request body sitting in `frame` and pull every
 /// record out. Returns an empty `Vec` on any parse / decode failure —
 /// we never want a malformed Produce frame to bubble up and kill the
@@ -74,23 +93,25 @@ pub struct ExtractedRecord {
 /// `topic_ids` is consulted on Produce v13+ where the wire field shifted
 /// from `Name` (string) to `TopicId` (UUID) per KIP-516 phase 2.
 #[must_use]
+#[cfg(test)]
 pub fn extract_from_produce_request(
     version: i16,
     frame: &[u8],
     topic_ids: &TopicIdMap,
 ) -> Vec<ExtractedRecord> {
-    extract_from_produce_request_inner(version, frame, topic_ids).unwrap_or_default()
+    extract_produce_request_bytes(version, Bytes::copy_from_slice(frame), topic_ids)
+        .map_or_else(Vec::new, |request| request.records)
 }
 
-fn extract_from_produce_request_inner(
+#[must_use]
+pub fn extract_produce_request_bytes(
     version: i16,
-    frame: &[u8],
+    mut frame: Bytes,
     topic_ids: &TopicIdMap,
-) -> Option<Vec<ExtractedRecord>> {
-    let mut buf = Bytes::copy_from_slice(frame);
+) -> Option<ExtractedProduceRequest> {
     let header_version = ProduceRequest::header_version(version);
-    let _hdr = RequestHeader::decode(&mut buf, header_version).ok()?;
-    let req = ProduceRequest::decode(&mut buf, version).ok()?;
+    let _hdr = RequestHeader::decode(&mut frame, header_version).ok()?;
+    let req = ProduceRequest::decode(&mut frame, version).ok()?;
 
     let mut out = Vec::new();
     for topic in &req.topic_data {
@@ -114,7 +135,10 @@ fn extract_from_produce_request_inner(
             );
         }
     }
-    Some(out)
+    Some(ExtractedProduceRequest {
+        acks: req.acks,
+        records: out,
+    })
 }
 
 /// Decode the Fetch response body sitting in `frame` and pull every
@@ -131,6 +155,7 @@ fn extract_from_produce_request_inner(
 /// buffer). Pass them straight from the `ProtoEvent` raised on the
 /// pump's response side.
 #[must_use]
+#[cfg(test)]
 pub fn extract_from_fetch_response(
     version: i16,
     frame: &[u8],
@@ -138,9 +163,9 @@ pub fn extract_from_fetch_response(
     fetch_corr_id: i32,
     fetch_connection_id: i32,
 ) -> Vec<ExtractedRecord> {
-    extract_from_fetch_response_inner(
+    extract_from_fetch_response_bytes(
         version,
-        frame,
+        Bytes::copy_from_slice(frame),
         topic_ids,
         fetch_corr_id,
         fetch_connection_id,
@@ -148,18 +173,18 @@ pub fn extract_from_fetch_response(
     .unwrap_or_default()
 }
 
-fn extract_from_fetch_response_inner(
+#[must_use]
+pub fn extract_from_fetch_response_bytes(
     version: i16,
-    frame: &[u8],
+    mut frame: Bytes,
     topic_ids: &TopicIdMap,
     fetch_corr_id: i32,
     fetch_connection_id: i32,
 ) -> Option<Vec<ExtractedRecord>> {
-    let mut buf = Bytes::copy_from_slice(frame);
     // Fetch v0-v11: header v0 (no tagged fields). v12+: header v1.
     let header_version = ApiKey::Fetch.response_header_version(version);
-    let _hdr = ResponseHeader::decode(&mut buf, header_version).ok()?;
-    let resp = FetchResponse::decode(&mut buf, version).ok()?;
+    let _hdr = ResponseHeader::decode(&mut frame, header_version).ok()?;
+    let resp = FetchResponse::decode(&mut frame, version).ok()?;
 
     let mut out = Vec::new();
     for topic in &resp.responses {
@@ -207,23 +232,25 @@ fn extract_from_fetch_response_inner(
 /// pre-existing value (0). On v13+ the wire carries `topic_id` only,
 /// resolved via `topic_ids` the same way Fetch does.
 #[must_use]
+#[allow(dead_code)] // slice convenience retained for external/unit callers
 pub fn extract_produce_offsets(
     version: i16,
     frame: &[u8],
     topic_ids: &TopicIdMap,
 ) -> HashMap<(String, i32), i64> {
-    extract_produce_offsets_inner(version, frame, topic_ids).unwrap_or_default()
+    extract_produce_offsets_bytes(version, Bytes::copy_from_slice(frame), topic_ids)
+        .unwrap_or_default()
 }
 
-fn extract_produce_offsets_inner(
+#[must_use]
+pub fn extract_produce_offsets_bytes(
     version: i16,
-    frame: &[u8],
+    mut frame: Bytes,
     topic_ids: &TopicIdMap,
 ) -> Option<HashMap<(String, i32), i64>> {
-    let mut buf = Bytes::copy_from_slice(frame);
     let header_version = ApiKey::Produce.response_header_version(version);
-    let _hdr = ResponseHeader::decode(&mut buf, header_version).ok()?;
-    let resp = ProduceResponse::decode(&mut buf, version).ok()?;
+    let _hdr = ResponseHeader::decode(&mut frame, header_version).ok()?;
+    let resp = ProduceResponse::decode(&mut frame, version).ok()?;
     let mut out = HashMap::new();
     for topic in &resp.responses {
         let topic_name = resolve_topic_name(
@@ -399,7 +426,7 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         .key
         .as_deref()
         .and_then(|bytes| std::str::from_utf8(bytes).ok().map(ToOwned::to_owned));
-    let raw_hex = value_bytes.map_or_else(String::new, render_hex);
+    let raw_bytes = value_bytes.map_or_else(Vec::new, <[u8]>::to_vec);
     let key_size = rec.key.as_deref().map_or(0, <[u8]>::len);
     let value_size = value_bytes.map_or(0, <[u8]>::len);
     let size_bytes = key_size + value_size;
@@ -493,8 +520,9 @@ pub fn extracted_to_captured(rec: ExtractedRecord, conn_id: u64) -> CapturedMess
         key_size,
         value_size,
         headers,
-        payload: decode_payload(value_bytes),
-        raw_hex,
+        payload: decode_payload_lazy_bytes(value_bytes),
+        raw_hex: String::new(),
+        raw_bytes,
         fetch,
         connection_id: Some(connection_id),
     }

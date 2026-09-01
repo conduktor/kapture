@@ -99,3 +99,8 @@ option_if_let_else = "allow"
 # Common across this codebase.
 module_name_repetitions = "allow"
 similar_names = "allow"
+
+[profile.profiling]
+inherits = "release"
+debug = 2
+strip = "none"

@@ -58,6 +58,7 @@ export function SessionActivityTab({ session, totalFrames, onJumpToProtocol }: P
   const topics = session.topics;
   const groups = session.groups;
   const errorCount = session.errors.length;
+  const worstP99 = session.latencies.reduce((max, latency) => Math.max(max, latency.p99Ms), 0);
 
   return (
     <div className="session">
@@ -104,6 +105,11 @@ export function SessionActivityTab({ session, totalFrames, onJumpToProtocol }: P
           label="Errors"
           value={String(errorCount)}
           tone={errorCount > 0 ? "warn" : "ok"}
+        />
+        <SummaryTile
+          label="Worst p99"
+          value={worstP99 > 0 ? `${worstP99.toFixed(worstP99 < 10 ? 2 : 1)} ms` : "—"}
+          hint="fixed-memory histograms per API and broker"
         />
       </section>
 

@@ -28,23 +28,29 @@ public class WriteAdvice {
         // but a malformed caller would otherwise crash here.
         if (offset < 0 || length <= 0 || offset > srcs.length - length) return;
         int end = offset + length;
-        int total = 0;
+        long total = 0;
         for (int i = offset; i < end; i++) {
             ByteBuffer b = srcs[i];
             if (b != null) total += b.remaining();
         }
-        if (total == 0) return;
-        byte[] payload = new byte[total];
-        int off = 0;
-        for (int i = offset; i < end; i++) {
-            ByteBuffer b = srcs[i];
-            if (b == null) continue;
-            int n = b.remaining();
-            if (n == 0) continue;
-            ByteBuffer dup = b.duplicate();
-            dup.get(payload, off, n);
-            off += n;
+        if (!TapPublisher.tryReserve(total)) return;
+        boolean published = false;
+        try {
+            byte[] payload = new byte[(int) total];
+            int off = 0;
+            for (int i = offset; i < end; i++) {
+                ByteBuffer b = srcs[i];
+                if (b == null) continue;
+                int n = b.remaining();
+                if (n == 0) continue;
+                ByteBuffer dup = b.duplicate();
+                dup.get(payload, off, n);
+                off += n;
+            }
+            TapPublisher.publishReserved(self, (byte) 0, payload);
+            published = true;
+        } finally {
+            if (!published) TapPublisher.releaseReservation(total);
         }
-        TapPublisher.capture(self, (byte) 0, payload);
     }
 }

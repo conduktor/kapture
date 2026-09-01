@@ -4,7 +4,7 @@
 //! constants here are detector tuning knobs; the structs are the
 //! per-scope counters and rolling windows.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use crate::anti_patterns::{AntiPatternKind, Severity};
@@ -115,6 +115,13 @@ pub(super) const POLL_STALL_GAP: Duration = Duration::from_secs(10);
 /// gap counts — establishes an active fetch cadence so we don't flag a
 /// slow first fetch at startup or a one-off probe.
 pub(super) const POLL_STALL_MIN_FETCHES: u32 = 3;
+pub(super) const HUNG_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(super) const IN_FLIGHT_SATURATION_THRESHOLD: usize = 100;
+pub(super) const IDEMPOTENT_PRODUCE_IN_FLIGHT_THRESHOLD: usize = 5;
+pub(super) const RETRY_STORM_THRESHOLD: usize = 10;
+pub(super) const PARTITION_SKEW_MIN_BYTES: u64 = 1024 * 1024;
+pub(super) const PARTITION_SKEW_MIN_SAMPLES: u32 = 20;
+pub(super) const PARTITION_SKEW_RATIO: f64 = 0.80;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct DetectionKey {
@@ -206,6 +213,22 @@ pub(super) struct FetchPollState {
 #[derive(Debug, Default)]
 pub(super) struct RollingWindow {
     pub instants: VecDeque<Instant>,
+}
+
+#[derive(Debug)]
+pub(super) struct InFlightRequest {
+    pub started: Instant,
+    pub api_key: i32,
+    pub api_name: String,
+    pub frame_id: String,
+    pub timestamp: String,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct PartitionTraffic {
+    pub bytes_by_partition: HashMap<i32, u64>,
+    pub total_bytes: u64,
+    pub samples: u32,
 }
 
 impl RollingWindow {

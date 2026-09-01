@@ -33,13 +33,19 @@ public class ReadAdvice {
         if (dst == null || oldPos < 0) return;
         int newPos = dst.position();
         int n = newPos - oldPos;
-        if (n <= 0) return;
-        byte[] payload = new byte[n];
-        // Copy without disturbing the buffer state.
-        ByteBuffer dup = dst.duplicate();
-        dup.position(oldPos);
-        dup.limit(newPos);
-        dup.get(payload);
-        TapPublisher.capture(self, (byte) 1, payload);
+        if (!TapPublisher.tryReserve(n)) return;
+        boolean published = false;
+        try {
+            byte[] payload = new byte[n];
+            // Copy without disturbing the buffer state.
+            ByteBuffer dup = dst.duplicate();
+            dup.position(oldPos);
+            dup.limit(newPos);
+            dup.get(payload);
+            TapPublisher.publishReserved(self, (byte) 1, payload);
+            published = true;
+        } finally {
+            if (!published) TapPublisher.releaseReservation(n);
+        }
     }
 }

@@ -7,8 +7,11 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.SocketChannel;
 import java.nio.file.Path;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.Collections;
+import java.util.Map;
+import java.util.WeakHashMap;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -18,13 +21,20 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Frame layout (little-endian):
  *   u8   direction  (0 = outgoing/write, 1 = incoming/read)
- *   u64  nanos_since_epoch
+ *   u64  observed_monotonic_nanos
+ *   u64  emitted_monotonic_nanos
  *   u32  connection_id
  *   u32  payload_len
  *   ...  payload bytes
  *
- * Failure policy: if the socket isn't there, frames are dropped silently.
- * One stderr warning per N drops so we don't spam the host app.
+ * The advice first reserves capacity through {@link #tryReserve(long)}. When Kapture
+ * is not connected that check is a single volatile read: no payload allocation, copy,
+ * connection-id lookup, or queue node is created in the application hot path.
+ *
+ * Once capture is active, a dropped chunk makes the Kafka byte stream impossible to
+ * reassemble safely. We therefore close the UDS and clear the queue on overload/write
+ * failure. Rust observes EOF and discards its partial streams before the writer
+ * reconnects; it never appends a later chunk to an incomplete Kafka frame.
  */
 public final class TapPublisher {
 
@@ -32,24 +42,20 @@ public final class TapPublisher {
             System.getProperty("kapture.tap.socket", "/tmp/kapture-tap.sock");
 
     private static final int QUEUE_CAPACITY = 8192;
-    /**
-     * Per-payload cap in bytes. Anything bigger is DROPPED (not
-     * truncated), and the (connection, direction) reassembly stream
-     * on the Rust side is signalled as desynced — see capture() below.
-     *
-     * Matches the Rust listener's MAX_KAFKA_FRAME_LEN (16 MiB) so a
-     * legitimate single-ByteBuffer ProduceRequest up to that size goes
-     * through whole. Truncating in a length-prefixed protocol
-     * guaranteed corruption: the Rust side would read N bytes of a
-     * frame whose prefix announced N+M bytes and graft the next
-     * unrelated chunk onto the missing tail.
-     */
+    private static final long QUEUE_BYTE_CAPACITY = 64L * 1024 * 1024;
     private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
+    private static final long MIN_RECONNECT_BACKOFF_MS = 100;
+    private static final long MAX_RECONNECT_BACKOFF_MS = 5_000;
 
-    private static final LinkedBlockingQueue<Frame> QUEUE = new LinkedBlockingQueue<>(QUEUE_CAPACITY);
-    private static final ConcurrentHashMap<Object, Integer> CONN_IDS = new ConcurrentHashMap<>();
+    private static final ArrayBlockingQueue<Frame> QUEUE =
+            new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    private static final AtomicLong QUEUED_BYTES = new AtomicLong();
+    private static final Map<Object, Integer> CONN_IDS =
+            Collections.synchronizedMap(new WeakHashMap<>());
     private static final AtomicInteger NEXT_ID = new AtomicInteger(1);
     private static final AtomicBoolean STARTED = new AtomicBoolean(false);
+    private static final AtomicBoolean CONNECTED = new AtomicBoolean(false);
+    private static final AtomicBoolean RESET_REQUIRED = new AtomicBoolean(false);
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final AtomicBoolean WARNED_NO_SOCKET = new AtomicBoolean(false);
 
@@ -80,85 +86,184 @@ public final class TapPublisher {
         }, "kapture-tap-shutdown"));
     }
 
-    /** Called from inlined advice — keep it tiny and exception-proof. */
-    public static void capture(Object owner, byte direction, byte[] payload) {
+    /**
+     * Reserve the bytes before advice allocates its copy. Returns false while capture
+     * is inactive or when the bounded byte budget cannot accept the complete chunk.
+     */
+    public static boolean tryReserve(long payloadLength) {
+        if (!CONNECTED.get() || payloadLength <= 0) return false;
+        if (payloadLength > MAX_PAYLOAD) {
+            poisonStream();
+            return false;
+        }
+
+        while (true) {
+            long current = QUEUED_BYTES.get();
+            if (current > QUEUE_BYTE_CAPACITY - payloadLength) {
+                poisonStream();
+                return false;
+            }
+            if (QUEUED_BYTES.compareAndSet(current, current + payloadLength)) return true;
+        }
+    }
+
+    /** Complete a reservation made by {@link #tryReserve(long)}. */
+    public static void publishReserved(Object owner, byte direction, byte[] payload) {
         if (payload == null || payload.length == 0) return;
-        if (payload.length > MAX_PAYLOAD) {
-            // DROP the payload — do NOT truncate. The Rust listener
-            // reassembles per (connection, direction) using the Kafka
-            // 4-byte length prefix; a truncated payload would leave
-            // it expecting the missing tail and would graft the next
-            // unrelated capture onto it, corrupting all subsequent
-            // frames in that stream. Counted under DROPPED so the
-            // shutdown hook surfaces it; the (conn, direction) is
-            // now desynced and the user should re-attach the agent.
-            DROPPED.incrementAndGet();
+        if (!CONNECTED.get() || RESET_REQUIRED.get()) {
+            releaseReservation(payload.length);
             return;
         }
-        Integer id = CONN_IDS.get(owner);
-        if (id == null) {
-            id = NEXT_ID.getAndIncrement();
-            Integer prev = CONN_IDS.putIfAbsent(owner, id);
-            if (prev != null) id = prev;
+
+        Frame frame = new Frame(direction, System.nanoTime(), connectionId(owner), payload);
+        if (!QUEUE.offer(frame)) {
+            releaseReservation(payload.length);
+            poisonStream();
         }
-        Frame f = new Frame(direction, System.nanoTime(), id, payload);
-        if (!QUEUE.offer(f)) {
-            DROPPED.incrementAndGet();
+    }
+
+    /** Release a reservation when advice could not finish its payload copy. */
+    public static void releaseReservation(long payloadLength) {
+        if (payloadLength > 0) QUEUED_BYTES.addAndGet(-payloadLength);
+    }
+
+    private static int connectionId(Object owner) {
+        synchronized (CONN_IDS) {
+            Integer id = CONN_IDS.get(owner);
+            if (id != null) return id;
+            int newId = NEXT_ID.getAndIncrement();
+            CONN_IDS.put(owner, newId);
+            return newId;
         }
+    }
+
+    private static void poisonStream() {
+        DROPPED.incrementAndGet();
+        CONNECTED.set(false);
+        RESET_REQUIRED.set(true);
     }
 
     private static void runLoop() {
         SocketChannel ch = null;
-        ByteBuffer header = ByteBuffer.allocate(1 + 8 + 4 + 4).order(ByteOrder.LITTLE_ENDIAN);
-        while (true) {
-            Frame f;
-            try {
-                f = QUEUE.take();
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                return;
+        long reconnectBackoffMs = MIN_RECONNECT_BACKOFF_MS;
+        ByteBuffer header = ByteBuffer.allocate(1 + 8 + 8 + 4 + 4).order(ByteOrder.LITTLE_ENDIAN);
+
+        while (!Thread.currentThread().isInterrupted()) {
+            if (RESET_REQUIRED.getAndSet(false)) {
+                CONNECTED.set(false);
+                closeQuietly(ch);
+                ch = null;
+                clearQueue();
             }
+
             if (ch == null || !ch.isOpen()) {
                 ch = tryConnect();
                 if (ch == null) {
+                    CONNECTED.set(false);
                     if (WARNED_NO_SOCKET.compareAndSet(false, true)) {
                         System.err.println("[kapture-jvm-agent] tap socket not available at "
-                                + SOCKET_PATH + " — dropping frames silently");
+                                + SOCKET_PATH + " — capture inactive; reconnecting in background");
                     }
-                    DROPPED.incrementAndGet();
+                    try {
+                        Thread.sleep(reconnectBackoffMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    reconnectBackoffMs = Math.min(MAX_RECONNECT_BACKOFF_MS, reconnectBackoffMs * 2);
                     continue;
                 }
+                reconnectBackoffMs = MIN_RECONNECT_BACKOFF_MS;
                 WARNED_NO_SOCKET.set(false);
+                try {
+                    writeHealth(ch, header);
+                } catch (IOException ioe) {
+                    closeQuietly(ch);
+                    ch = null;
+                    continue;
+                }
+                CONNECTED.set(true);
             }
+
+            Frame frame;
+            try {
+                frame = QUEUE.poll(250, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            if (frame == null) continue;
+            releaseReservation(frame.payload.length);
+
             try {
                 header.clear();
-                header.put(f.direction);
-                header.putLong(f.nanos);
-                header.putInt(f.connId);
-                header.putInt(f.payload.length);
+                header.put(frame.direction);
+                header.putLong(frame.nanos);
+                header.putLong(System.nanoTime());
+                header.putInt(frame.connId);
+                header.putInt(frame.payload.length);
                 header.flip();
-                writeFully(ch, header);
-                writeFully(ch, ByteBuffer.wrap(f.payload));
+                writeFully(ch, new ByteBuffer[] {header, ByteBuffer.wrap(frame.payload)});
             } catch (IOException ioe) {
-                try { ch.close(); } catch (IOException ignored) {}
-                ch = null;
                 DROPPED.incrementAndGet();
+                CONNECTED.set(false);
+                closeQuietly(ch);
+                ch = null;
+                clearQueue();
             }
         }
+
+        CONNECTED.set(false);
+        closeQuietly(ch);
+        clearQueue();
     }
 
     private static SocketChannel tryConnect() {
         try {
-            SocketChannel c = SocketChannel.open(StandardProtocolFamily.UNIX);
-            c.connect(UnixDomainSocketAddress.of(Path.of(SOCKET_PATH)));
-            c.configureBlocking(true);
-            return c;
+            SocketChannel channel = SocketChannel.open(StandardProtocolFamily.UNIX);
+            channel.connect(UnixDomainSocketAddress.of(Path.of(SOCKET_PATH)));
+            channel.configureBlocking(true);
+            return channel;
         } catch (IOException e) {
             return null;
         }
     }
 
-    private static void writeFully(SocketChannel ch, ByteBuffer buf) throws IOException {
-        while (buf.hasRemaining()) ch.write(buf);
+    private static void writeFully(SocketChannel ch, ByteBuffer[] buffers) throws IOException {
+        while (buffers[0].hasRemaining() || buffers[1].hasRemaining()) ch.write(buffers);
+    }
+
+    /** Report losses accumulated since the previous successful session. */
+    private static void writeHealth(SocketChannel ch, ByteBuffer header) throws IOException {
+        long drops = DROPPED.get();
+        long now = System.nanoTime();
+        ByteBuffer payload = ByteBuffer.allocate(Long.BYTES).order(ByteOrder.LITTLE_ENDIAN);
+        payload.putLong(drops).flip();
+        header.clear();
+        header.put((byte) 2);
+        header.putLong(now);
+        header.putLong(System.nanoTime());
+        header.putInt(0);
+        header.putInt(Long.BYTES);
+        header.flip();
+        writeFully(ch, new ByteBuffer[] {header, payload});
+        if (drops > 0) DROPPED.addAndGet(-drops);
+    }
+
+    private static void clearQueue() {
+        Frame frame;
+        while ((frame = QUEUE.poll()) != null) {
+            releaseReservation(frame.payload.length);
+            DROPPED.incrementAndGet();
+        }
+    }
+
+    private static void closeQuietly(SocketChannel ch) {
+        if (ch == null) return;
+        try {
+            ch.close();
+        } catch (IOException ignored) {
+            // Best effort on the telemetry-only path.
+        }
     }
 }

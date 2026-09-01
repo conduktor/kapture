@@ -72,6 +72,9 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
                 return <Field name="rtt" value={`${fmt.value}${fmt.unit ? ` ${fmt.unit}` : ""}`} />;
               })()
             : null}
+          {frame.captureLagMs > 0 ? (
+            <Field name="capture_lag" value={`${frame.captureLagMs.toFixed(3)} ms`} />
+          ) : null}
           <Field name="timestamp" value={frame.timestamp} />
         </div>
       </details>
@@ -132,6 +135,9 @@ function buildFrameClipboard(frame: ProtoFrameDetail): string {
   if (frame.direction === "recv") {
     const fmt = formatRtt(frame.rttMs);
     lines.push(`rtt: ${fmt.value}${fmt.unit ? ` ${fmt.unit}` : ""}`);
+  }
+  if (frame.captureLagMs > 0) {
+    lines.push(`capture_lag: ${frame.captureLagMs.toFixed(3)} ms`);
   }
   lines.push(`timestamp: ${frame.timestamp}`);
   return lines.join("\n");

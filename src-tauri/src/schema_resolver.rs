@@ -191,6 +191,7 @@ pub async fn decode_on_inspect(
     message: Option<CapturedMessage>,
 ) -> Option<CapturedMessage> {
     let mut message = message?;
+    message.materialize_detail();
     if !matches!(message.payload, DecodedValue::Bytes { .. }) {
         // Already decoded by an earlier inspect — nothing to do.
         return Some(message);
@@ -225,7 +226,7 @@ pub async fn decode_on_inspect(
     } else {
         return Some(message);
     };
-    let Some(decoded) = decode_with_schema(&resolved, &message.raw_hex, has_envelope) else {
+    let Some(decoded) = decode_with_schema(&resolved, &message.raw_bytes, has_envelope) else {
         return Some(message);
     };
     state.buffer.update_message_with(&message.id, |stored| {
@@ -246,17 +247,16 @@ pub async fn decode_on_inspect(
 /// from the .proto, not just the registry's text).
 fn decode_with_schema(
     resolved: &ResolvedSchema,
-    raw_hex: &str,
+    bytes: &[u8],
     has_envelope: bool,
 ) -> Option<DecodedValue> {
-    let bytes = parse_render_hex(raw_hex)?;
     let body: &[u8] = if has_envelope {
         if bytes.len() <= 5 {
             return None;
         }
         &bytes[5..]
     } else {
-        &bytes
+        bytes
     };
     match resolved.kind {
         SchemaKind::Avro => {
@@ -271,13 +271,6 @@ fn decode_with_schema(
         }
         SchemaKind::Protobuf => None,
     }
-}
-
-/// Parse the space-separated hex stored on `CapturedMessage.raw_hex`
-/// (output of `decode::render_hex`) back into raw bytes.
-fn parse_render_hex(s: &str) -> Option<Vec<u8>> {
-    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    hex::decode(&cleaned).ok()
 }
 
 fn push_unresolved(

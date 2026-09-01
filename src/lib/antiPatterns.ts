@@ -34,7 +34,13 @@ export type AntiPatternKind =
   | "aclDeny"
   | "unknownTopicPollLoop"
   | "coordinatorChurn"
-  | "slowConsumerPollStall";
+  | "slowConsumerPollStall"
+  | "hungRequests"
+  | "inFlightSaturation"
+  | "excessiveIdempotentInFlight"
+  | "readUncommittedTransactional"
+  | "partitionSkew"
+  | "retryStorm";
 
 export type Severity = "warn" | "note";
 
@@ -113,5 +119,17 @@ export function kindLabel(kind: AntiPatternKind): string {
       return "Coordinator churn";
     case "slowConsumerPollStall":
       return "Slow consumer poll stall";
+    case "hungRequests":
+      return "Hung requests";
+    case "inFlightSaturation":
+      return "In-flight request saturation";
+    case "excessiveIdempotentInFlight":
+      return "Excessive idempotent Produce in-flight";
+    case "readUncommittedTransactional":
+      return "read_uncommitted on transactional traffic";
+    case "partitionSkew":
+      return "Partition traffic skew";
+    case "retryStorm":
+      return "Retriable-error storm";
   }
 }

@@ -53,6 +53,11 @@ pub struct CapturedMessage {
     pub payload: DecodedValue,
     /// Raw bytes rendered as space-separated hex.
     pub raw_hex: String,
+    /// Authoritative value bytes retained once in the backend ring.
+    /// Hex mirrors are materialized only on detail/MCP inspection.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub raw_bytes: Vec<u8>,
     /// Approximate Fetch response that brought this message — populated
     /// when the consumer was created against the Kapture-patched
     /// librdkafka and the proto correlator is wired in.
@@ -63,6 +68,60 @@ pub struct CapturedMessage {
     /// resolved via the `FetchMetadata` correlator. `None` when neither
     /// path could supply a value.
     pub connection_id: Option<i32>,
+}
+
+impl CapturedMessage {
+    pub fn materialize_detail(&mut self) {
+        if self.raw_hex.is_empty() && !self.raw_bytes.is_empty() {
+            self.raw_hex = crate::decode::render_hex(&self.raw_bytes);
+        }
+        if let DecodedValue::Bytes { hex, .. } = &mut self.payload {
+            if hex.is_empty() && !self.raw_bytes.is_empty() {
+                *hex = hex::encode(&self.raw_bytes);
+            }
+        }
+    }
+
+    /// Approximate retained heap footprint, including the expanded hex
+    /// strings and decoded tree. This deliberately uses allocation
+    /// capacities, not just Kafka payload bytes: the ring's memory cap
+    /// should describe what Kapture keeps alive.
+    #[must_use]
+    pub fn estimated_storage_bytes(&self) -> usize {
+        let string_bytes = self
+            .id
+            .capacity()
+            .saturating_add(self.timestamp.capacity())
+            .saturating_add(self.topic.capacity())
+            .saturating_add(self.topic_id.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.key.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.schema_name.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.schema_guid.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.schema_kind.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.raw_hex.capacity())
+            .saturating_add(self.raw_bytes.capacity())
+            .saturating_add(
+                self.fetch
+                    .as_ref()
+                    .map_or(0, |fetch| fetch.api_name.capacity()),
+            );
+        let headers_bytes = self
+            .headers
+            .capacity()
+            .saturating_mul(std::mem::size_of::<KafkaHeader>())
+            .saturating_add(self.headers.iter().fold(0usize, |total, header| {
+                total
+                    .saturating_add(header.key.capacity())
+                    .saturating_add(header.value.capacity())
+            }));
+        std::mem::size_of::<Self>()
+            .saturating_add(string_bytes)
+            .saturating_add(headers_bytes)
+            .saturating_add(self.payload.estimated_heap_bytes())
+            // Synthetic/test messages may not materialize their payload.
+            // Never account less than the raw Kafka bytes they represent.
+            .max(self.size_bytes)
+    }
 }
 
 /// Lightweight projection of `CapturedMessage` that goes over the live

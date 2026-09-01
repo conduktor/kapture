@@ -136,6 +136,12 @@ pub enum AntiPatternKind {
     /// 2026 "83% fewer pods" shape: slow record processing stalled the
     /// poll loop, which read on dashboards as a broker/scaling problem.
     SlowConsumerPollStall,
+    HungRequests,
+    InFlightSaturation,
+    ExcessiveIdempotentInFlight,
+    ReadUncommittedTransactional,
+    PartitionSkew,
+    RetryStorm,
 }
 
 impl AntiPatternKind {
@@ -168,6 +174,12 @@ impl AntiPatternKind {
             Self::UnknownTopicPollLoop => "Unknown-topic poll loop",
             Self::CoordinatorChurn => "Coordinator churn",
             Self::SlowConsumerPollStall => "Slow consumer poll stall",
+            Self::HungRequests => "Hung requests",
+            Self::InFlightSaturation => "In-flight request saturation",
+            Self::ExcessiveIdempotentInFlight => "Excessive idempotent Produce in-flight",
+            Self::ReadUncommittedTransactional => "read_uncommitted on transactional traffic",
+            Self::PartitionSkew => "Partition traffic skew",
+            Self::RetryStorm => "Retriable-error storm",
         }
     }
 }

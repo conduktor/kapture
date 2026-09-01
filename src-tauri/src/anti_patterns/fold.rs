@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use crate::anti_patterns::state::{
     severity_rank, ConnectionCounters, DetectionKey, DetectionState, FetchPollState, FetchShape,
-    HandshakeState, LeakWindow, ProduceCodecStats, ProduceShape, RollingWindow, SaslState,
-    TxnState, CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
+    HandshakeState, InFlightRequest, LeakWindow, PartitionTraffic, ProduceCodecStats, ProduceShape,
+    RollingWindow, SaslState, TxnState, CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
 };
 use crate::anti_patterns::{
     AntiPatternKind, AntiPatternsSnapshot, Detection, DetectorConfig, Severity,
@@ -74,6 +74,12 @@ pub struct AntiPatternsFold {
     /// the commit-during-rebalance detector attribute its scope to a
     /// group (the response itself doesn't carry the id).
     pub(super) last_commit_group: HashMap<i32, String>,
+    /// Generic request lifecycle, keyed exactly like Kafka correlation.
+    pub(super) in_flight_requests: HashMap<(i32, i32), InFlightRequest>,
+    pub(super) transactional_ports: HashSet<u16>,
+    pub(super) read_uncommitted_ports: HashSet<u16>,
+    pub(super) retry_windows: HashMap<(i32, i32), RollingWindow>,
+    pub(super) partition_traffic: HashMap<String, PartitionTraffic>,
     /// Per-connection last-touched timestamp. Drives GC of stale
     /// per-connection maps so memory doesn't grow unboundedly with
     /// short-lived TCP connections — the exact shape of the
@@ -97,8 +103,9 @@ impl AntiPatternsFold {
     /// Absorb one frame. Mirrors `SessionFold::absorb`. Side-effect:
     /// may upsert one or more detections.
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
-        let Some(s) = summary else { return };
         let now = Instant::now();
+        self.track_in_flight(frame, summary, now);
+        let Some(s) = summary else { return };
         // Touch the per-connection last-seen so the GC knows this
         // connection is still active. Done before dispatch so even
         // frames that fall through the dispatch (variants we ignore)
@@ -135,6 +142,8 @@ impl AntiPatternsFold {
             self.metadata_requests.remove(conn);
             self.acl_deny_window.remove(conn);
             self.last_commit_group.remove(conn);
+            self.in_flight_requests.retain(|(c, _), _| c != conn);
+            self.retry_windows.retain(|(c, _), _| c != conn);
         }
         // utop_per_partition is keyed on (conn, topic, partition) —
         // drop any entry whose conn just expired.
@@ -149,6 +158,7 @@ impl AntiPatternsFold {
         // Throttle pressure detector runs on every response that carries
         // the field — kept out of the per-variant match for brevity.
         self.check_throttle(frame, s);
+        self.check_retry_storm(frame, s, now);
         // Each `dispatch_*` only matches the variants in its category
         // and returns silently otherwise. Splitting this way keeps
         // each function under the clippy::too_many_lines threshold and
@@ -165,9 +175,13 @@ impl AntiPatternsFold {
                 transactional_id, ..
             } => {
                 self.on_init_producer_id(frame, transactional_id.as_deref());
+                if transactional_id.is_some() {
+                    self.mark_transactional_traffic(frame);
+                }
             }
             FrameSummary::AddPartitionsToTxnRequest { transactional_id } => {
                 self.on_add_partitions_to_txn(frame, transactional_id);
+                self.mark_transactional_traffic(frame);
             }
             FrameSummary::EndTxnRequest {
                 transactional_id,
@@ -178,6 +192,7 @@ impl AntiPatternsFold {
             FrameSummary::ProduceRequest {
                 record_count,
                 topics,
+                partition_bytes,
                 acks,
                 first_batch_compression,
                 first_batch_producer_id,
@@ -194,6 +209,10 @@ impl AntiPatternsFold {
                     *transactional,
                     now,
                 );
+                self.check_partition_skew(frame, partition_bytes);
+                if *transactional {
+                    self.mark_transactional_traffic(frame);
+                }
             }
             FrameSummary::ProduceResponse { errors, .. } => {
                 self.on_produce_response(frame, errors);
@@ -235,8 +254,13 @@ impl AntiPatternsFold {
             FrameSummary::LeaveGroupResponse { error_code, .. } => {
                 self.on_auth_error_response(frame, "LeaveGroup", *error_code, now);
             }
-            FrameSummary::FetchRequest { .. } => {
+            FrameSummary::FetchRequest {
+                isolation_level, ..
+            } => {
                 self.on_fetch_request(frame, now);
+                if *isolation_level == 0 {
+                    self.mark_read_uncommitted(frame);
+                }
             }
             FrameSummary::FetchResponse {
                 error_code,
@@ -317,6 +341,76 @@ impl AntiPatternsFold {
         }
     }
 
+    fn track_in_flight(
+        &mut self,
+        frame: &ProtoFrame,
+        summary: Option<&FrameSummary>,
+        now: Instant,
+    ) {
+        let key = (frame.connection_id, frame.corr_id);
+        match frame.direction {
+            crate::proto_event::ProtoDirection::Recv => {
+                self.in_flight_requests.remove(&key);
+            }
+            crate::proto_event::ProtoDirection::Send => {
+                self.in_flight_requests.insert(
+                    key,
+                    InFlightRequest {
+                        started: now,
+                        api_key: frame.api_key,
+                        api_name: frame.api_name.clone(),
+                        frame_id: frame.id.clone(),
+                        timestamp: frame.timestamp.clone(),
+                    },
+                );
+                if matches!(summary, Some(FrameSummary::ProduceRequest { acks: 0, .. })) {
+                    self.in_flight_requests.remove(&key);
+                    return;
+                }
+                let total = self
+                    .in_flight_requests
+                    .keys()
+                    .filter(|(connection, _)| *connection == frame.connection_id)
+                    .count();
+                if total >= self.config.in_flight_saturation_threshold {
+                    self.upsert(
+                        AntiPatternKind::InFlightSaturation,
+                        format!("conn={}", frame.connection_id),
+                        Severity::Warn,
+                        format!("{total} requests in flight (conn {})", frame.connection_id),
+                        "Responses are not keeping up with requests; latency dashboards omit requests that never complete.".into(),
+                        frame,
+                    );
+                }
+                if matches!(
+                    summary,
+                    Some(FrameSummary::ProduceRequest {
+                        first_batch_producer_id: Some(id),
+                        ..
+                    }) if *id >= 0
+                ) {
+                    let produce = self
+                        .in_flight_requests
+                        .iter()
+                        .filter(|((connection, _), request)| {
+                            *connection == frame.connection_id && request.api_key == 0
+                        })
+                        .count();
+                    if produce > self.config.idempotent_produce_in_flight_threshold {
+                        self.upsert(
+                            AntiPatternKind::ExcessiveIdempotentInFlight,
+                            format!("conn={}", frame.connection_id),
+                            Severity::Warn,
+                            format!("{produce} idempotent Produce requests in flight"),
+                            "More than the configured safe in-flight window can amplify retry/reordering pressure.".into(),
+                            frame,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Cheap snapshot for the Tauri command — clones state into the
     /// public `Detection` shape, sorted by severity then most-recent.
     #[must_use]
@@ -336,6 +430,41 @@ impl AntiPatternsFold {
                 frame_id: v.frame_id.clone(),
             })
             .collect();
+        let now = Instant::now();
+        let timeout = std::time::Duration::from_millis(self.config.hung_request_timeout_ms);
+        let mut hung_by_connection: HashMap<i32, Vec<&InFlightRequest>> = HashMap::new();
+        for ((connection, _), request) in &self.in_flight_requests {
+            if now.duration_since(request.started) >= timeout {
+                hung_by_connection
+                    .entry(*connection)
+                    .or_default()
+                    .push(request);
+            }
+        }
+        let last_seen = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        for (connection, requests) in hung_by_connection {
+            let oldest = requests
+                .iter()
+                .max_by_key(|request| now.duration_since(request.started))
+                .copied();
+            if let Some(oldest) = oldest {
+                let age_ms = now.duration_since(oldest.started).as_millis();
+                detections.push(Detection {
+                    kind: AntiPatternKind::HungRequests,
+                    severity: Severity::Warn,
+                    title: format!("{} hung request(s) (conn {connection})", requests.len()),
+                    detail: format!(
+                        "Oldest {} has waited {age_ms} ms without a response; completed-only RTT percentiles would hide it.",
+                        oldest.api_name
+                    ),
+                    scope: format!("conn={connection}"),
+                    first_seen: oldest.timestamp.clone(),
+                    last_seen: last_seen.clone(),
+                    occurrences: u32::try_from(requests.len()).unwrap_or(u32::MAX),
+                    frame_id: Some(oldest.frame_id.clone()),
+                });
+            }
+        }
         detections.sort_by(|a, b| {
             let sev = severity_rank(a.severity).cmp(&severity_rank(b.severity));
             if sev != std::cmp::Ordering::Equal {
@@ -370,6 +499,11 @@ impl AntiPatternsFold {
         self.cooperative_sticky_joins.clear();
         self.oor_per_partition.clear();
         self.last_commit_group.clear();
+        self.in_flight_requests.clear();
+        self.transactional_ports.clear();
+        self.read_uncommitted_ports.clear();
+        self.retry_windows.clear();
+        self.partition_traffic.clear();
         self.last_seen.clear();
         self.frames_absorbed = 0;
     }

@@ -4,6 +4,7 @@ use kafka_protocol::messages::metadata_response::MetadataResponseBroker;
 use kafka_protocol::messages::{ApiKey, BrokerId, MetadataResponse, ResponseHeader};
 use kafka_protocol::protocol::{Decodable, Encodable, StrBytes};
 use parking_lot::Mutex as PMutex;
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
@@ -100,7 +101,7 @@ fn correlation_map_pairs_request_and_response() {
     assert_eq!(pending.header.api_key, 1);
     assert_eq!(pending.header.api_version, 13);
     // RTT is positive (some elapsed time, even if tiny).
-    let rtt = pending.rtt_at(std::time::Instant::now());
+    let rtt = pending.rtt_at(std::time::Instant::now(), None);
     assert!(rtt >= 0.0);
     // Subsequent take returns None — entries are consumed.
     assert!(map.take_response(42).is_none());
@@ -406,6 +407,7 @@ async fn proxy_handle_accepts_one_client_and_forwards_to_upstream() {
     upstream_task.await.unwrap();
 
     // Correlator should have observed at least 2 frames (send + recv).
+    correlator.flush_analysis().await;
     let summaries = correlator.summaries(100);
     assert!(summaries.len() >= 2);
 
@@ -501,7 +503,16 @@ async fn pump_rewrites_metadata_response_brokers_to_local() {
     // BrokerMap should now hold both upstream entries.
     assert_eq!(broker_map_for_test.snapshot().len(), 2);
     // Correlator should have recorded request + response.
-    assert!(correlator_for_test.summaries(10).len() >= 2);
+    let analysis_drained = tokio::time::timeout(Duration::from_secs(1), async {
+        while correlator_for_test.summaries(10).len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    assert!(
+        analysis_drained.is_ok(),
+        "bounded analyzer should drain request + response"
+    );
 
     upstream_task.await.unwrap();
     pump_task.abort();

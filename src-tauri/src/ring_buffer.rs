@@ -21,6 +21,21 @@ pub struct CaptureStats {
     pub buffer_bytes: usize,
     pub buffer_byte_capacity: usize,
     pub drops: u64,
+    /// Oldest records removed to respect the count/byte history cap.
+    pub buffer_evictions: u64,
+    /// Individual records rejected because their retained footprint is
+    /// larger than the entire history byte budget.
+    pub oversized_drops: u64,
+    /// Live row notifications discarded because the bounded renderer
+    /// channel was full. Full records may still be present in the ring.
+    pub ui_summary_drops: u64,
+    /// Protocol events discarded by the bounded analyzer queue.
+    pub analyzer_drops: u64,
+    /// Produce/Fetch records not retained because their bounded
+    /// extraction/pending budget was exhausted.
+    pub record_extraction_drops: u64,
+    /// Capture chunks lost by an external tap (JVM/eBPF).
+    pub agent_drops: u64,
     pub throughput_per_sec: f64,
     /// Drops/sec over the same rolling window as `throughput_per_sec`.
     /// Lets the UI tell hemorrhage (>0 sustained) from a one-shot byte
@@ -40,7 +55,9 @@ struct RingState {
     capacity: usize,
     byte_capacity: usize,
     bytes: usize,
-    drops: u64,
+    evictions: u64,
+    oversized_drops: u64,
+    ui_summary_drops: u64,
     total_received: u64,
 }
 
@@ -58,7 +75,9 @@ impl RingBuffer {
                 capacity,
                 byte_capacity,
                 bytes: 0,
-                drops: 0,
+                evictions: 0,
+                oversized_drops: 0,
+                ui_summary_drops: 0,
                 total_received: 0,
             }),
         }
@@ -67,7 +86,7 @@ impl RingBuffer {
     pub fn push(&self, message: CapturedMessage) {
         let mut state = self.inner.write();
         state.total_received = state.total_received.saturating_add(1);
-        let incoming = message.size_bytes;
+        let incoming = message.estimated_storage_bytes();
         // Drop oldest until the new message fits both the count and
         // the byte budget. Both caps are enforced so a flood of small
         // messages cannot exceed the count cap, and a flood of large
@@ -77,8 +96,8 @@ impl RingBuffer {
                 && state.bytes.saturating_add(incoming) > state.byte_capacity)
         {
             if let Some(victim) = state.items.pop_front() {
-                state.bytes = state.bytes.saturating_sub(victim.size_bytes);
-                state.drops = state.drops.saturating_add(1);
+                state.bytes = state.bytes.saturating_sub(victim.estimated_storage_bytes());
+                state.evictions = state.evictions.saturating_add(1);
             } else {
                 break;
             }
@@ -86,8 +105,8 @@ impl RingBuffer {
         // Pathological case: a single message larger than the byte
         // cap. Drop it on the floor — buffering it would evict
         // every other message.
-        if incoming > state.byte_capacity {
-            state.drops = state.drops.saturating_add(1);
+        if state.capacity == 0 || incoming > state.byte_capacity {
+            state.oversized_drops = state.oversized_drops.saturating_add(1);
             return;
         }
         state.bytes = state.bytes.saturating_add(incoming);
@@ -104,7 +123,7 @@ impl RingBuffer {
     /// is in-memory; we don't bother with an id index.
     pub fn find_by_id(&self, id: &str) -> Option<CapturedMessage> {
         let state = self.inner.read();
-        state.items.iter().find(|m| m.id == id).cloned()
+        state.items.iter().rev().find(|m| m.id == id).cloned()
     }
 
     /// Apply `f` to a message in place, looking it up by id. Returns
@@ -118,11 +137,58 @@ impl RingBuffer {
         F: FnOnce(&mut CapturedMessage),
     {
         let mut state = self.inner.write();
-        let Some(slot) = state.items.iter_mut().find(|m| m.id == id) else {
+        let Some(index) = state.items.iter().rposition(|m| m.id == id) else {
             return false;
         };
-        f(slot);
+        let before = state.items[index].estimated_storage_bytes();
+        f(&mut state.items[index]);
+        let after = state.items[index].estimated_storage_bytes();
+        state.bytes = state.bytes.saturating_sub(before).saturating_add(after);
+        while state.bytes > state.byte_capacity {
+            let Some(victim) = state.items.pop_front() else {
+                break;
+            };
+            state.bytes = state.bytes.saturating_sub(victim.estimated_storage_bytes());
+            state.evictions = state.evictions.saturating_add(1);
+        }
         true
+    }
+
+    /// Project a bounded set of recent ids under one ring read-lock.
+    /// The output preserves `ids` order and never clones full messages.
+    pub fn project_recent_ids<T, F>(&self, ids: &[String], mut project: F) -> Vec<T>
+    where
+        F: FnMut(&CapturedMessage) -> Option<T>,
+    {
+        use std::collections::HashMap;
+
+        let wanted: HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        let mut remaining = wanted.len();
+        let mut output: Vec<Option<T>> = std::iter::repeat_with(|| None).take(ids.len()).collect();
+        let state = self.inner.read();
+        for message in state.items.iter().rev() {
+            if remaining == 0 {
+                break;
+            }
+            let Some(&index) = wanted.get(message.id.as_str()) else {
+                continue;
+            };
+            if output[index].is_none() {
+                output[index] = project(message);
+                remaining -= 1;
+            }
+        }
+        drop(state);
+        output.into_iter().flatten().collect()
+    }
+
+    pub fn record_ui_summary_drop(&self) {
+        let mut state = self.inner.write();
+        state.ui_summary_drops = state.ui_summary_drops.saturating_add(1);
     }
 
     /// Iterate the most recent matching messages without cloning the
@@ -170,13 +236,23 @@ impl RingBuffer {
         drops_per_sec: f64,
     ) -> CaptureStats {
         let state = self.inner.read();
+        let drops = state
+            .evictions
+            .saturating_add(state.oversized_drops)
+            .saturating_add(state.ui_summary_drops);
         CaptureStats {
             total_received: state.total_received,
             in_buffer: state.items.len(),
             buffer_capacity: state.capacity,
             buffer_bytes: state.bytes,
             buffer_byte_capacity: state.byte_capacity,
-            drops: state.drops,
+            drops,
+            buffer_evictions: state.evictions,
+            oversized_drops: state.oversized_drops,
+            ui_summary_drops: state.ui_summary_drops,
+            analyzer_drops: 0,
+            record_extraction_drops: 0,
+            agent_drops: 0,
             throughput_per_sec,
             drops_per_sec,
         }
@@ -210,6 +286,7 @@ mod tests {
                 length: 0,
             },
             raw_hex: String::new(),
+            raw_bytes: Vec::new(),
             fetch: None,
             connection_id: None,
         }

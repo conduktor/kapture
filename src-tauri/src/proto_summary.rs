@@ -88,6 +88,9 @@ pub enum FrameSummary {
         /// `(topic, partition_index)` pairs that the request
         /// targets — feeds the stale-leader detector.
         partitions: Vec<TopicPartition>,
+        /// Raw RecordBatch bytes by topic/partition. Values only,
+        /// bounded by the captured request prefix.
+        partition_bytes: Vec<PartitionBytes>,
         /// Total number of records summed across every partition in
         /// the request. `0` when records were truncated past the
         /// captured prefix.
@@ -287,6 +290,14 @@ pub struct TopicPartition {
     pub partition: i32,
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PartitionBytes {
+    pub topic: String,
+    pub partition: i32,
+    pub bytes: u64,
+}
+
 /// Per-partition non-zero error from any response that lists them
 /// (Fetch, OffsetCommit). `topic` may be empty for response variants
 /// that omit it (legacy versions).
@@ -359,6 +370,7 @@ fn extract_produce_request(buf: &mut Bytes, version: i16) -> Option<FrameSummary
     let acks = req.acks;
     let mut topics: Vec<String> = Vec::with_capacity(req.topic_data.len());
     let mut partitions: Vec<TopicPartition> = Vec::new();
+    let mut partition_bytes: Vec<PartitionBytes> = Vec::new();
     let mut record_count: u32 = 0;
     let mut batch_bytes: u64 = 0;
     let mut batch_count: u32 = 0;
@@ -376,7 +388,13 @@ fn extract_produce_request(buf: &mut Bytes, version: i16) -> Option<FrameSummary
             });
             batch_count = batch_count.saturating_add(1);
             if let Some(records) = &p.records {
-                batch_bytes = batch_bytes.saturating_add(records.len() as u64);
+                let bytes = records.len() as u64;
+                batch_bytes = batch_bytes.saturating_add(bytes);
+                partition_bytes.push(PartitionBytes {
+                    topic: name.clone(),
+                    partition: p.index,
+                    bytes,
+                });
                 let (rc, attr, pid) = first_batch_meta(records);
                 record_count = record_count.saturating_add(rc);
                 if first_batch_compression.is_none() {
@@ -391,6 +409,7 @@ fn extract_produce_request(buf: &mut Bytes, version: i16) -> Option<FrameSummary
     Some(FrameSummary::ProduceRequest {
         topics,
         partitions,
+        partition_bytes,
         record_count,
         batch_bytes,
         batch_count,

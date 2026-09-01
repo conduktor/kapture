@@ -18,6 +18,8 @@
 //! event — there is no async race.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use chrono::Utc;
 use parking_lot::{Mutex, RwLock};
@@ -32,13 +34,13 @@ use crate::proto_summary::{self, FrameSummary};
 use crate::session_stats::{SessionFold, SessionStats};
 
 const FETCH_API_KEY: i32 = 1;
-/// Cap on the protocol frames ring buffer. ~2 KB of memory per frame in
-/// the serialized JSON; 5000 entries ≈ 10 MB at the high water mark.
-/// Aligned with the Messages tab UI cap so both tabs surface a
-/// consistent recent-history depth.
+/// Count and retained-heap caps for protocol history. The byte cap is
+/// essential: even though captured payloads are retained only once and
+/// expanded lazily, decoded summaries and per-frame metadata still have
+/// a real retained cost.
 const PROTO_FRAMES_CAPACITY: usize = 5000;
-/// We trim in chunks to avoid per-event O(n) shift cost on the `VecDeque`.
-const PROTO_FRAMES_TRIM_HEADROOM: usize = 256;
+const PROTO_FRAMES_BYTE_CAPACITY: usize = 128 * 1024 * 1024;
+const ANALYZER_QUEUE_CAPACITY: usize = 1024;
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +82,7 @@ pub struct ProtoFrameSummary {
     pub size: usize,
     pub captured: usize,
     pub rtt_ms: f64,
+    pub capture_lag_ms: f64,
     /// Typed structured projection of the decoded body for the APIs
     /// the Session Activity tab cares about. `None` when the api isn't
     /// projected, when the bytes were truncated past the body, or when
@@ -91,6 +94,25 @@ pub struct ProtoFrameSummary {
     /// never forwarded. UI renders the row in error state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtoFramesDelta {
+    pub frames: Vec<ProtoFrameSummary>,
+    /// True when the cursor was absent/evicted and the frontend must
+    /// replace its list rather than append.
+    pub reset: bool,
+    /// Last frame returned (or the unchanged input cursor when there
+    /// was no delta). Feed this into the next poll.
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DecodedBodyResult {
+    pub id: String,
+    pub decoded_json: Option<serde_json::Value>,
 }
 
 impl From<&ProtoFrame> for ProtoFrameSummary {
@@ -108,6 +130,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             size: f.size,
             captured: f.captured,
             rtt_ms: f.rtt_ms,
+            capture_lag_ms: f.capture_lag_ms,
             summary: f.summary.clone(),
             frame_error: f.frame_error.clone(),
         }
@@ -142,6 +165,8 @@ pub struct ProtoFrame {
     pub captured: usize,
     /// Round-trip time in milliseconds. Only meaningful on `Recv`.
     pub rtt_ms: f64,
+    /// Capture-to-agent-writer delay. Zero outside external tap modes.
+    pub capture_lag_ms: f64,
     /// Set when the proxy accepted the client TCP but couldn't reach
     /// upstream — the frame was read off the client side but never
     /// forwarded. The string is the upstream-connect error reason
@@ -151,8 +176,14 @@ pub struct ProtoFrame {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frame_error: Option<String>,
     /// Lowercase hex of the captured prefix. Empty when `captured == 0`.
-    /// At ~64 KiB cap → ~128 KiB of hex per frame in the worst case.
+    /// Materialized only on detail/MCP inspection.
     pub payload_hex: String,
+    /// Authoritative captured prefix retained once in the backend ring.
+    /// It is deliberately excluded from IPC; `payload_hex` is the
+    /// serialized detail representation.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub raw_payload: Vec<u8>,
     /// Typed JSON of the decoded request/response body. The Kapture
     /// fork of `kafka-protocol` derives `serde::Serialize` on every
     /// message struct; this is the result of `serde_json::to_value`.
@@ -171,12 +202,130 @@ pub struct ProtoFrame {
     pub summary: Option<FrameSummary>,
 }
 
+impl ProtoFrame {
+    /// Materialize the heavyweight inspector fields on a detached
+    /// frame. The ring itself keeps only `raw_payload` + the bounded
+    /// typed summary, so polling and long captures never retain both
+    /// bytes, hex and a full decoded tree for every frame.
+    pub fn materialize_detail(&mut self) {
+        if self.payload_hex.is_empty() && !self.raw_payload.is_empty() {
+            self.payload_hex = hex::encode(&self.raw_payload);
+        }
+        if self.decoded_json.is_none() && !self.raw_payload.is_empty() {
+            let api_version = i16::try_from(self.api_version).unwrap_or(0);
+            self.decoded_json = proto_decode::decode_frame(
+                self.api_key,
+                api_version,
+                self.direction,
+                &self.raw_payload,
+            );
+        }
+    }
+
+    pub(crate) fn decoded_body(&self) -> Option<serde_json::Value> {
+        if self.raw_payload.is_empty() {
+            return None;
+        }
+        let api_version = i16::try_from(self.api_version).unwrap_or(0);
+        proto_decode::decode_frame(self.api_key, api_version, self.direction, &self.raw_payload)
+    }
+
+    #[must_use]
+    pub fn estimated_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            .saturating_add(self.id.capacity())
+            .saturating_add(self.timestamp.capacity())
+            .saturating_add(self.api_name.capacity())
+            .saturating_add(self.frame_error.as_ref().map_or(0, String::capacity))
+            .saturating_add(self.payload_hex.capacity())
+            .saturating_add(self.raw_payload.capacity())
+            .saturating_add(
+                self.decoded_json
+                    .as_ref()
+                    .map_or(0, estimated_json_heap_bytes),
+            )
+            .saturating_add(self.summary.as_ref().map_or(0, serialized_size))
+    }
+}
+
+fn estimated_json_heap_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 0,
+        serde_json::Value::String(value) => value.capacity(),
+        serde_json::Value::Array(values) => values
+            .capacity()
+            .saturating_mul(std::mem::size_of::<serde_json::Value>())
+            .saturating_add(values.iter().fold(0usize, |total, value| {
+                total.saturating_add(estimated_json_heap_bytes(value))
+            })),
+        serde_json::Value::Object(values) => values.iter().fold(0usize, |total, (key, value)| {
+            total
+                .saturating_add(std::mem::size_of::<String>())
+                .saturating_add(std::mem::size_of::<serde_json::Value>())
+                .saturating_add(key.capacity())
+                .saturating_add(estimated_json_heap_bytes(value))
+        }),
+    }
+}
+
+fn serialized_size<T: Serialize>(value: &T) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
+}
+
+#[derive(Debug, Default)]
+struct FrameRing {
+    items: VecDeque<ProtoFrame>,
+    bytes: usize,
+    evictions: u64,
+    oversized_drops: u64,
+}
+
+impl FrameRing {
+    fn push(&mut self, frame: ProtoFrame) {
+        let incoming = frame.estimated_storage_bytes();
+        if incoming > PROTO_FRAMES_BYTE_CAPACITY {
+            self.oversized_drops = self.oversized_drops.saturating_add(1);
+            return;
+        }
+        while self.items.len() >= PROTO_FRAMES_CAPACITY
+            || self.bytes.saturating_add(incoming) > PROTO_FRAMES_BYTE_CAPACITY
+        {
+            let Some(victim) = self.items.pop_front() else {
+                break;
+            };
+            self.bytes = self.bytes.saturating_sub(victim.estimated_storage_bytes());
+            self.evictions = self.evictions.saturating_add(1);
+        }
+        self.bytes = self.bytes.saturating_add(incoming);
+        self.items.push_back(frame);
+    }
+
+    fn clear(&mut self) {
+        self.items.clear();
+        self.bytes = 0;
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ProtoCorrelator {
     state: RwLock<CorrelatorState>,
     /// Separately locked so the wire-frame ring buffer doesn't contend
     /// with the (much hotter) `FetchMetadata` correlator state.
-    frames: Mutex<VecDeque<ProtoFrame>>,
+    frames: Mutex<FrameRing>,
     /// Incremental session aggregate. Folded once per event so it
     /// survives ring eviction — the user gets a stable view of "this
     /// client is librdkafka 2.3.0; topics seen are X, Y; groups
@@ -186,6 +335,14 @@ pub struct ProtoCorrelator {
     /// Anti-pattern detectors — folded next to `session` and
     /// surfaced to the Expert tab. Same eviction-survival logic.
     anti_patterns: Mutex<AntiPatternsFold>,
+    /// Lazily created single-consumer analyzer queue. Proxy/JVM I/O
+    /// tasks only copy the bounded prefix and `try_send`; JSON decode,
+    /// summary extraction, hex rendering, and folds happen here.
+    analyzer_tx: OnceLock<tokio::sync::mpsc::Sender<ProtoEvent>>,
+    analyzer_drops: AtomicU64,
+    analyzer_pending: AtomicU64,
+    record_extraction_drops: AtomicU64,
+    agent_drops: AtomicU64,
 }
 
 #[derive(Debug, Default)]
@@ -211,6 +368,61 @@ impl ProtoCorrelator {
         }
     }
 
+    /// Enqueue analysis without ever blocking Kafka forwarding. The
+    /// queue is bounded; overload is explicit through `analyzer_drops`.
+    pub fn enqueue_event(self: &Arc<Self>, event: ProtoEvent) {
+        let tx = self.analyzer_tx.get_or_init(|| {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(ANALYZER_QUEUE_CAPACITY);
+            let correlator = Arc::downgrade(self);
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    let Some(correlator) = correlator.upgrade() else {
+                        break;
+                    };
+                    correlator.record_event_owned(event);
+                    correlator.analyzer_pending.fetch_sub(1, Ordering::Release);
+                }
+            });
+            tx
+        });
+        self.analyzer_pending.fetch_add(1, Ordering::AcqRel);
+        if tx.try_send(event).is_err() {
+            self.analyzer_pending.fetch_sub(1, Ordering::Release);
+            self.analyzer_drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[must_use]
+    pub fn analyzer_drops(&self) -> u64 {
+        self.analyzer_drops.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub async fn flush_analysis(&self) {
+        while self.analyzer_pending.load(Ordering::Acquire) != 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    pub fn record_extraction_drop(&self, count: usize) {
+        self.record_extraction_drops
+            .fetch_add(u64::try_from(count).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn record_extraction_drops(&self) -> u64 {
+        self.record_extraction_drops.load(Ordering::Relaxed)
+    }
+
+    pub fn record_agent_drops(&self, count: u64) {
+        self.agent_drops.fetch_add(count, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn agent_drops(&self) -> u64 {
+        self.agent_drops.load(Ordering::Relaxed)
+    }
+
     /// Record a protocol event. Called synchronously from the
     /// librdkafka broker thread (via the proto-hook trampoline).
     ///
@@ -220,41 +432,31 @@ impl ProtoCorrelator {
     ///  2. Append a `ProtoFrame` to the ring buffer — used by the
     ///     "Protocol" view in the GUI.
     pub fn record_event(&self, event: &ProtoEvent) {
+        self.record_event_inner(event, event.payload.clone());
+    }
+
+    fn record_event_owned(&self, mut event: ProtoEvent) {
+        let raw_payload = std::mem::take(&mut event.payload);
+        self.record_event_inner(&event, raw_payload);
+    }
+
+    fn record_event_inner(&self, event: &ProtoEvent, raw_payload: Vec<u8>) {
         // (1) Frames ring buffer: every event, both directions.
         {
-            let captured = event.payload.len();
-            // Decode synchronously here. proto_decode::decode_frame is
-            // bounded by the captured prefix (≤ 64 KiB) so even Fetch
-            // responses stay sub-ms. Anything we don't have a decoder
-            // arm for returns None and the UI falls back to the hex
-            // view.
-            let (decoded_json, summary) = if event.payload.is_empty() {
-                (None, None)
+            let captured = raw_payload.len();
+            // The compact summary drives incremental folds and must be
+            // available now. Full JSON and hex are intentionally left
+            // lazy until a detail/batch inspection asks for them.
+            let summary = if raw_payload.is_empty() {
+                None
             } else {
                 let api_version = i16::try_from(event.api_version).unwrap_or(0);
-                // Two passes over the same captured prefix:
-                //  * `decode_frame` walks the body once and emits a
-                //    typed `serde_json::Value` (full inspector tree
-                //    + decodedContains/decodedField filtering);
-                //  * `extract_summary` runs a *narrow* second decode
-                //    only for the few APIs that drive Session
-                //    Activity aggregates — keeps the IPC summary
-                //    payload small without forcing the frontend to
-                //    walk full bodies.
-                // Both are bounded by the ≤ 64 KiB capture cap.
-                let json = proto_decode::decode_frame(
+                proto_summary::extract_summary(
                     event.api_key,
                     api_version,
                     event.direction,
-                    &event.payload,
-                );
-                let summary = proto_summary::extract_summary(
-                    event.api_key,
-                    api_version,
-                    event.direction,
-                    &event.payload,
-                );
-                (json, summary)
+                    &raw_payload,
+                )
             };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
@@ -269,9 +471,11 @@ impl ProtoCorrelator {
                 size: event.payload_size,
                 captured,
                 rtt_ms: event.rtt_ms,
+                capture_lag_ms: event.capture_lag_ms,
                 frame_error: event.frame_error.clone(),
-                payload_hex: hex::encode(&event.payload),
-                decoded_json,
+                payload_hex: String::new(),
+                raw_payload,
+                decoded_json: None,
                 summary,
             };
             // Fold into the persistent session aggregate before
@@ -281,14 +485,7 @@ impl ProtoCorrelator {
             self.anti_patterns
                 .lock()
                 .absorb(&frame, frame.summary.as_ref());
-            let mut frames = self.frames.lock();
-            frames.push_back(frame);
-            // Trim in a single batch when we exceed the cap by the
-            // headroom amount, to keep amortised O(1) on push.
-            if frames.len() > PROTO_FRAMES_CAPACITY + PROTO_FRAMES_TRIM_HEADROOM {
-                let drop_n = frames.len() - PROTO_FRAMES_CAPACITY;
-                drop(frames.drain(..drop_n));
-            }
+            self.frames.lock().push(frame);
         }
 
         // (2) FetchMetadata correlator: only Fetch RECV is meaningful.
@@ -321,12 +518,82 @@ impl ProtoCorrelator {
     #[must_use]
     pub fn summaries(&self, limit: usize) -> Vec<ProtoFrameSummary> {
         let frames = self.frames.lock();
-        let n = limit.min(frames.len());
+        let n = limit.min(frames.items.len());
         frames
+            .items
             .iter()
-            .skip(frames.len() - n)
+            .skip(frames.items.len() - n)
             .map(ProtoFrameSummary::from)
             .collect()
+    }
+
+    /// Return only summaries newer than `after_id`. If the cursor has
+    /// aged out, return a bounded replacement snapshot with `reset`.
+    #[must_use]
+    pub fn summaries_delta(&self, after_id: Option<&str>, limit: usize) -> ProtoFramesDelta {
+        let frames = self.frames.lock();
+        let limit = limit.min(PROTO_FRAMES_CAPACITY);
+        let cursor_index = after_id.and_then(|id| frames.items.iter().rposition(|f| f.id == id));
+        let reset = after_id.is_none() || cursor_index.is_none();
+        let start = if reset {
+            frames.items.len().saturating_sub(limit)
+        } else {
+            cursor_index.unwrap_or(0).saturating_add(1)
+        };
+        let summaries: Vec<ProtoFrameSummary> = frames
+            .items
+            .iter()
+            .skip(start)
+            .take(limit)
+            .map(ProtoFrameSummary::from)
+            .collect();
+        drop(frames);
+        let next_cursor = summaries
+            .last()
+            .map(|frame| frame.id.clone())
+            .or_else(|| after_id.map(ToOwned::to_owned));
+        ProtoFramesDelta {
+            frames: summaries,
+            reset,
+            next_cursor,
+        }
+    }
+
+    /// Fetch decoded bodies for many ids under one lock. A result is
+    /// returned for every id, including `decoded_json: null`; callers
+    /// use that as a negative cache entry.
+    #[must_use]
+    pub fn decoded_bodies(&self, ids: &[String]) -> Vec<DecodedBodyResult> {
+        let wanted: HashMap<&str, usize> = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        let mut output: Vec<DecodedBodyResult> = ids
+            .iter()
+            .map(|id| DecodedBodyResult {
+                id: id.clone(),
+                decoded_json: None,
+            })
+            .collect();
+        let mut remaining = wanted.len();
+        let frames = self.frames.lock();
+        for frame in frames.items.iter().rev() {
+            if remaining == 0 {
+                break;
+            }
+            let Some(&index) = wanted.get(frame.id.as_str()) else {
+                continue;
+            };
+            if output[index].decoded_json.is_none() {
+                output[index].decoded_json = frame.decoded_body();
+                // Even an undecodable frame is now resolved; ids are
+                // unique so no older duplicate needs to be visited.
+                remaining -= 1;
+            }
+        }
+        drop(frames);
+        output
     }
 
     /// Full `ProtoFrame` by id — including the captured bytes and
@@ -334,14 +601,23 @@ impl ProtoCorrelator {
     /// of the ring buffer or never existed.
     #[must_use]
     pub fn frame_detail(&self, id: &str) -> Option<ProtoFrame> {
-        self.frames.lock().iter().find(|f| f.id == id).cloned()
+        let mut frame = self
+            .frames
+            .lock()
+            .items
+            .iter()
+            .rev()
+            .find(|f| f.id == id)
+            .cloned()?;
+        frame.materialize_detail();
+        Some(frame)
     }
 
     /// Total number of frames currently in the ring buffer.
     #[must_use]
     #[allow(dead_code)] // surfaced via stats in a follow-up
     pub fn frame_count(&self) -> usize {
-        self.frames.lock().len()
+        self.frames.lock().items.len()
     }
 
     /// Clone every `ProtoFrame` currently in the ring buffer, including
@@ -350,7 +626,7 @@ impl ProtoCorrelator {
     /// after the live ring evicts it.
     #[must_use]
     pub fn frames_snapshot(&self) -> Vec<ProtoFrame> {
-        self.frames.lock().iter().cloned().collect()
+        self.frames.lock().items.iter().cloned().collect()
     }
 
     /// Drain the entire frame ring buffer + reset the per-connection
@@ -415,6 +691,7 @@ mod tests {
             local_port: 0,
             payload_size: 1024,
             rtt_ms,
+            capture_lag_ms: 0.0,
             payload: Vec::new(),
             frame_error: None,
         }
@@ -444,5 +721,25 @@ mod tests {
         assert_eq!(map.len(), 2);
         let latest = c.lookup("any", 0).unwrap();
         assert_eq!(latest.connection_id, 1);
+    }
+
+    #[test]
+    fn protocol_hex_is_materialized_only_for_detail() {
+        let c = ProtoCorrelator::new();
+        let mut event = ev(ProtoDirection::Send, 99, 0, 0.0);
+        event.payload = vec![0xde, 0xad, 0xbe, 0xef];
+        event.payload_size = event.payload.len();
+        c.record_event(&event);
+
+        let id = c.summaries(1)[0].id.clone();
+        let stored_payload = c.frames.lock().items.back().unwrap().raw_payload.clone();
+        assert_eq!(stored_payload, event.payload);
+        assert!(c.frames.lock().items.back().unwrap().payload_hex.is_empty());
+        assert!(c.frames.lock().items.back().unwrap().decoded_json.is_none());
+
+        let detail = c.frame_detail(&id).unwrap();
+        assert_eq!(detail.payload_hex, "deadbeef");
+        // Materializing the detached detail must not expand the ring.
+        assert!(c.frames.lock().items.back().unwrap().payload_hex.is_empty());
     }
 }

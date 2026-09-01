@@ -394,7 +394,7 @@ async fn drain_until_upstream(
         ) {
             Ok(mut event) => {
                 event.frame_error = Some(connect_err.clone());
-                correlator.record_event(&event);
+                correlator.enqueue_event(event);
             }
             Err(err) => {
                 warn!(
