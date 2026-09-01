@@ -176,6 +176,7 @@ public final class Agent {
                 )
                 .installOn(inst);
 
-        System.err.println("[kapture-jvm-agent] installed; tap socket = /tmp/kapture-tap.sock");
+        String socketPath = System.getProperty("kapture.tap.socket", "/tmp/kapture-tap.sock");
+        System.err.println("[kapture-jvm-agent] installed; tap socket = " + socketPath);
     }
 }

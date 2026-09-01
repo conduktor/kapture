@@ -346,6 +346,9 @@ pub struct ProtoCorrelator {
     analyzer_tx: OnceLock<tokio::sync::mpsc::Sender<ProtoEvent>>,
     analyzer_drops: AtomicU64,
     analyzer_pending: AtomicU64,
+    /// Protocol frames fully folded by the analyzer. Unlike the bounded
+    /// frame ring length, this remains a cumulative capture-health counter.
+    analyzed_frames: AtomicU64,
     record_extraction_drops: AtomicU64,
     agent_drops: AtomicU64,
 }
@@ -400,6 +403,18 @@ impl ProtoCorrelator {
     #[must_use]
     pub fn analyzer_drops(&self) -> u64 {
         self.analyzer_drops.load(Ordering::Relaxed)
+    }
+
+    /// Protocol frames queued but not yet fully analyzed.
+    #[must_use]
+    pub fn analyzer_pending(&self) -> u64 {
+        self.analyzer_pending.load(Ordering::Acquire)
+    }
+
+    /// Cumulative protocol frames processed by the analyzer.
+    #[must_use]
+    pub fn analyzed_frames(&self) -> u64 {
+        self.analyzed_frames.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -496,6 +511,7 @@ impl ProtoCorrelator {
                 .lock()
                 .absorb(&frame, frame.summary.as_ref());
             self.frames.lock().push(frame);
+            self.analyzed_frames.fetch_add(1, Ordering::Relaxed);
         }
 
         // (2) FetchMetadata correlator: only Fetch RECV is meaningful.
@@ -789,5 +805,18 @@ mod tests {
         let snapshot = c.frames_snapshot_with_budget(10, one_row_budget);
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].id, latest_id);
+    }
+
+    #[test]
+    fn analyzed_frame_count_is_cumulative_across_ring_clear() {
+        let c = ProtoCorrelator::new();
+        c.record_event(&ev(ProtoDirection::Send, 99, 0, 0.0));
+        c.record_event(&ev(ProtoDirection::Recv, 99, 0, 0.0));
+        assert_eq!(c.analyzed_frames(), 2);
+        assert_eq!(c.analyzer_pending(), 0);
+
+        c.clear();
+        assert_eq!(c.frame_count(), 0);
+        assert_eq!(c.analyzed_frames(), 2);
     }
 }

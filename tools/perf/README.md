@@ -63,6 +63,23 @@ omission. It reports process CPU and peak used heap; wrap it in
 `/usr/bin/time -l` (macOS) or `/usr/bin/time -v` (Linux) for process RSS.
 As with the Node driver, any send failure or overload drop exits non-zero.
 
+For the connected leg without renderer noise, start Kapture's real JVM tap
+pipeline in a separate shell, then point the agent at its socket:
+
+```sh
+cargo run --manifest-path src-tauri/Cargo.toml --profile profiling \
+  --example jvm_tap_smoke -- --socket /tmp/kapture-perf-tap.sock --seconds 60
+java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar \
+  -Dkapture.tap.socket=/tmp/kapture-perf-tap.sock \
+  --add-opens java.base/java.nio=ALL-UNNAMED \
+  -jar tools/perf/jvm-producer/target/kapture-jvm-perf.jar \
+  --broker localhost:29092 --rate 1000 --duration 30 --payload-bytes 1024
+```
+
+The listener exits non-zero if it sees no protocol traffic, pending analysis,
+or any agent/analyzer/extraction drop. Ring eviction is expected for long runs:
+`analyzed_frames` is cumulative while `retained_frames` is capped at 5,000.
+
 On Linux, repeat the direct workload with the PID-scoped OpenSSL agent from
 `agents/ebpf-tap`. Capture its per-program run/runtime counters at exit in
 addition to the normal latency, CPU, RSS and loss metrics.
