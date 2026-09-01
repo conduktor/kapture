@@ -68,18 +68,15 @@ export function useFreshRows<T>(
       for (const id of newIds) next.add(id);
       return next;
     });
-    const timer = window.setTimeout(() => {
+    // Intentionally do not clear this timer: the flash should always fade
+    // even if the items array updates again before ttlMs.
+    window.setTimeout(() => {
       setFresh((prev) => {
         const next = new Set(prev);
         for (const id of newIds) next.delete(id);
         return next;
       });
     }, ttlMs);
-    return (): void => {
-      // Don't clear — let the timer expire so the flash always fades
-      // out even if the items array updates again before ttlMs.
-      void timer;
-    };
   }, [items, getId, ttlMs]);
 
   return fresh;
