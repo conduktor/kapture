@@ -100,6 +100,28 @@ heap variation; it is a compatibility/fast-path smoke, not steady-state
 overhead evidence. The agent attempted the missing UDS connection only on its
 background writer and transformed the Kafka class successfully.
 
+Java 25 still emits Byte Buddy's terminal-deprecation warning for
+`Unsafe::objectFieldOffset`; this is tracked upstream in
+[byte-buddy#1803](https://github.com/raphw/byte-buddy/issues/1803). The e2e
+proves that it does not prevent current transformation, but future JDK removal
+remains a compatibility gate.
+
+The repository now contains a separate Java open-loop driver. Its scheduler
+offers work to a bounded dispatch thread, so a blocking `KafkaProducer.send()`
+cannot hide coordinated omission. Validation produced:
+
+- a 500 ms injected pause with all 5,000 arrivals retained, p99 at 460.39 ms,
+  and p999 at 502.06 ms;
+- a forced one-request in-flight cap with 353 explicit drops and a non-zero
+  process exit;
+- 10,000/10,000 acknowledgements at 1,000/s both without the agent and with the
+  agent loaded but disconnected.
+
+In that short disconnected comparison, p99 was 0.981 ms without the agent and
+0.899 ms with it; process CPU was 2.974 s versus 2.645 s. The inversion shows
+normal short-run/JIT noise, so it is evidence that the fast path works, not a
+claim that instrumentation improves performance.
+
 ## Gates still open
 
 - Repeat each row for multiple 30-second runs on release hardware and publish

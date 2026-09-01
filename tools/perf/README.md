@@ -43,13 +43,25 @@ the pause instead of hiding it as reduced throughput.
 node tools/perf/open-loop-producer.mjs --rate 1000 --duration 10 --inject-stall-at 3 --inject-stall-ms 500
 ```
 
-For JVM tap overhead, run the same Java producer workload once without the
-agent, once with the agent while Kapture is stopped, and once connected:
+For JVM tap overhead, build the open-loop Java producer, then run the same
+workload once without the agent, once with the agent while Kapture is stopped,
+and once connected:
 
 ```sh
-java -jar producer-benchmark.jar
-java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar -jar producer-benchmark.jar
+mvn -q -DskipTests -f tools/perf/jvm-producer/pom.xml package
+java -jar tools/perf/jvm-producer/target/kapture-jvm-perf.jar \
+  --broker localhost:29092 --rate 1000 --duration 30 --payload-bytes 1024
+java -javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar \
+  --add-opens java.base/java.nio=ALL-UNNAMED \
+  -jar tools/perf/jvm-producer/target/kapture-jvm-perf.jar \
+  --broker localhost:29092 --rate 1000 --duration 30 --payload-bytes 1024
 ```
+
+The Java driver uses a dedicated bounded dispatch thread so a blocking
+`KafkaProducer.send()` cannot slow the arrival scheduler and hide coordinated
+omission. It reports process CPU and peak used heap; wrap it in
+`/usr/bin/time -l` (macOS) or `/usr/bin/time -v` (Linux) for process RSS.
+As with the Node driver, any send failure or overload drop exits non-zero.
 
 On Linux, repeat the direct workload with the PID-scoped OpenSSL agent from
 `agents/ebpf-tap`. Capture its per-program run/runtime counters at exit in
