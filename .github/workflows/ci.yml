@@ -69,18 +69,21 @@ jobs:
           # red main hits the warm cache.
           cache-on-failure: true
 
-      - name: Tauri system deps (cached)
+      - name: Install Tauri system dependencies
         # Tauri on Linux pulls webkit2gtk + glib + librsvg for the
         # build. cargo check / clippy / test compile the tauri crate
-        # which links against them.
-        # The cached-action snapshots /var/cache/apt + the installed
-        # files on first run; later runs skip the 30+ s download. Bump
-        # `version:` to bust the cache deliberately when the package
-        # set changes.
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-          version: "1"
+        # which links against them. Install them explicitly: restoring
+        # /var/cache/apt without the package files leaves pkg-config unable
+        # to find glib-2.0 on a fresh hosted runner.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
@@ -140,11 +143,16 @@ jobs:
           workspaces: src-tauri
           cache-on-failure: true
 
-      - name: Tauri system deps (cached)
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-          version: "1"
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Bring up Kafka cluster zoo (kafka + mb + legacy + sasl + acl)
         run: |
@@ -224,11 +232,16 @@ jobs:
           workspaces: src-tauri
           cache-on-failure: true
 
-      - name: Tauri system deps (cached)
-        uses: awalsh128/cache-apt-pkgs-action@v1
-        with:
-          packages: libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-          version: "1"
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Set up JDK 21 (needed for the agent + test client + javaagent flag)
         uses: actions/setup-java@v5
