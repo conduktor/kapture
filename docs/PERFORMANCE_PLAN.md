@@ -137,11 +137,16 @@ budget at the target event rate.
 The implementation is complete, but release claims still require measurements
 on the target environments rather than on this macOS development host:
 
-- run the full M0 matrix against representative Kafka/OpenSSL/JVM workloads;
-- execute the rootful eBPF attach/loss integration test on Linux and record the
-  kernel, libssl and libbpf versions;
-- publish p99/p999 and CPU/RSS deltas, and keep eBPF opt-in unless its p99
-  regression is below 5% with zero capture drops at the target event rate.
+- [x] execute a rootful CO-RE load/attach, multi-chunk delivery, explicit-loss
+      invalidation, and BPF runtime-accounting smoke on Linux 6.12/libssl 3;
+- [x] execute a local direct/proxy payload smoke with fixed offered arrivals;
+- [ ] repeat the full M0 matrix against representative Kafka/OpenSSL/JVM
+      workloads on release hardware;
+- [ ] publish repeated p99/p999 and target-process CPU/RSS deltas, and keep eBPF
+      opt-in unless its p99 regression is below 5% with zero capture drops.
+
+The dated evidence and its limitations are recorded in
+[`perf/2026-09-01-local-validation.md`](perf/2026-09-01-local-validation.md).
 
 ## Explicit non-goals until profiling proves otherwise
 
