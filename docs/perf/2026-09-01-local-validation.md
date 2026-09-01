@@ -7,7 +7,7 @@ runs on representative native Linux hardware with the UI and real clients.
 
 ## Environment
 
-- Revision: `112284b` (`main`)
+- Benchmark implementation revision: `cd2773e` (`main`)
 - Host: macOS 26.4.1 (25E253), Apple M4 Max, arm64
 - Node.js: 22.20.0
 - Broker: Apache Kafka 4.3.1 in Docker Desktop
@@ -121,6 +121,30 @@ In that short disconnected comparison, p99 was 0.981 ms without the agent and
 0.899 ms with it; process CPU was 2.974 s versus 2.645 s. The inversion shows
 normal short-run/JIT noise, so it is evidence that the fast path works, not a
 claim that instrumentation improves performance.
+
+The connected leg used the real headless JVM listener and the same open-loop
+driver at 1,000 records/s for ten seconds:
+
+| Metric                  |        No agent | Agent disconnected | Agent connected |
+| ----------------------- | --------------: | -----------------: | --------------: |
+| Offered / acknowledged  | 10,000 / 10,000 |    10,000 / 10,000 | 10,000 / 10,000 |
+| Failed / overload drops |           0 / 0 |              0 / 0 |           0 / 0 |
+| p99 response            |        0.981 ms |           0.899 ms |        0.939 ms |
+| p999 response           |        1.961 ms |           1.722 ms |        2.048 ms |
+| Client process CPU      |         2.974 s |            2.645 s |         3.181 s |
+| Peak used Java heap     |        127.0 MB |            49.8 MB |         49.7 MB |
+
+The connected listener analyzed 20,012 Kafka protocol frames. Its retained
+history correctly stayed at the 5,000-frame cap, with 2,500 sends and 2,500
+receives in that window. At shutdown it reported zero pending analysis, zero
+analyzer drops, zero agent drops, and zero record-extraction drops.
+
+A deliberately too-tight listener lifetime was discarded: it stopped during
+producer shutdown, analyzed only 19,676 frames, and the agent then
+reported a dropped frame because its socket had disappeared. The benchmark
+listener must outlive the workload and producer close/drain phase; the
+documented 60-second listener budget for a 30-second workload leaves that
+margin.
 
 ## Gates still open
 
