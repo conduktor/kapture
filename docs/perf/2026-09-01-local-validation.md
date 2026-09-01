@@ -74,6 +74,32 @@ verifier, and attached to a PID-scoped Python/OpenSSL TLS server. The test then:
 Docker Desktop did not expose tracefs events to the container, so connect and
 scheduler tracepoints correctly remained optional and were not validated here.
 
+## JVM agent compatibility smoke
+
+The host JVM was Temurin 25.0.3 and the fixture used Kafka client 3.9.2. This
+initially exposed Byte Buddy 1.14.19 rejecting Java 25 while still printing the
+agent's generic installed message. The agent now packages Byte Buddy 1.18.12
+with Maven Shade 3.6.2, and the e2e runs without the experimental class-version
+bypass.
+
+The real plaintext e2e transformed `PlaintextTransportLayer`, produced and
+consumed ten records, and observed ApiVersions, Metadata, Produce, and Fetch
+frames through the complete agent → UDS → Rust correlator path.
+
+A disconnected-agent startup smoke sent 50,000 small records through one
+batched producer:
+
+| Process lifetime metric |  No agent | Agent disconnected |
+| ----------------------- | --------: | -----------------: |
+| Wall time               |    0.55 s |             0.63 s |
+| User + system CPU       |    2.36 s |             2.48 s |
+| Maximum RSS             | 364.38 MB |          290.16 MB |
+
+The run includes JVM startup, Byte Buddy transformation, and normal run-to-run
+heap variation; it is a compatibility/fast-path smoke, not steady-state
+overhead evidence. The agent attempted the missing UDS connection only on its
+background writer and transformed the Kafka class successfully.
+
 ## Gates still open
 
 - Repeat each row for multiple 30-second runs on release hardware and publish
@@ -81,7 +107,7 @@ scheduler tracepoints correctly remained optional and were not validated here.
 - Run the UI live, hidden, and paused while collecting Kapture CPU/RSS and all
   capture-health counters.
 - Measure the JVM agent stopped/disconnected/connected matrix with allocation,
-  syscall, p99, and p999 profiles.
+  syscall, p99, and p999 profiles over a sustained open-loop Java workload.
 - Measure a real librdkafka/Kafka TLS workload with and without eBPF on native
   Linux; keep the feature opt-in until p99 regression is below 5% with zero
   capture loss.

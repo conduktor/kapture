@@ -170,9 +170,12 @@ async fn run_e2e(
     .expect("jvm-tap listener starts");
 
     let run_client_role = |role: &'static str| -> std::process::ExitStatus {
+        // Deliberately do not set Byte Buddy's `experimental` property here.
+        // The packaged dependency must genuinely support the CI JVM's class
+        // version, otherwise the agent can report "installed" while silently
+        // failing every Kafka transport transformation.
         let mut args: Vec<String> = vec![
             format!("-javaagent:{}", agent_jar.display()),
-            "-Dio.kapture.tap.shaded.bytebuddy.experimental=true".to_owned(),
             format!("-Dkapture.tap.socket={}", socket_path.display()),
             "--add-opens".to_owned(),
             "java.base/java.nio=ALL-UNNAMED".to_owned(),

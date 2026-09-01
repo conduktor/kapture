@@ -13,7 +13,10 @@
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <bytebuddy.version>1.14.19</bytebuddy.version>
+        <!-- 1.17.0 is the first non-experimental Java 25 line. Keep the
+             agent on the current stable line because it runs inside the
+             target application's JVM, not Kapture's own runtime. -->
+        <bytebuddy.version>1.18.12</bytebuddy.version>
         <kafka.version>3.9.2</kafka.version>
     </properties>
 
@@ -60,7 +63,9 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <version>3.5.1</version>
+                <!-- Byte Buddy is multi-release and includes Java 24+
+                     classes; Shade 3.6.2 embeds ASM 9.9.1. -->
+                <version>3.6.2</version>
                 <executions>
                     <execution>
                         <phase>package</phase>
