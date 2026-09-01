@@ -11,15 +11,16 @@
  * `__consumer_offsets` trail you can inspect with `kafka-consumer-
  * groups.sh` or Redpanda Console.
  *
- * IMPORTANT: this is a SEPARATE process from Kapture. Kapture's
- * proto-hook only observes its own client's wire frames, so this
- * consumer's traffic is NOT visible in Kapture's Protocol tab. To
- * sniff arbitrary clients we'd need a TCP proxy or libpcap; not in
- * scope today.
+ * This is a separate process from Kapture. Point `--broker` at
+ * Kapture's proxy listener (normally 127.0.0.1:9092) to make this
+ * consumer's traffic visible in Protocol / Session / Expert. Pointing
+ * it directly at the upstream broker bypasses proxy capture; JVM tap
+ * is the other observation option for a Java client.
  *
  * Usage:
  *   pnpm seed:consumer                     # Redpanda, default group id
  *   pnpm seed:consumer:kafka               # Apache Kafka stack
+ *   node tools/consumer.mjs --broker 127.0.0.1:9092  # through Kapture
  *   node tools/consumer.mjs --broker host  # explicit
  */
 
@@ -33,7 +34,13 @@ const arg = (flag, fallback) => {
 
 const BROKER = arg("--broker", "localhost:19092");
 const GROUP_ID = arg("--group", "kapture-dev-consumer");
-const TOPICS = ["orders.raw", "orders.enriched", "users.events", "orders.avro", "orders.jsonschema"];
+const TOPICS = [
+  "orders.raw",
+  "orders.enriched",
+  "users.events",
+  "orders.avro",
+  "orders.jsonschema",
+];
 
 const kafka = new Kafka({
   clientId: "kapture-consumer",

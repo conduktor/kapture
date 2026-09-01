@@ -67,7 +67,7 @@ Pick proxy mode when: the client is non-JVM, on a different machine, or you need
 - **Messages tab.** Decoded records flattened from Produce requests and Fetch responses. Each record back-links to the frame it rode on so you jump from the message to the wire in one click.
 - **Filter DSL.** Wireshark-style: `topic == "orders" && envelope.size > 1024 && headers.tenant == "acme"`. Compose, autocomplete, save.
 - **Connection profiles.** Bootstrap, TLS, SASL — saved locally; passwords in the OS keychain. Last-used profile is pre-selected on launch.
-- **Expert info — 25 detectors.** Kapture flags client + cluster anti-patterns on the wire as you go: overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader producing, mixed `api_version`, SASL session-too-short, `acks=0`, compression-off, non-idempotent producer, producer-instance leak (PagerDuty 2025 shape), transactional zombie, auto-commit cadence, tight fetch polling, `INVALID_FETCH_SESSION_EPOCH` cascade, throttle pressure (KIP-219), metadata storm, classic rebalance on a KIP-848-ready cluster, `MESSAGE_TOO_LARGE`, `OFFSET_OUT_OF_RANGE`, cooperative-sticky churn, commit-during-rebalance, ACL deny storm, `UNKNOWN_TOPIC_OR_PARTITION` poll loop, coordinator churn.
+- **Expert info — 26 detectors.** Kapture flags client + cluster anti-patterns on the wire as you go: overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader producing, mixed `api_version`, SASL session-too-short, `acks=0`, compression-off, non-idempotent producer, producer-instance leak (PagerDuty 2025 shape), transactional zombie, auto-commit cadence, tight fetch polling, `INVALID_FETCH_SESSION_EPOCH` cascade, throttle pressure (KIP-219), metadata storm, classic rebalance on a KIP-848-ready cluster, `MESSAGE_TOO_LARGE`, `OFFSET_OUT_OF_RANGE`, cooperative-sticky churn, commit-during-rebalance, ACL deny storm, `UNKNOWN_TOPIC_OR_PARTITION` poll loop, coordinator churn, and slow consumer poll stall.
 - **Bonus: agent-driven.** A local MCP server (`http://127.0.0.1:7878/mcp`) exposes capture / filter / inspect tools so an IDE agent (Claude Code, Cursor, Windsurf) can drive Kapture for you. SASL frames redacted before they cross the boundary.
 
 ## Install
@@ -113,6 +113,27 @@ Then launch your Kafka client with `-javaagent:agents/jvm-tap/target/kapture-jvm
 ```sh
 pnpm install && pnpm tauri dev
 ```
+
+### Exercising the detectors with real clients
+
+The repository includes a real Apache Kafka Java-client harness with deliberately
+bad and fixed producer/consumer implementations. It runs outside Kapture and can
+be observed through either proxy or JVM tap mode:
+
+```sh
+pnpm stack:up:kafka
+pnpm demo:client:build
+pnpm demo:client:setup
+
+# Point Kapture's proxy at localhost:29092 first.
+pnpm demo:client -- producer-lifecycle bad
+pnpm demo:client -- producer-lifecycle fixed
+pnpm demo:client -- offset-commit bad
+pnpm demo:client -- offset-commit fixed
+```
+
+See [the harness README](demos/client-antipatterns/README.md) for the expected
+wire shapes and JVM tap invocation.
 
 ## Roadmap
 

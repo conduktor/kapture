@@ -4,13 +4,16 @@ Session-based debugging for Kafka clients running locally. Mission:
 _answer "what is my client actually doing?" in seconds, without
 reaching for tcpdump or scrolling through 5000 frames._
 
-This file tracks the next round of features. Items are grouped by
-debugging scenario, not by implementation layer. Each carries a rough
-shirt size (S/M/L) and a "why now" line — the value proposition the
-feature buys you that nothing else in Kapture does today.
+This file tracks work that is not fully shipped yet. Items are grouped
+by debugging scenario, not by implementation layer. Each heading carries
+a status and a rough shirt size; completed features move to the
+[changelog](../CHANGELOG.md) instead of lingering here as future work.
 
 Conventions:
 
+- **planned** — no user-facing implementation yet.
+- **partial** — some protocol state, detector logic, or UI is shipped;
+  the text states exactly what remains.
 - **S** ≈ ≤ 1 day, single module, no IPC contract change.
 - **M** ≈ a few days, touches one Tauri command + a frontend pane.
 - **L** ≈ a week+, schema migration / new cross-tab concept / new
@@ -20,7 +23,7 @@ Conventions:
 
 ## Visibility — see more of what already happened
 
-### Latency per apiKey [M]
+### Latency per apiKey [planned · M]
 
 Per-RPC RTT histogram (p50 / p95 / max), slow-request highlight in
 the Protocol list above a configurable threshold.
@@ -30,7 +33,12 @@ already on every Recv frame (`rtt_ms`) — just needs aggregation +
 rendering. Distinguishes Produce-with-acks vs Metadata-thrash vs
 Heartbeat-blocked diagnoses in one glance.
 
-### Producer / transaction state [M]
+### Producer / transaction state [partial · M]
+
+Shipped foundation: `InitProducerId`, `AddPartitionsToTxn`, `Produce`,
+and `EndTxn` feed the anti-pattern fold; transactional-zombie and
+producer-instance-leak findings are live. Remaining work is the durable
+per-producer lifecycle model and its Session Activity pane.
 
 Section in Session Activity tracking `producer_id`,
 `producer_epoch`, transaction lifecycle (`InitProducerId →
@@ -40,7 +48,12 @@ transactions, epoch fences, repeated init events.
 _Why:_ EOS / idempotent producers fail in subtle ways. Today the
 user has to grep the Protocol tab for `InitProducerId` manually.
 
-### Group lifecycle pane [M]
+### Group lifecycle pane [partial · M]
+
+Shipped foundation: Session Activity aggregates members, latest
+generation, joins, heartbeats, commits, and errors; Expert detects several
+rebalance/commit contradictions. Remaining work is the ordered lifecycle
+model with active/zombie/fenced status and missing-event detection.
 
 Mirror of Producer / transaction state on the consumer side.
 Section in Session Activity tracking each group's membership
@@ -58,18 +71,22 @@ by hand from the Protocol list. The zombie-member story
 `session.timeout.ms` for assignment) becomes a one-glance
 diagnosis instead of a manual log walk.
 
-### Per-partition error expansion [S]
+### Per-partition error expansion [partial · S]
 
-Walk the per-partition `error_code` fields nested inside
-`ProduceResponse` / `FetchResponse` bodies (already in
-`decoded_json`) and add them to the Errors list with topic +
-partition context.
+Per-partition `ProduceResponse` / `FetchResponse` errors are already
+decoded and feed the Expert detectors. Add every non-zero result to the
+Session Errors list with topic + partition context; that list still only
+stores the aggregate response code.
 
 _Why:_ Top-level error code on Produce/Fetch is almost always 0.
 The interesting failures (NOT_LEADER, OFFSET_OUT_OF_RANGE) live in
 the partition results.
 
-### Partition routing audit [S]
+### Partition routing audit [partial · S]
+
+Shipped foundation: the stale-leader detector compares Produce routing
+with the latest Metadata response. Remaining work is the standing
+per-partition audit table and clean-state signal.
 
 Per `(topic, partition)` table in Session Activity: current leader
 according to the last `MetadataResponse`, the broker the last N
@@ -82,7 +99,11 @@ pre-deploy or post-failover sanity check ("yes, my producer came
 back to the right broker"). Same data the drift detector folds
 over; just rendered as a standing audit instead of an alert.
 
-### Negotiated API versions [S]
+### Negotiated API versions [partial · S]
+
+Shipped foundation: API advertisements are decoded and mixed broker
+versions produce an Expert finding. Remaining work is the standing
+per-apiKey client/broker/selected-version table.
 
 Per-apiKey table showing the version each side advertised and the
 version actually negotiated. Highlight when client maxVersion <
@@ -92,7 +113,12 @@ _Why:_ `summary.apiVersionsRequest` already carries the client
 software/version; broker-side max versions are in
 `ApiVersionsResponse`. Five lines of fold logic; one extra panel.
 
-### Per-broker capability matrix [M]
+### Per-broker capability matrix [partial · M]
+
+Shipped foundation: the anti-pattern fold retains advertised max versions
+long enough to detect advertised-version heterogeneity between brokers.
+Remaining work is a persistent per-broker matrix, the per-request
+contradiction check, and the optional active probe.
 
 Step beyond Negotiated API versions: fold every `ApiVersionsResponse`
 seen on the wire into a per-broker matrix (advertised api_version
@@ -114,7 +140,7 @@ Surfaces:
   what, in one view.
 
 _Why:_ Sister to the Protocol drift detector's mixed-version
-check. Drift detector catches the per-request contradiction; the
+check. The current detector catches advertised differences; the
 matrix gives you the standing picture and makes "rolling upgrade
 in progress" a one-glance diagnosis. Pure passive — every
 well-behaved client connection already starts with
@@ -127,7 +153,7 @@ brokers from `MetadataResponse` using the upstream creds the proxy
 already holds, send its own `ApiVersionsRequest`, and fill the
 gaps in the matrix.
 
-### Connection lifecycle [S]
+### Connection lifecycle [planned · S]
 
 Track open / close / reconnect per `connection_id`. Render a small
 table: when it opened, how long it lived, how many frames it
@@ -163,24 +189,23 @@ design.
 > `src-tauri/src/jvm_tap.rs`, Tauri commands `start_jvm_tap` /
 > `stop_jvm_tap`). The items below are the remaining tap work.
 
-### JVM tap — follow-ups [S/M each]
+### JVM tap — follow-ups [partial · S/M each]
 
 Hardening + UX items left on the JVM path:
 
-- Bump ByteBuddy to a release with Java 25 support (eliminates the
-  `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
-- Shutdown drain hook on the agent (today loses ~5% of frames at
-  JVM exit).
-- Picker UI in Kapture: list JVM PIDs with sockets to Kafka ports,
-  one-click "Inject & tap". Confirmation modal explaining the
-  agent cannot detach cleanly until the JVM exits.
-- Detection that the JVM is using Conscrypt or BouncyCastle JSSE
-  instead of SunJSSE → either extend the hook target or surface a
-  "use proxy mode" message.
-- Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
-  the desktop app so users don't have to build it from source.
+- [ ] Bump ByteBuddy to a release with Java 25 support (eliminates the
+      `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
+- [ ] Add a shutdown drain hook on the agent. The current hook reports
+      dropped frames but does not flush the writer queue, so JVM exit can
+      still lose the tail of a capture.
+- [x] Ship the JVM PID picker with Kafka-socket hints, dynamic attach,
+      and one-click **Inject & tap**.
+- [ ] Detect Conscrypt or BouncyCastle JSSE and either extend the hook
+      target or surface a clear "use proxy mode" message.
+- [ ] Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
+      the desktop app so users do not have to build it from source.
 
-### eBPF tap — librdkafka family [L]
+### eBPF tap — librdkafka family [planned · L]
 
 eBPF uprobes on `SSL_write` and `SSL_read` in OpenSSL / BoringSSL,
 following the AgentSight (arXiv:2508.02736) and ecapture recipes.
@@ -214,7 +239,7 @@ Constraints:
 _Why:_ Closes the Python / Node / .NET / Ruby gap in one move.
 About a quarter of the production Kafka fleet uses these stacks.
 
-### eBPF tap — Go static `crypto/tls` [L]
+### eBPF tap — Go static `crypto/tls` [planned · L]
 
 Sister to the librdkafka tap, different attach technique. Pure-Go
 Kafka clients (Sarama, segmentio/kafka-go) statically link
@@ -241,7 +266,10 @@ remaining production gap. Combined with the JVM and librdkafka
 taps, Kapture observes roughly 95% of the production Kafka client
 market without breaking TLS.
 
-### Tap source picker UI [S]
+### Tap source picker UI [partial · S]
+
+The JVM process picker is shipped. Runtime detection and routing for
+OpenSSL/librdkafka and static Go clients depend on their eBPF tap modes.
 
 Connection dialog gains a "Tap a process" entry alongside "New
 proxy". The picker lists local processes that look like Kafka
@@ -259,7 +287,7 @@ _Why:_ Without a friendly picker, the tap modes are CLI flags only.
 The picker is what makes the feature visible to users who don't
 read the docs.
 
-### Pcap / SSLKEYLOGFILE import [M]
+### Pcap / SSLKEYLOGFILE import [planned · M]
 
 Fourth observation source: a `.pcap` file plus an
 `SSLKEYLOGFILE`-format key log. Kapture decrypts offline using the
@@ -279,7 +307,12 @@ better decoder.
 
 ## Diagnosis — surface what looks wrong
 
-### Anomaly banner [M]
+### Session anomaly summary [partial · M]
+
+The Expert tab now ships 26 live detectors, including rebalance loop,
+metadata storm, compression off, throttle pressure, and slow poll stall.
+Remaining work is a compact Session-level summary plus the signals not
+yet modeled here, notably producer retry pressure and heartbeat gaps.
 
 Banner at the top of Session Activity firing on heuristics:
 
@@ -293,33 +326,34 @@ _Why:_ This is what elevates Kapture above "Wireshark with a Kafka
 dissector". Not just frames, but _flags_. Heuristics are cheap,
 patterns are well-documented in Kafka client lore.
 
-### Protocol drift detector [M]
+### Protocol drift detector [partial · M]
 
 Sister to the Anomaly banner: same surface (Expert info / banner),
 different signal class. Where the banner watches volumes and
 cadences, this watches _contradictions_ — places where the wire
 says one thing and the client does another. Fires on:
 
-- Stale-leader producing — client routes `Produce` to broker A
-  while the latest `MetadataResponse` named broker B as leader for
-  that partition.
-- Mixed-version `api_version` — request sent with a version the
-  target broker did not advertise in its `ApiVersionsResponse`
-  (rolling-upgrade hazard).
-- Topic-ID drift — same topic name appears with two different
-  topic IDs across `Metadata` responses but `Produce` routing did
-  not follow.
-- Missing `LeaveGroup` on shutdown — connection closed without a
-  clean group exit, leaving the coordinator to wait
-  `session.timeout.ms` before reassigning.
-- Stale-generation `OffsetCommit` — commit carries a `generation_id`
-  older than the latest `JoinGroupResponse`.
-- Idempotent producer wedge — `Produce` failures with PID errors
-  after a timeout, with no `InitProducerId` re-handshake on the
-  path.
-- Scheduled SASL re-auth break — `SaslAuthenticate` succeeds
-  initially, then the next scheduled re-auth fails on the same
-  connection on a clock-like cadence.
+- [x] Stale-leader producing — client routes `Produce` to broker A
+      while the latest `MetadataResponse` named broker B as leader for
+      that partition.
+- [x] Mixed `api_version` advertisements — brokers expose different
+      `max_version` values for the same API key.
+- [ ] Request/version contradiction — a request uses a version the
+      target broker did not advertise in its `ApiVersionsResponse`.
+- [ ] Topic-ID drift — same topic name appears with two different
+      topic IDs across `Metadata` responses but `Produce` routing did
+      not follow.
+- [ ] Missing `LeaveGroup` on shutdown — connection closed without a
+      clean group exit, leaving the coordinator to wait
+      `session.timeout.ms` before reassigning.
+- [ ] Stale-generation `OffsetCommit` — commit carries a `generation_id`
+      older than the latest `JoinGroupResponse`.
+- [ ] Idempotent producer wedge — `Produce` failures with PID errors
+      after a timeout, with no `InitProducerId` re-handshake on the
+      path.
+- [x] Scheduled SASL re-auth break — `SaslAuthenticate` succeeds
+      initially, then the next scheduled re-auth fails on the same
+      connection on a clock-like cadence.
 
 _Why:_ These are the bugs that turn into multi-day incidents
 because the app symptom (timeout, wedge, no progress) is identical
@@ -328,7 +362,24 @@ but only if the tool flags the contradiction. Patterns drawn from
 public issues in librdkafka, KafkaJS, confluent-kafka-go,
 aws-msk-iam-auth, and ClickHouse.
 
-### Schema activity [S]
+### Finding evidence bundles [planned · M]
+
+An Expert finding currently points to only its most recent offending
+frame. Retain a small, bounded, ordered set of contributing frame IDs and
+render the causal sequence next to three stable sections: **Observed**,
+**Why it matters**, and **Fix**. Repeated handshakes should read as
+`ApiVersions → Metadata → InitProducerId → Produce × N`; commit storms
+should show the Fetch/record/OffsetCommit relationship instead of one
+isolated commit.
+
+Fix guidance can use the client name/version already observed in
+`ApiVersionsRequest` to show the relevant Java, librdkafka, KafkaJS, or
+other client setting without changing capture behavior.
+
+_Why:_ This shortens normal incident diagnosis, bug-report handoff, and
+code review. It is a product feature, not presentation-only UI.
+
+### Schema activity [planned · S]
 
 Panel listing schema fetches: subject / id / kind (Avro/Protobuf/
 JSON-Schema), cache hit rate, 404s. Currently silent in the UI.
@@ -340,7 +391,7 @@ fetched? Did the resolver 404? Today only the WARN log knows.
 
 ## Reproduction — capture, share, replay
 
-### Session export / replay [L]
+### Session export / replay [planned · L]
 
 "Export session" button → `.kapture` file (proto frames +
 `decoded_json` + captured records + session aggregate, gzipped
@@ -354,7 +405,7 @@ not "here's the screenshot".
 Open questions: format (custom JSON vs pcap-ng), encryption (SASL
 creds in payload), schema registry resolution snapshot.
 
-### Stash [M]
+### Stash [planned · M]
 
 Like `git stash` for capture sessions. While running, user hits a
 shortcut → snapshot of the last N seconds (proto frames +
@@ -369,7 +420,7 @@ without a full export, and compare across stashes later.
 Builds on the export format — a stash IS an export, scoped to a
 window.
 
-### Diff between sessions [M]
+### Diff between sessions [planned · M]
 
 Open two `.kapture` files side-by-side. Show what changed:
 
@@ -386,7 +437,7 @@ instead of eyeballing two screenshots.
 
 ## Active testing — make things break on purpose
 
-### Chaos / fault injection mode [L]
+### Chaos / fault injection mode [planned · L]
 
 Proxy gains an "evil mode" knob set: random response delays, random
 error codes on configurable RPCs, random connection drops. Toggleable
@@ -407,7 +458,7 @@ between catching a bug at staging vs in their seat.
 Open: needs to be SAFELY off-by-default, opt-in per session, never
 applied to writes the user actually wants persisted.
 
-### Pre-built chaos scenarios [S, depends on chaos mode]
+### Pre-built chaos scenarios [planned · S, depends on chaos mode]
 
 Catalog of named scenarios users can trigger one-click:
 
@@ -419,7 +470,7 @@ Catalog of named scenarios users can trigger one-click:
 _Why:_ Reduces "what should I test for" to a checkbox list. Useful
 for resilience-readiness audits in CI.
 
-### Declarative scenario tests [L, depends on chaos + replay]
+### Declarative scenario tests [planned · L, depends on chaos + replay]
 
 Test DSL: "with X chaos, replay this captured session, expect the
 client to retry ≤ N times and recover within T". Run as part of CI.
@@ -428,7 +479,7 @@ _Why:_ Turn debugging-in-the-loop into regression tests. Captures
 "my client survived this once" as "my client survives this every
 build".
 
-### Virtual broker fan-out [L]
+### Virtual broker fan-out [planned · L]
 
 Tell the proxy "pretend there are N brokers" when there is actually
 one upstream. Kapture spins up N local listeners with synthetic
@@ -481,7 +532,7 @@ Open questions:
 
 ## Beyond — bigger / longer-term swings
 
-### Time-travel scrub [L]
+### Time-travel scrub [planned · L]
 
 Drag a slider over the session timeline. The Session Activity
 panels reflect the state of the world _at that timestamp_ —
@@ -491,7 +542,7 @@ had fired. The Protocol list rewinds to that point.
 _Why:_ Today everything is "current". Debugging frequently means
 "what did the client know at minute 2?".
 
-### Connection topology view [M]
+### Connection topology view [planned · M]
 
 Visualize: client → proxy listener → upstream broker. Each
 connection is an edge. Show traffic per edge, reconnect events,
@@ -500,7 +551,7 @@ per-broker health. Replaces / extends the Brokers tab.
 _Why:_ Multi-broker scenarios are hard to reason about as a flat
 list. A graph is the natural shape.
 
-### Sequence / swim-lane view [L]
+### Sequence / swim-lane view [planned · L]
 
 Alternate projection of the Protocol timeline. Same frames,
 different lens: instead of one chronological list, render one row
@@ -520,7 +571,7 @@ upgrades where the contradiction sits across actors, not within
 one. Sister to the Group lifecycle pane and Connection topology
 view — same underlying data, third projection.
 
-### MCP-driven diagnostics [M]
+### MCP-driven diagnostics [planned · M]
 
 Pre-canned MCP tools an LLM agent can call instead of re-deriving
 the same analysis from raw frames every session.
@@ -576,7 +627,7 @@ named tools turns the agent from "reads 5000 frames and writes a
 summary" into "asks Kapture, gets a typed answer". Distinctive
 because no other Kafka tool exposes this surface.
 
-### Watch / alert mode [S]
+### Watch / alert mode [planned · S]
 
 Declarative triggers: "flash the UI when error_code != 0 appears",
 "play a sound on rebalance", "auto-stash when X happens". Persistent
@@ -585,7 +636,7 @@ across sessions.
 _Why:_ Long debug sessions = boredom + miss the moment it happens.
 Active alerting brings the moment to you.
 
-### Traffic shape classification [S]
+### Traffic shape classification [planned · S]
 
 Heuristics over the existing `SessionFold` that label the client
 in one shot. Surfaced as a chip below the existing "Client" tile
@@ -628,7 +679,7 @@ _Why:_ "What is this client doing?" is the first question every
 debug session asks. The data is already in the fold; we just need
 the rules.
 
-### Time correlation with app logs [M]
+### Time correlation with app logs [planned · M]
 
 Drop a log file onto Kapture; it aligns log lines with the proto
 frame timeline and renders an interleaved view. The bug usually
@@ -679,7 +730,7 @@ _Why:_ Closes the "what was the app doing when this RPC fired"
 loop without leaving Kapture. Cheap interop with the user's
 existing log discipline (no instrumentation required).
 
-### Pcap-ng export [M]
+### Pcap-ng export [planned · M]
 
 Export captured frames as a `.pcapng` readable by Wireshark with its
 existing Kafka dissector. Gives users a fallback "open in Wireshark"

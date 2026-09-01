@@ -43,6 +43,9 @@
     "seed:loop:kafka": "node tools/seed.mjs --broker localhost:29092 --registry http://localhost:28081 --loop --rate 10",
     "seed:consumer": "node tools/consumer.mjs",
     "seed:consumer:kafka": "node tools/consumer.mjs --broker localhost:29092",
+    "demo:client:build": "mvn -q -DskipTests -f demos/client-antipatterns/pom.xml package",
+    "demo:client:setup": "java -jar demos/client-antipatterns/target/kapture-client-antipatterns.jar setup --broker localhost:29092",
+    "demo:client": "java -jar demos/client-antipatterns/target/kapture-client-antipatterns.jar",
     "prepare": "husky"
   },
   "lint-staged": {
