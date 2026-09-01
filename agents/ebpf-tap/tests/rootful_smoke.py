@@ -24,6 +24,7 @@ READ = 1
 HEALTH = 2
 REQUEST_BODY = b"KAPTURE-REQUEST-BEGIN\n" + (b"q" * 20_000) + b"\nKAPTURE-REQUEST-END"
 RESPONSE_BODY = b"KAPTURE-RESPONSE-BEGIN\n" + (b"r" * 70_000) + b"\nKAPTURE-RESPONSE-END"
+OVERSIZE_BODY = b"KAPTURE-OVERSIZE-BEGIN\n" + (b"x" * (1024 * 1024)) + b"\nKAPTURE-OVERSIZE-END"
 
 
 def receive_exact(connection: socket.socket, length: int) -> bytes:
@@ -32,7 +33,7 @@ def receive_exact(connection: socket.socket, length: int) -> bytes:
     while remaining:
         chunk = connection.recv(remaining)
         if not chunk:
-            raise RuntimeError(f"unexpected EOF with {remaining} byte(s) outstanding")
+            raise EOFError(f"unexpected EOF with {remaining} byte(s) outstanding")
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
@@ -53,6 +54,10 @@ def target(cert: str, key: str, port: int) -> int:
             if request != REQUEST_BODY:
                 raise RuntimeError("TLS target received a corrupted request")
             tls.sendall(LENGTH_PREFIX.pack(len(RESPONSE_BODY)) + RESPONSE_BODY)
+            # A distinct SSL_write_ex call above the tap's bounded 1 MiB
+            # per-call budget must invalidate capture without emitting a
+            # partial event. The TLS peer must remain unaffected.
+            tls.sendall(LENGTH_PREFIX.pack(len(OVERSIZE_BODY)) + OVERSIZE_BODY)
     return 0
 
 
@@ -183,6 +188,12 @@ def exercise(loader_path: Path) -> None:
                     response = receive_exact(tls, response_length)
                     if response != RESPONSE_BODY:
                         raise RuntimeError("TLS client received a corrupted response")
+                    oversize_length = LENGTH_PREFIX.unpack(
+                        receive_exact(tls, LENGTH_PREFIX.size)
+                    )[0]
+                    oversize_response = receive_exact(tls, oversize_length)
+                    if oversize_response != OVERSIZE_BODY:
+                        raise RuntimeError("TLS client received a corrupted oversize response")
 
             streams: dict[tuple[int, int], bytearray] = {}
             lengths: dict[int, list[int]] = {WRITE: [], READ: []}
@@ -193,16 +204,10 @@ def exercise(loader_path: Path) -> None:
             while time.monotonic() < deadline:
                 try:
                     raw_header = receive_exact(tap_connection, FRAME_HEADER.size)
+                except EOFError:
+                    break
                 except socket.timeout:
-                    if tls_target.poll() is not None and any(
-                        expected_request in value
-                        for (direction, _), value in streams.items()
-                        if direction == READ
-                    ) and any(
-                        expected_response in value
-                        for (direction, _), value in streams.items()
-                        if direction == WRITE
-                    ):
+                    if health_frames == [0, 1] and loader.poll() is not None:
                         break
                     continue
                 direction, observed, emitted, connection_id, length = FRAME_HEADER.unpack(raw_header)
@@ -226,10 +231,10 @@ def exercise(loader_path: Path) -> None:
             loader = None
             if target_code != 0:
                 raise RuntimeError(f"TLS target exited {target_code}: {target_stderr}")
-            if loader_code != 0:
-                raise RuntimeError(f"tap loader exited {loader_code}: {loader_stderr}")
+            if loader_code == 0:
+                raise RuntimeError("tap loader did not fail closed after an oversize call")
 
-            if health_frames != [0]:
+            if health_frames != [0, 1]:
                 raise RuntimeError(
                     f"unexpected capture health sequence: {health_frames}; loader={loader_stderr}"
                 )
@@ -259,6 +264,12 @@ def exercise(loader_path: Path) -> None:
                 raise RuntimeError(
                     f"large SSL write was not split into 16 KiB chunks: {lengths[WRITE]}"
                 )
+            if any(
+                b"KAPTURE-OVERSIZE-BEGIN" in value
+                for (direction, _), value in streams.items()
+                if direction == WRITE
+            ):
+                raise RuntimeError("tap forwarded partial data from an oversize SSL call")
 
             loss_match = re.search(
                 r"events=(\d+) ring_drops=(\d+) read_faults=(\d+) oversize_calls=(\d+)",
@@ -266,12 +277,13 @@ def exercise(loader_path: Path) -> None:
             )
             if not loss_match:
                 raise RuntimeError(f"tap loader did not print capture counters: {loader_stderr}")
-            if any(int(value) != 0 for value in loss_match.groups()[1:]):
-                raise RuntimeError(f"tap loader reported capture loss: {loss_match.group(0)}")
+            _, ring_drops, read_faults, oversize_calls = map(int, loss_match.groups())
+            if ring_drops != 0 or read_faults != 0 or oversize_calls != 1:
+                raise RuntimeError(f"unexpected tap loss counters: {loss_match.group(0)}")
             print(
                 "rootful smoke passed: "
                 f"{loss_match.group(1)} events, {sum(lengths[READ])} read bytes, "
-                f"{sum(lengths[WRITE])} write bytes, zero loss"
+                f"{sum(lengths[WRITE])} write bytes, oversize fail-closed"
             )
         finally:
             listener.close()

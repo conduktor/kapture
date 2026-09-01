@@ -45,8 +45,8 @@ Manual preflight is also available:
 make -C agents/ebpf-tap check PID=1234 SSL=/usr/lib/x86_64-linux-gnu/libssl.so.3
 ```
 
-On a disposable rootful Linux runner, exercise byte delivery and multi-chunk
-reassembly against a real TLS connection:
+On a disposable rootful Linux runner, exercise byte delivery, multi-chunk
+reassembly, and fail-closed oversize loss against a real TLS connection:
 
 ```sh
 sudo make -C agents/ebpf-tap rootful-smoke
