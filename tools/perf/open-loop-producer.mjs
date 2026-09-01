@@ -21,6 +21,7 @@ const rate = Number(arg("--rate", "1000"));
 const durationSeconds = Number(arg("--duration", "30"));
 const payloadBytes = Number(arg("--payload-bytes", "1024"));
 const maxInFlight = Number(arg("--max-in-flight", "10000"));
+const warmupMessages = Number(arg("--warmup-messages", "10"));
 const injectStallAtSeconds = Number(arg("--inject-stall-at", "-1"));
 const injectStallMs = Number(arg("--inject-stall-ms", "0"));
 
@@ -33,11 +34,15 @@ if (
   payloadBytes < 0 ||
   !Number.isSafeInteger(maxInFlight) ||
   maxInFlight <= 0 ||
+  !Number.isSafeInteger(warmupMessages) ||
+  warmupMessages <= 0 ||
   !Number.isFinite(injectStallAtSeconds) ||
   !Number.isFinite(injectStallMs) ||
   injectStallMs < 0
 ) {
-  throw new Error("rate/duration must be positive; payload-bytes/max-in-flight valid integers");
+  throw new Error(
+    "rate/duration must be positive; payload-bytes/max-in-flight/warmup-messages valid integers",
+  );
 }
 
 class LogHistogram {
@@ -98,6 +103,7 @@ const value = Buffer.alloc(payloadBytes, 0x61);
 const responseLatency = new LogHistogram();
 const schedulingLag = new LogHistogram();
 const inFlight = new Set();
+const failureReasons = new Map();
 const target = Math.floor(rate * durationSeconds);
 const intervalMs = 1000 / rate;
 let acknowledged = 0;
@@ -108,6 +114,36 @@ let maxRss = process.memoryUsage().rss;
 let stallInjected = false;
 
 await producer.connect();
+
+// Topic auto-creation and the first metadata refresh are control-plane work,
+// not steady-state data-plane latency. Complete them before starting either
+// the clock or CPU/RSS accounting. A few brokers briefly return
+// UNKNOWN_TOPIC_OR_PARTITION while auto-creation converges, hence the bounded
+// setup-only retry even though measured sends never retry.
+let warmupError;
+for (let attempt = 1; attempt <= 10; attempt += 1) {
+  try {
+    await producer.send({
+      topic,
+      messages: Array.from({ length: warmupMessages }, (_, sequence) => ({
+        key: `warmup-${sequence}`,
+        value,
+      })),
+    });
+    warmupError = undefined;
+    break;
+  } catch (error) {
+    warmupError = error;
+    if (attempt < 10) await sleep(250);
+  }
+}
+if (warmupError) {
+  await producer.disconnect();
+  throw new Error(`Kafka warm-up failed after 10 attempts: ${warmupError.message}`, {
+    cause: warmupError,
+  });
+}
+
 const cpuStart = process.cpuUsage();
 const startedAt = performance.now();
 const rssTimer = setInterval(() => {
@@ -137,8 +173,10 @@ const launch = (sequence, intendedAt) => {
       acknowledged += 1;
       responseLatency.record(performance.now() - intendedAt);
     })
-    .catch(() => {
+    .catch((error) => {
       failed += 1;
+      const reason = error?.name ?? error?.constructor?.name ?? "UnknownError";
+      failureReasons.set(reason, (failureReasons.get(reason) ?? 0) + 1);
       responseLatency.record(performance.now() - intendedAt);
     })
     .finally(() => inFlight.delete(operation));
@@ -190,12 +228,16 @@ console.log(
         durationSeconds,
         payloadBytes,
         maxInFlight,
+        warmupMessages,
         injectStallAtSeconds,
         injectStallMs,
       },
       offered: target,
       acknowledged,
       failed,
+      failureReasons: Object.fromEntries(
+        [...failureReasons.entries()].sort(([left], [right]) => left.localeCompare(right)),
+      ),
       overloadDrops,
       achievedPerSecond: acknowledged / wallSeconds,
       wallSeconds,
@@ -209,3 +251,7 @@ console.log(
     2,
   ),
 );
+
+// A benchmark with hidden loss is not a successful benchmark. Keep the JSON
+// available to CI and humans, but surface the invalid run through the status.
+if (failed > 0 || overloadDrops > 0) process.exitCode = 1;

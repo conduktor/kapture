@@ -16,6 +16,11 @@ node tools/perf/open-loop-producer.mjs --broker localhost:<kapture-port> --rate 
 ```
 
 The first command is the direct baseline; the second targets Kapture's proxy.
+The harness performs a small setup-only warm-up before starting its clocks so
+topic auto-creation and initial metadata discovery do not contaminate the
+latency distribution. Override its size with `--warmup-messages`; use the same
+value for every side of a comparison.
+
 Verify the harness itself with a deliberate 500 ms scheduler stall: `offered`
 must remain `rate × duration` and p99/p999 scheduling/response latency must show
 the pause instead of hiding it as reduced throughput.
@@ -38,7 +43,8 @@ addition to the normal latency, CPU, RSS and loss metrics.
 
 Keep offered rate, duration, payload, acknowledgements, compression and JVM
 fixed. Report the harness JSON plus Kapture CPU/RSS and capture-health counters.
-An `overloadDrops` value is a failed run, not throughput.
+Any `failed` or `overloadDrops` value makes the command exit non-zero. It is a
+failed run, not throughput; `failureReasons` classifies measured send failures.
 
 ## Profiling build
 
