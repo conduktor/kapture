@@ -195,7 +195,7 @@ pub fn attach_jvm_tap_agent(
 ) -> Result<AttachResult, String> {
     if !agent_jar.exists() {
         return Err(format!(
-            "agent jar not found at {}; build with: (cd agents/jvm-tap && mvn package)",
+            "agent jar not found at {}; reinstall Kapture or build it with: mvn -f agents/jvm-tap/pom.xml package",
             agent_jar.display()
         ));
     }
@@ -204,14 +204,8 @@ pub fn attach_jvm_tap_agent(
     // when the attach injects them.
     let agent_args = format!("kapture.tap.socket={}", socket_path.display());
 
-    // `-Dio.kapture.tap.shaded.bytebuddy.experimental=true` covers the
-    // ByteBuddy 1.14 / Java 25 gap. Until the BB bump lands, this
-    // makes the attach succeed on bleeding-edge JDKs.
     let output = Command::new("java")
-        .args([
-            "-Dio.kapture.tap.shaded.bytebuddy.experimental=true",
-            "-jar",
-        ])
+        .arg("-jar")
         .arg(&agent_jar)
         .args(["attach", &pid.to_string(), &agent_args])
         .output()

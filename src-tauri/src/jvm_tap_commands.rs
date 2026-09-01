@@ -10,7 +10,8 @@
 //!     `Attacher` Main-Class shipped in the agent JAR.
 
 use serde::Deserialize;
-use tauri::State;
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager, State};
 
 use crate::error::{KaptureError, Result};
 use crate::jvm_processes::{self, AttachResult, JvmProcess};
@@ -150,11 +151,8 @@ pub fn list_local_jvms() -> Result<Vec<JvmProcess>> {
 pub struct AttachJvmTapAgentArgs {
     /// Target JVM PID, surfaced by `list_local_jvms`.
     pub pid: u32,
-    /// Optional override for the agent JAR path. Defaults to
-    /// `<repo-root>/agents/jvm-tap/target/kapture-jvm-agent.jar` —
-    /// the conventional dev location. Once the JAR ships as a
-    /// release asset, the desktop app will resolve it from the
-    /// install dir.
+    /// Optional override for the agent JAR path. Packaged builds use
+    /// the bundled resource; development falls back to Maven's target.
     #[serde(default)]
     pub agent_jar_path: Option<String>,
 }
@@ -172,6 +170,7 @@ pub struct AttachJvmTapAgentArgs {
 #[cfg(unix)]
 #[tauri::command]
 pub async fn attach_jvm_tap_agent(
+    app: AppHandle,
     state: State<'_, AppState>,
     args: AttachJvmTapAgentArgs,
 ) -> Result<AttachResult> {
@@ -180,7 +179,7 @@ pub async fn attach_jvm_tap_agent(
     }
     let agent_jar = args
         .agent_jar_path
-        .map_or_else(default_agent_jar_path, PathBuf::from);
+        .map_or_else(|| default_agent_jar_path(&app), PathBuf::from);
 
     // Recover the listener socket so the agent talks back to us, not
     // to the default global path. The handle owns the path; we look
@@ -203,6 +202,7 @@ pub async fn attach_jvm_tap_agent(
 #[cfg(not(unix))]
 #[tauri::command]
 pub async fn attach_jvm_tap_agent(
+    _app: AppHandle,
     _state: State<'_, AppState>,
     _args: AttachJvmTapAgentArgs,
 ) -> Result<AttachResult> {
@@ -212,11 +212,49 @@ pub async fn attach_jvm_tap_agent(
 /// Best-effort default for the agent JAR location. Used by the
 /// `attach_jvm_tap_agent` command when no override is provided.
 #[cfg(unix)]
-fn default_agent_jar_path() -> PathBuf {
-    // `CARGO_MANIFEST_DIR` resolves to `<repo>/src-tauri` at compile
-    // time — its parent is the repo root. For the packaged release
-    // we'll resolve from the app's resource dir instead (follow-up).
+fn default_agent_jar_path(app: &AppHandle) -> PathBuf {
+    let bundled = app
+        .path()
+        .resolve("resources/kapture-jvm-agent.jar", BaseDirectory::Resource)
+        .ok();
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap_or(&manifest_dir).to_path_buf();
-    repo_root.join("agents/jvm-tap/target/kapture-jvm-agent.jar")
+    let development = repo_root.join("agents/jvm-tap/target/kapture-jvm-agent.jar");
+    prefer_bundled_file(bundled, development)
+}
+
+#[cfg(unix)]
+fn prefer_bundled_file(bundled: Option<PathBuf>, development: PathBuf) -> PathBuf {
+    bundled.filter(|path| path.is_file()).unwrap_or(development)
+}
+
+#[cfg(all(test, unix))]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::prefer_bundled_file;
+
+    #[test]
+    fn bundled_agent_wins_when_present() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundled = directory.path().join("kapture-jvm-agent.jar");
+        std::fs::write(&bundled, b"agent").unwrap();
+        let development = directory.path().join("development.jar");
+
+        assert_eq!(
+            prefer_bundled_file(Some(bundled.clone()), development),
+            bundled
+        );
+    }
+
+    #[test]
+    fn development_agent_is_the_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.jar");
+        let development = directory.path().join("development.jar");
+
+        assert_eq!(
+            prefer_bundled_file(Some(missing), development.clone()),
+            development
+        );
+    }
 }

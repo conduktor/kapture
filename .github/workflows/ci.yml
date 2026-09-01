@@ -212,9 +212,13 @@ jobs:
         run: docker compose logs --tail=300
 
   jvm-tap-e2e:
-    name: JVM tap end-to-end
+    name: JVM tap end-to-end (Java ${{ matrix.java }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        java: ["21", "25"]
     # Runs in its own job because the `ssl` profile's broker binds
     # 39093 — the same port `mb` profile broker-2 uses in the
     # anti-patterns job. Mutually exclusive on port; trivially
@@ -243,11 +247,11 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Set up JDK 21 (needed for the agent + test client + javaagent flag)
+      - name: Set up target JDK
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ matrix.java }}
           cache: maven
 
       - name: Generate self-signed JKS test fixtures

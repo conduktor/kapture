@@ -111,14 +111,21 @@ In the Connection dialog: point Kapture's listener (default `127.0.0.1:9092`) at
 
 ### Using tap mode
 
-Start a tap session in Kapture (the UI exposes `start_jvm_tap` via the command palette / MCP; the listener binds `/tmp/kapture-tap.sock`). Build the agent JAR once:
+The installed macOS/Linux application includes the agent: start a tap session,
+pick a local JVM, then click **Inject & tap**. The same JAR is attached to each
+GitHub release for explicit `-javaagent` startup. When building from source,
+build it once with:
 
 ```sh
 cd agents/jvm-tap && mvn -q -DskipTests package
 # produces agents/jvm-tap/target/kapture-jvm-agent.jar
 ```
 
-Then launch your Kafka client with `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar` (plus `--add-opens java.base/java.nio=ALL-UNNAMED` on Java 11+). The agent connects to Kapture's UDS automatically; frames appear in the same Protocol / Messages / Expert tabs as proxy mode, with a `source: tap` badge per frame. The agent JAR will ship as a release asset once the release pipeline picks it up; for now, build from source.
+Then launch your Kafka client with
+`-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar` (plus
+`--add-opens java.base/java.nio=ALL-UNNAMED` on Java 11+). The agent connects to
+Kapture's UDS automatically; frames appear in the same Protocol / Messages /
+Expert tabs as proxy mode.
 
 ### Building Kapture from source
 

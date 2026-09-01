@@ -107,6 +107,13 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Set up JDK 25 LTS for the JVM tap agent
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
       - name: Install Rust toolchain (pinned)
         # Pin to a specific stable so a Rust release doesn't silently change
         # codegen between v0.X and v0.X+1 of Kapture. Bump deliberately when
@@ -117,6 +124,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build JVM tap agent
+        run: mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+
       - name: Tauri build (release, no updater artifact yet)
         env:
           # We sign manually after notarization; the workflow signs the
@@ -126,7 +136,9 @@ jobs:
         # `app,dmg` produces both the .app (used for the updater tarball
         # below) and the .dmg (shipped to Brew + manual download). Tauri
         # builds the binary once and bundles in both formats.
-        run: pnpm tauri build --bundles app,dmg
+        run: |
+          pnpm tauri build --bundles app,dmg \
+            --config '{"bundle":{"resources":{"../agents/jvm-tap/target/kapture-jvm-agent.jar":"resources/kapture-jvm-agent.jar"}}}'
 
       - name: Check Apple notarization secrets
         id: notarize_check
@@ -225,6 +237,7 @@ jobs:
             ${{ steps.artifact.outputs.path }}
             ${{ steps.artifact.outputs.path }}.sig
             ${{ steps.dmg.outputs.path }}
+            agents/jvm-tap/target/kapture-jvm-agent.jar
 
       - name: Emit updater manifest fragment
         run: |
@@ -286,6 +299,13 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Set up JDK 25 LTS for the JVM tap agent
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
       - uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: x86_64-unknown-linux-gnu
@@ -310,6 +330,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build JVM tap agent
+        run: mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+
       - name: Tauri build (release, with updater artifact)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -320,7 +343,7 @@ jobs:
         run: |
           pnpm tauri build \
             --bundles deb,appimage \
-            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+            --config '{"bundle":{"createUpdaterArtifacts":true,"resources":{"../agents/jvm-tap/target/kapture-jvm-agent.jar":"resources/kapture-jvm-agent.jar"}}}'
 
       - name: Locate artifacts
         id: artifact
