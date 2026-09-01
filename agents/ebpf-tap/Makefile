@@ -20,7 +20,7 @@ CFLAGS := -O2 -g -Wall -Wextra -Werror
 LIBBPF_CFLAGS = $(shell $(PKG_CONFIG) --cflags libbpf)
 LIBBPF_LIBS = $(shell $(PKG_CONFIG) --libs libbpf)
 
-.PHONY: all clean check
+.PHONY: all clean check rootful-smoke
 
 all: $(OUTPUT)/kapture-ebpf-tap
 
@@ -45,6 +45,9 @@ check: $(OUTPUT)/kapture-ebpf-tap
 	@test -n "$(PID)" || (echo "usage: make check PID=<pid> SSL=/path/to/libssl.so" >&2; exit 1)
 	@test -n "$(SSL)" || (echo "usage: make check PID=<pid> SSL=/path/to/libssl.so" >&2; exit 1)
 	$(OUTPUT)/kapture-ebpf-tap --check --pid $(PID) --library $(SSL)
+
+rootful-smoke: $(OUTPUT)/kapture-ebpf-tap
+	python3 tests/rootful_smoke.py --loader $(OUTPUT)/kapture-ebpf-tap
 
 clean:
 	rm -f $(OUTPUT)/kapture-ebpf-tap $(OUTPUT)/kapture_tls.bpf.o \

@@ -317,6 +317,25 @@ static void print_runtime_stats(struct kapture_tls_bpf *skeleton)
     }
 }
 
+static void print_capture_stats(struct kapture_tls_bpf *skeleton)
+{
+    uint64_t stats[KAPTURE_STAT_COUNT] = {};
+    if (read_stats(skeleton, stats) != 0)
+        return;
+    fprintf(stderr,
+            "kapture-ebpf-tap: events=%llu ring_drops=%llu read_faults=%llu "
+            "oversize_calls=%llu connects=%llu connect_errors=%llu retransmits=%llu "
+            "offcpu_ns=%llu\n",
+            (unsigned long long)stats[KAPTURE_STAT_EVENTS],
+            (unsigned long long)stats[KAPTURE_STAT_RING_DROPS],
+            (unsigned long long)stats[KAPTURE_STAT_READ_FAULTS],
+            (unsigned long long)stats[KAPTURE_STAT_OVERSIZE_CALLS],
+            (unsigned long long)stats[KAPTURE_STAT_CONNECTS],
+            (unsigned long long)stats[KAPTURE_STAT_CONNECT_ERRORS],
+            (unsigned long long)stats[KAPTURE_STAT_RETRANSMITS],
+            (unsigned long long)stats[KAPTURE_STAT_OFFCPU_NS]);
+}
+
 static void usage(FILE *stream, const char *program)
 {
     fprintf(stream,
@@ -430,7 +449,9 @@ int main(int argc, char **argv)
         if (read_stats(skeleton, current) == 0) {
             uint64_t corrupting_loss =
                 current[KAPTURE_STAT_RING_DROPS] - app.last_stats[KAPTURE_STAT_RING_DROPS] +
-                current[KAPTURE_STAT_READ_FAULTS] - app.last_stats[KAPTURE_STAT_READ_FAULTS];
+                current[KAPTURE_STAT_READ_FAULTS] - app.last_stats[KAPTURE_STAT_READ_FAULTS] +
+                current[KAPTURE_STAT_OVERSIZE_CALLS] -
+                    app.last_stats[KAPTURE_STAT_OVERSIZE_CALLS];
             memcpy(app.last_stats, current, sizeof(current));
             if (corrupting_loss != 0) {
                 fprintf(stderr,
@@ -444,6 +465,7 @@ int main(int argc, char **argv)
     }
     ring_buffer__free(ring);
     close(app.socket_fd);
+    print_capture_stats(skeleton);
     print_runtime_stats(skeleton);
 
 cleanup:

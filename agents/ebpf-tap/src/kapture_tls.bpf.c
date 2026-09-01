@@ -87,6 +87,103 @@ static __always_inline __u32 connection_id(__u64 ssl)
     return (__u32)(ssl ^ (ssl >> 32));
 }
 
+static __always_inline __u64 next_sequence(const struct stream_key *key)
+{
+    __u64 initial = 0;
+    __u64 *sequence = bpf_map_lookup_elem(&sequences, key);
+    if (!sequence) {
+        bpf_map_update_elem(&sequences, key, &initial, BPF_NOEXIST);
+        sequence = bpf_map_lookup_elem(&sequences, key);
+    }
+    return sequence ? __sync_fetch_and_add(sequence, 1) : 0;
+}
+
+/*
+ * bpf_ringbuf_reserve() requires a verifier-known constant size on kernels
+ * that predate ring-buffer dynptrs. Keep four fixed reservation classes so a
+ * small Kafka frame does not consume a full 16 KiB ring record.
+ */
+#define DEFINE_SUBMIT_CHUNK(name, capacity)                                                   \
+    static __noinline int name(const struct stream_key *key,                                  \
+                               __u64 buffer,                                                   \
+                               __u64 length,                                                   \
+                               __u64 sequence,                                                 \
+                               __u64 observed_nanos)                                           \
+    {                                                                                          \
+        if (length == 0 || length > (capacity))                                                \
+            return 1;                                                                          \
+        struct kapture_event *event =                                                         \
+            bpf_ringbuf_reserve(&events, sizeof(struct kapture_event) + (capacity), 0);        \
+        if (!event) {                                                                          \
+            increment_stat(KAPTURE_STAT_RING_DROPS, 1);                                       \
+            return 1;                                                                          \
+        }                                                                                      \
+        event->tgid = key->tgid;                                                               \
+        event->tid = (__u32)bpf_get_current_pid_tgid();                                       \
+        event->connection_id = key->connection_id;                                             \
+        event->direction = key->direction;                                                     \
+        event->reserved[0] = 0;                                                                \
+        event->reserved[1] = 0;                                                                \
+        event->reserved[2] = 0;                                                                \
+        event->sequence = sequence;                                                            \
+        event->observed_nanos = observed_nanos;                                                \
+        event->length = (__u32)length;                                                         \
+        if (bpf_probe_read_user(event->data, length, (void *)buffer) != 0) {                   \
+            bpf_ringbuf_discard(event, 0);                                                     \
+            increment_stat(KAPTURE_STAT_READ_FAULTS, 1);                                      \
+            return 1;                                                                          \
+        }                                                                                      \
+        bpf_ringbuf_submit(event, 0);                                                          \
+        increment_stat(KAPTURE_STAT_EVENTS, 1);                                                \
+        return 0;                                                                              \
+    }
+
+DEFINE_SUBMIT_CHUNK(submit_256, 256)
+DEFINE_SUBMIT_CHUNK(submit_1024, 1024)
+DEFINE_SUBMIT_CHUNK(submit_4096, 4096)
+DEFINE_SUBMIT_CHUNK(submit_16384, KAPTURE_CHUNK_MAX)
+
+static __always_inline int submit_chunk(const struct stream_key *key,
+                                        __u64 buffer,
+                                        __u64 length,
+                                        __u64 sequence,
+                                        __u64 observed_nanos)
+{
+    if (length <= 256)
+        return submit_256(key, buffer, length, sequence, observed_nanos);
+    if (length <= 1024)
+        return submit_1024(key, buffer, length, sequence, observed_nanos);
+    if (length <= 4096)
+        return submit_4096(key, buffer, length, sequence, observed_nanos);
+    return submit_16384(key, buffer, length, sequence, observed_nanos);
+}
+
+struct chunk_context {
+    struct stream_key key;
+    __u64 buffer;
+    __u64 length;
+    __u64 observed_nanos;
+};
+
+static long emit_chunk(__u32 chunk_index, void *opaque_context)
+{
+    struct chunk_context *context = opaque_context;
+    __u64 offset = (__u64)chunk_index * KAPTURE_CHUNK_MAX;
+    if (offset >= context->length)
+        return 1;
+    __u64 chunk_length = context->length - offset;
+    if (chunk_length > KAPTURE_CHUNK_MAX)
+        chunk_length = KAPTURE_CHUNK_MAX;
+    __u64 sequence = next_sequence(&context->key);
+    if (submit_chunk(&context->key,
+                     context->buffer + offset,
+                     chunk_length,
+                     sequence,
+                     context->observed_nanos) != 0)
+        return 1;
+    return offset + chunk_length >= context->length;
+}
+
 static __always_inline int remember_call(void *map, struct pt_regs *ctx, bool extended)
 {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
@@ -132,46 +229,23 @@ static __always_inline int emit_call(void *map, struct pt_regs *ctx, __u8 direct
         length = call.requested;
     if (length == 0)
         return 0;
-    if (length > KAPTURE_CHUNK_MAX)
-        length = KAPTURE_CHUNK_MAX;
+    if (length > KAPTURE_CALL_MAX) {
+        /* Never forward a truncated byte stream to the Kafka decoder. */
+        increment_stat(KAPTURE_STAT_OVERSIZE_CALLS, 1);
+        return 0;
+    }
 
-    struct stream_key key = {
-        .tgid = (__u32)(pid_tgid >> 32),
-        .connection_id = connection_id(call.ssl),
-        .direction = direction,
+    struct chunk_context chunk_context = {
+        .key = {
+            .tgid = (__u32)(pid_tgid >> 32),
+            .connection_id = connection_id(call.ssl),
+            .direction = direction,
+        },
+        .buffer = call.buffer,
+        .length = length,
+        .observed_nanos = bpf_ktime_get_ns(),
     };
-    __u64 initial = 0;
-    __u64 *sequence = bpf_map_lookup_elem(&sequences, &key);
-    if (!sequence) {
-        bpf_map_update_elem(&sequences, &key, &initial, BPF_NOEXIST);
-        sequence = bpf_map_lookup_elem(&sequences, &key);
-    }
-    __u64 current_sequence = sequence ? __sync_fetch_and_add(sequence, 1) : 0;
-
-    __u64 event_size = sizeof(struct kapture_event) + length;
-    struct kapture_event *event = bpf_ringbuf_reserve(&events, event_size, 0);
-    if (!event) {
-        increment_stat(KAPTURE_STAT_RING_DROPS, 1);
-        return 0;
-    }
-
-    event->tgid = key.tgid;
-    event->tid = (__u32)pid_tgid;
-    event->connection_id = key.connection_id;
-    event->direction = direction;
-    event->reserved[0] = 0;
-    event->reserved[1] = 0;
-    event->reserved[2] = 0;
-    event->sequence = current_sequence;
-    event->observed_nanos = bpf_ktime_get_ns();
-    event->length = (__u32)length;
-    if (bpf_probe_read_user(event->data, length, (void *)call.buffer) != 0) {
-        bpf_ringbuf_discard(event, 0);
-        increment_stat(KAPTURE_STAT_READ_FAULTS, 1);
-        return 0;
-    }
-    bpf_ringbuf_submit(event, 0);
-    increment_stat(KAPTURE_STAT_EVENTS, 1);
+    bpf_loop(KAPTURE_MAX_CHUNKS, emit_chunk, &chunk_context, 0);
     return 0;
 }
 

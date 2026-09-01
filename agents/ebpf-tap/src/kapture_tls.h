@@ -2,6 +2,8 @@
 #define KAPTURE_TLS_H
 
 #define KAPTURE_CHUNK_MAX (16 * 1024)
+#define KAPTURE_CALL_MAX (1024 * 1024)
+#define KAPTURE_MAX_CHUNKS (KAPTURE_CALL_MAX / KAPTURE_CHUNK_MAX)
 
 enum kapture_direction {
     KAPTURE_WRITE = 0,
@@ -16,7 +18,8 @@ enum kapture_stat {
     KAPTURE_STAT_CONNECT_ERRORS = 4,
     KAPTURE_STAT_RETRANSMITS = 5,
     KAPTURE_STAT_OFFCPU_NS = 6,
-    KAPTURE_STAT_COUNT = 7,
+    KAPTURE_STAT_OVERSIZE_CALLS = 7,
+    KAPTURE_STAT_COUNT = 8,
 };
 
 struct kapture_event {

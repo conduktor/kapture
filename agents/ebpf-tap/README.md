@@ -2,7 +2,7 @@
 
 This optional agent captures plaintext Kafka bytes at a selected process's
 OpenSSL boundary. The BPF side does the minimum possible work: PID filtering,
-return-length validation, a bounded user-memory copy (16 KiB per chunk), a
+return-length validation, bounded user-memory copies (16 KiB per chunk), a
 per-stream sequence number, and ring-buffer submission. Kafka framing and all
 decoding remain in Kapture's bounded userspace analyzer.
 
@@ -13,7 +13,8 @@ printed when the loader exits (when supported by the kernel).
 
 ## Build on Linux
 
-Requirements: clang/LLVM, bpftool, libbpf development headers, libelf and zlib.
+Requirements: Linux 5.17 or newer (for bounded `bpf_loop` chunking),
+clang/LLVM, bpftool, libbpf development headers, libelf and zlib.
 For example, on Ubuntu:
 
 ```sh
@@ -44,10 +45,24 @@ Manual preflight is also available:
 make -C agents/ebpf-tap check PID=1234 SSL=/usr/lib/x86_64-linux-gnu/libssl.so.3
 ```
 
+On a disposable rootful Linux runner, exercise byte delivery and multi-chunk
+reassembly against a real TLS connection:
+
+```sh
+sudo make -C agents/ebpf-tap rootful-smoke
+```
+
+A containerized runner must be privileged and share the initial PID namespace
+(for example, Docker `--privileged --pid=host`). BPF helpers expose host PIDs;
+without `--pid=host`, a container-local target PID cannot pass the BPF filter.
+
 ## Loss and safety contract
 
 - Attachments are PID-scoped; there is no host-wide default.
 - The BPF ring is 16 MiB and payload events are capped at 16 KiB.
+- One OpenSSL call is captured in as many as 64 chunks (1 MiB). A larger call
+  emits no partial data: it increments `oversize_calls` and invalidates the UDS
+  session so a truncated Kafka stream can never be decoded as complete.
 - Sequence numbers advance before ring reservation. A reservation failure or
   user-memory read fault therefore produces a detectable gap.
 - On any gap, the loader sends a health frame and closes the UDS session.
