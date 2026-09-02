@@ -315,7 +315,7 @@ jobs:
           workspaces: src-tauri
           cache-on-failure: true
 
-      - name: Tauri system deps
+      - name: Tauri and eBPF build dependencies
         # Same set as ci.yml: webkit2gtk + glib + librsvg + appindicator +
         # patchelf (needed by the AppImage bundler).
         run: |
@@ -326,12 +326,29 @@ jobs:
             libsoup-3.0-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            clang \
+            llvm \
+            linux-tools-generic-hwe-22.04 \
+            libelf-dev \
+            zlib1g-dev \
+            pkg-config
 
       - run: pnpm install --frozen-lockfile
 
       - name: Build JVM tap agent
         run: mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+
+      - name: Build Linux eBPF tap loader
+        run: |
+          BPFTOOL_BIN="$(find -L /usr/lib/linux-tools -type f -name bpftool | sort -V | tail -n1)"
+          test -x "${BPFTOOL_BIN}"
+          make -C agents/ebpf-tap BPFTOOL="${BPFTOOL_BIN}"
+          test -x agents/ebpf-tap/build/kapture-ebpf-tap
+          if ldd agents/ebpf-tap/build/kapture-ebpf-tap | grep -Eq 'lib(bpf|elf|z)\.so'; then
+            echo "loader unexpectedly depends on a build-time eBPF library" >&2
+            exit 1
+          fi
 
       - name: Tauri build (release, with updater artifact)
         env:
@@ -343,7 +360,7 @@ jobs:
         run: |
           pnpm tauri build \
             --bundles deb,appimage \
-            --config '{"bundle":{"createUpdaterArtifacts":true,"resources":{"../agents/jvm-tap/target/kapture-jvm-agent.jar":"resources/kapture-jvm-agent.jar"}}}'
+            --config '{"bundle":{"createUpdaterArtifacts":true,"resources":{"../agents/jvm-tap/target/kapture-jvm-agent.jar":"resources/kapture-jvm-agent.jar","../agents/ebpf-tap/build/kapture-ebpf-tap":"resources/kapture-ebpf-tap"}}}'
 
       - name: Locate artifacts
         id: artifact
@@ -378,6 +395,7 @@ jobs:
             ${{ steps.artifact.outputs.appimage }}
             ${{ steps.artifact.outputs.appimage_sig }}
             ${{ steps.artifact.outputs.deb }}
+            agents/ebpf-tap/build/kapture-ebpf-tap
 
       - name: Emit updater manifest fragment
         run: |

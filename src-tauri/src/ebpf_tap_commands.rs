@@ -8,7 +8,11 @@
 //! shared rather than duplicated.
 
 use serde::{Deserialize, Serialize};
-use tauri::State;
+#[cfg(any(target_os = "linux", test))]
+use tauri::path::BaseDirectory;
+#[cfg(any(target_os = "linux", test))]
+use tauri::Manager;
+use tauri::{AppHandle, State};
 
 use crate::error::{KaptureError, Result};
 use crate::state::AppState;
@@ -118,33 +122,46 @@ pub fn list_ebpf_targets() -> Result<Vec<EbpfTarget>> {
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn resolve_loader(override_path: Option<String>) -> Result<std::path::PathBuf> {
+fn resolve_loader(app: &AppHandle, override_path: Option<String>) -> Result<std::path::PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = override_path {
         candidates.push(std::path::PathBuf::from(path));
+    }
+    if let Ok(path) = app
+        .path()
+        .resolve("resources/kapture-ebpf-tap", BaseDirectory::Resource)
+    {
+        candidates.push(path);
     }
     if let Ok(executable) = std::env::current_exe() {
         if let Some(parent) = executable.parent() {
             candidates.push(parent.join("kapture-ebpf-tap"));
         }
     }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("agents/ebpf-tap/build/kapture-ebpf-tap"));
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.is_file())
-        .ok_or_else(|| {
-            KaptureError::EbpfTap(
-                "loader not found; run `make -C agents/ebpf-tap` or pass loaderPath".to_owned(),
-            )
-        })
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap_or(&manifest_dir);
+    candidates.push(repo_root.join("agents/ebpf-tap/build/kapture-ebpf-tap"));
+
+    first_existing_loader(candidates).ok_or_else(|| {
+        KaptureError::EbpfTap(
+            "loader not found; reinstall Kapture, run `make -C agents/ebpf-tap`, or pass loaderPath"
+                .to_owned(),
+        )
+    })
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn first_existing_loader(
+    candidates: impl IntoIterator<Item = std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 #[cfg(any(target_os = "linux", test))]
 #[tauri::command]
 #[allow(clippy::too_many_lines)]
 pub async fn start_ebpf_tap(
+    app: AppHandle,
     state: State<'_, AppState>,
     args: StartEbpfTapArgs,
 ) -> Result<EbpfTapStatus> {
@@ -162,7 +179,7 @@ pub async fn start_ebpf_tap(
             "selected OpenSSL mapping changed; refresh the target list".to_owned(),
         ));
     }
-    let loader = resolve_loader(args.loader_path)?;
+    let loader = resolve_loader(&app, args.loader_path)?;
     let pid = args.pid.to_string();
     let check = tokio::process::Command::new(&loader)
         .args(["--check", "--pid", &pid, "--library", &args.library_path])
@@ -258,6 +275,7 @@ pub async fn start_ebpf_tap(
 #[cfg(all(not(target_os = "linux"), not(test)))]
 #[tauri::command]
 pub async fn start_ebpf_tap(
+    _app: AppHandle,
     _state: State<'_, AppState>,
     _args: StartEbpfTapArgs,
 ) -> Result<EbpfTapStatus> {
@@ -267,6 +285,7 @@ pub async fn start_ebpf_tap(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -280,6 +299,33 @@ mod tests {
         assert_eq!(
             ssl_library_from_maps(maps).as_deref(),
             Some("/usr/lib/libssl.so.3")
+        );
+    }
+
+    #[test]
+    fn loader_candidates_keep_explicit_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let explicit = directory.path().join("explicit-loader");
+        let bundled = directory.path().join("bundled-loader");
+        std::fs::write(&explicit, b"explicit").unwrap();
+        std::fs::write(&bundled, b"bundled").unwrap();
+
+        assert_eq!(
+            first_existing_loader([explicit.clone(), bundled]),
+            Some(explicit)
+        );
+    }
+
+    #[test]
+    fn loader_candidates_skip_missing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-loader");
+        let bundled = directory.path().join("bundled-loader");
+        std::fs::write(&bundled, b"bundled").unwrap();
+
+        assert_eq!(
+            first_existing_loader([missing, bundled.clone()]),
+            Some(bundled)
         );
     }
 

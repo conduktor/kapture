@@ -2,3 +2,6 @@
 	path = vendor/kafka-protocol-rs
 	url = https://github.com/sderosiaux/kafka-protocol-rs.git
 	branch = kapture
+[submodule "agents/ebpf-tap/vendor/libbpf"]
+	path = agents/ebpf-tap/vendor/libbpf
+	url = https://github.com/libbpf/libbpf.git

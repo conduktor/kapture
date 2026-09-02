@@ -14,24 +14,32 @@ supported by the kernel and privilege policy).
 
 ## Build on Linux
 
-Requirements: Linux 5.17 or newer (for bounded `bpf_loop` chunking),
-clang/LLVM, bpftool, libbpf development headers, libelf and zlib.
+Requirements: Linux 5.8 or newer with kernel BTF, clang/LLVM, bpftool, libbpf
+build dependencies, libelf and zlib. Initialize the pinned libbpf submodule
+before a source build.
 For example, on Ubuntu:
 
 ```sh
-sudo apt install clang llvm bpftool libbpf-dev libelf-dev zlib1g-dev pkg-config
+git submodule update --init --recursive
+sudo apt install clang llvm linux-tools-generic-hwe-22.04 libelf-dev zlib1g-dev pkg-config
 make -C agents/ebpf-tap
 ```
 
+On Ubuntu kernels for which the `bpftool` wrapper has no matching package,
+pass the installed binary explicitly with
+`BPFTOOL=/usr/lib/linux-tools/<version>/bpftool`.
+
 The build generates `vmlinux.h` from the running kernel's BTF, compiles the
 CO-RE object, generates a libbpf skeleton, then links
-`agents/ebpf-tap/build/kapture-ebpf-tap`.
+`agents/ebpf-tap/build/kapture-ebpf-tap`. libbpf, libelf and zlib are linked
+statically so the packaged loader does not require their runtime packages.
 
 ## Use
 
 Open Kapture, choose **Tap a Linux OpenSSL process**, and select a discovered
-PID. Kapture performs the loader's `--check` preflight before it opens a capture
-session. The target must already map `libssl.so`; statically linked TLS,
+PID. Linux packages include the loader; source builds find it under
+`agents/ebpf-tap/build`. Kapture performs the loader's `--check` preflight
+before it opens a capture session. The target must already map `libssl.so`; statically linked TLS,
 GnuTLS/NSS, kTLS-only traffic, stripped/missing OpenSSL symbols, or a kernel
 without BTF fail closed with an actionable error.
 

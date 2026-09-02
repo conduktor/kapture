@@ -89,6 +89,37 @@ jobs:
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --all-features
 
+  ebpf-loader:
+    name: Linux eBPF loader (build + portable link)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install eBPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            llvm \
+            linux-tools-generic-hwe-22.04 \
+            libelf-dev \
+            zlib1g-dev \
+            pkg-config
+
+      - name: Build self-contained loader
+        run: |
+          BPFTOOL_BIN="$(find -L /usr/lib/linux-tools -type f -name bpftool | sort -V | tail -n1)"
+          test -x "${BPFTOOL_BIN}"
+          make -C agents/ebpf-tap BPFTOOL="${BPFTOOL_BIN}"
+          test -x agents/ebpf-tap/build/kapture-ebpf-tap
+          if ldd agents/ebpf-tap/build/kapture-ebpf-tap | grep -Eq 'lib(bpf|elf|z)\.so'; then
+            echo "loader unexpectedly depends on a build-time eBPF library" >&2
+            exit 1
+          fi
+
   windows-check:
     name: Windows (cargo check)
     runs-on: windows-latest

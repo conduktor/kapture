@@ -103,8 +103,8 @@ export function EbpfTapDialog({
             <div className="tap-dialog__empty">
               <p>No process mapping libssl was found.</p>
               <p>
-                Build the loader with <code>make -C agents/ebpf-tap</code>, start the Kafka client,
-                then refresh. Kapture may require CAP_BPF/CAP_PERFMON or root.
+                Start the Kafka client, then refresh. Attaching may require CAP_BPF/CAP_PERFMON or
+                root.
               </p>
             </div>
           ) : null}

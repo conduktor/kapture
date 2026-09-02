@@ -173,7 +173,14 @@ def exercise(loader_path: Path) -> None:
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            tap_connection, _ = listener.accept()
+            try:
+                tap_connection, _ = listener.accept()
+            except TimeoutError as error:
+                loader_code, loader_stderr = terminate(loader)
+                loader = None
+                raise RuntimeError(
+                    f"tap loader did not connect (exit={loader_code}): {loader_stderr}"
+                ) from error
             tap_connection.settimeout(0.25)
 
             client_context = ssl.create_default_context()

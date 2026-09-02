@@ -245,7 +245,14 @@ static __always_inline int emit_call(void *map, struct pt_regs *ctx, __u8 direct
         .length = length,
         .observed_nanos = bpf_ktime_get_ns(),
     };
-    bpf_loop(KAPTURE_MAX_CHUNKS, emit_chunk, &chunk_context, 0);
+    /* Keep the loop verifier-bounded without requiring the newer bpf_loop
+     * helper declaration, which is absent from Ubuntu 22.04's libbpf headers.
+     */
+#pragma clang loop unroll(disable)
+    for (__u32 chunk_index = 0; chunk_index < KAPTURE_MAX_CHUNKS; chunk_index++) {
+        if (emit_chunk(chunk_index, &chunk_context) != 0)
+            break;
+    }
     return 0;
 }
 
