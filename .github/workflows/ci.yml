@@ -249,7 +249,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        java: ["21", "25"]
+        java: ["17", "21", "25"]
     # Runs in its own job because the `ssl` profile's broker binds
     # 39093 — the same port `mb` profile broker-2 uses in the
     # anti-patterns job. Mutually exclusive on port; trivially
@@ -289,7 +289,7 @@ jobs:
         run: src-tauri/tests/fixtures/certs/gen-certs.sh
 
       - name: Build the JVM agent
-        run: mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+        run: mvn -B -q -f agents/jvm-tap/pom.xml package
 
       - name: Build the JVM test client
         run: mvn -B -q -DskipTests -f src-tauri/tests/fixtures/jvm-test-client/pom.xml package

@@ -34,7 +34,7 @@ Attach a ByteBuddy agent to your Java Kafka client at startup:
 java -javaagent:kapture-jvm-agent.jar -jar your-app.jar
 ```
 
-The agent hooks `SslTransportLayer.read/write` and `PlaintextTransportLayer.read/write` inside the client JVM and streams plaintext Kafka bytes to Kapture over a Unix domain socket (`/tmp/kapture-tap.sock`, owner-only 0600). The TLS connection stays end-to-end with the real broker — real cert, real handshake, real mTLS / SASL / pinning. There is no second TLS session, no fake cert to install, no client config change.
+The Java 17+ agent hooks `SslTransportLayer.read/write` and `PlaintextTransportLayer.read/write` inside the client JVM and streams plaintext Kafka bytes to Kapture over a Unix domain socket (`/tmp/kapture-tap.sock`, owner-only 0600). The TLS connection stays end-to-end with the real broker — real cert, real handshake, real mTLS / SASL / pinning. There is no second TLS session, no fake cert to install, no client config change.
 
 ```
 your Java client ─────────TLS────────▶ real broker

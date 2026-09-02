@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Single dedicated writer thread draining a bounded queue onto a Unix Domain Socket.
@@ -46,6 +47,8 @@ public final class TapPublisher {
     private static final int MAX_PAYLOAD = 16 * 1024 * 1024;
     private static final long MIN_RECONNECT_BACKOFF_MS = 100;
     private static final long MAX_RECONNECT_BACKOFF_MS = 5_000;
+    private static final long SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
+    private static final long SHUTDOWN_FORCE_TIMEOUT_MS = 250;
 
     private static final ArrayBlockingQueue<Frame> QUEUE =
             new ArrayBlockingQueue<>(QUEUE_CAPACITY);
@@ -56,8 +59,12 @@ public final class TapPublisher {
     private static final AtomicBoolean STARTED = new AtomicBoolean(false);
     private static final AtomicBoolean CONNECTED = new AtomicBoolean(false);
     private static final AtomicBoolean RESET_REQUIRED = new AtomicBoolean(false);
+    private static final AtomicBoolean SHUTDOWN_REQUESTED = new AtomicBoolean(false);
+    private static final AtomicBoolean SHUTDOWN_REPORTED = new AtomicBoolean(false);
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final AtomicBoolean WARNED_NO_SOCKET = new AtomicBoolean(false);
+    private static final AtomicReference<SocketChannel> ACTIVE_CHANNEL = new AtomicReference<>();
+    private static volatile Thread writerThread;
 
     private TapPublisher() {}
 
@@ -77,13 +84,12 @@ public final class TapPublisher {
 
     public static void start() {
         if (!STARTED.compareAndSet(false, true)) return;
-        Thread t = new Thread(TapPublisher::runLoop, "kapture-tap-writer");
-        t.setDaemon(true);
-        t.start();
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            long d = DROPPED.get();
-            if (d > 0) System.err.println("[kapture-jvm-agent] dropped frames: " + d);
-        }, "kapture-tap-shutdown"));
+        Thread writer = new Thread(TapPublisher::runLoop, "kapture-tap-writer");
+        writer.setDaemon(true);
+        writerThread = writer;
+        Runtime.getRuntime().addShutdownHook(
+                new Thread(TapPublisher::shutdownAndDrain, "kapture-tap-shutdown"));
+        writer.start();
     }
 
     /**
@@ -149,14 +155,20 @@ public final class TapPublisher {
         ByteBuffer header = ByteBuffer.allocate(1 + 8 + 8 + 4 + 4).order(ByteOrder.LITTLE_ENDIAN);
 
         while (!Thread.currentThread().isInterrupted()) {
+            if (SHUTDOWN_REQUESTED.get() && QUEUE.isEmpty()) break;
+
             if (RESET_REQUIRED.getAndSet(false)) {
                 CONNECTED.set(false);
-                closeQuietly(ch);
+                closeTrackedChannel(ch);
                 ch = null;
                 clearQueue();
             }
 
             if (ch == null || !ch.isOpen()) {
+                if (SHUTDOWN_REQUESTED.get()) {
+                    clearQueue();
+                    break;
+                }
                 ch = tryConnect();
                 if (ch == null) {
                     CONNECTED.set(false);
@@ -173,16 +185,17 @@ public final class TapPublisher {
                     reconnectBackoffMs = Math.min(MAX_RECONNECT_BACKOFF_MS, reconnectBackoffMs * 2);
                     continue;
                 }
+                ACTIVE_CHANNEL.set(ch);
                 reconnectBackoffMs = MIN_RECONNECT_BACKOFF_MS;
                 WARNED_NO_SOCKET.set(false);
                 try {
                     writeHealth(ch, header);
                 } catch (IOException ioe) {
-                    closeQuietly(ch);
+                    closeTrackedChannel(ch);
                     ch = null;
                     continue;
                 }
-                CONNECTED.set(true);
+                if (!SHUTDOWN_REQUESTED.get()) CONNECTED.set(true);
             }
 
             Frame frame;
@@ -207,15 +220,56 @@ public final class TapPublisher {
             } catch (IOException ioe) {
                 DROPPED.incrementAndGet();
                 CONNECTED.set(false);
-                closeQuietly(ch);
+                closeTrackedChannel(ch);
                 ch = null;
                 clearQueue();
             }
         }
 
         CONNECTED.set(false);
-        closeQuietly(ch);
+        closeTrackedChannel(ch);
         clearQueue();
+    }
+
+    /**
+     * Stop accepting new frames and give the writer a bounded window to flush the
+     * queue. Closing the active channel after the deadline unblocks a stalled write;
+     * any abandoned frames are then counted as drops rather than silently lost.
+     */
+    static boolean shutdownAndDrain() {
+        CONNECTED.set(false);
+        SHUTDOWN_REQUESTED.set(true);
+
+        Thread writer = writerThread;
+        boolean stopped = writer == null || !writer.isAlive();
+        if (!stopped && writer != Thread.currentThread()) {
+            stopped = joinWriter(writer, SHUTDOWN_DRAIN_TIMEOUT_MS);
+            if (!stopped) {
+                closeQuietly(ACTIVE_CHANNEL.getAndSet(null));
+                writer.interrupt();
+                stopped = joinWriter(writer, SHUTDOWN_FORCE_TIMEOUT_MS);
+            }
+        }
+        if (!stopped) clearQueue();
+        reportDropsOnce();
+        return stopped;
+    }
+
+    private static boolean joinWriter(Thread writer, long timeoutMillis) {
+        try {
+            writer.join(timeoutMillis);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+        return !writer.isAlive();
+    }
+
+    private static void reportDropsOnce() {
+        if (!SHUTDOWN_REPORTED.compareAndSet(false, true)) return;
+        long dropped = DROPPED.get();
+        if (dropped > 0) {
+            System.err.println("[kapture-jvm-agent] dropped frames: " + dropped);
+        }
     }
 
     private static SocketChannel tryConnect() {
@@ -265,5 +319,11 @@ public final class TapPublisher {
         } catch (IOException ignored) {
             // Best effort on the telemetry-only path.
         }
+    }
+
+    private static void closeTrackedChannel(SocketChannel ch) {
+        if (ch == null) return;
+        ACTIVE_CHANNEL.compareAndSet(ch, null);
+        closeQuietly(ch);
     }
 }
