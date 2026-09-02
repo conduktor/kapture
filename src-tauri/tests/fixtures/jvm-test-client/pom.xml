@@ -11,7 +11,7 @@
   <packaging>jar</packaging>
 
   <properties>
-    <maven.compiler.release>21</maven.compiler.release>
+    <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <kafka.version>3.8.1</kafka.version>
     <slf4j.version>2.0.13</slf4j.version>
@@ -37,7 +37,7 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.13.0</version>
         <configuration>
-          <release>21</release>
+          <release>17</release>
         </configuration>
       </plugin>
       <!-- Shade everything into a single runnable jar so the user can
