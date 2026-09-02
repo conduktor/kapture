@@ -123,9 +123,13 @@ cd agents/jvm-tap && mvn -q -DskipTests package
 
 Then launch your Kafka client with
 `-javaagent:agents/jvm-tap/target/kapture-jvm-agent.jar` (plus
-`--add-opens java.base/java.nio=ALL-UNNAMED` on Java 11+). The agent connects to
+`--add-opens java.base/java.nio=ALL-UNNAMED` on Java 17+). The agent connects to
 Kapture's UDS automatically; frames appear in the same Protocol / Messages /
 Expert tabs as proxy mode.
+
+Linux packages also include the OpenSSL eBPF loader. Use **Tap eBPF** to select
+a local process; attaching requires root or an equivalent CAP_BPF/CAP_PERFMON
+policy.
 
 ### Building Kapture from source
 

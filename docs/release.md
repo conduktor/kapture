@@ -41,18 +41,27 @@ Without these secrets the workflow still completes — Tauri ships an ad-hoc sig
 # Bump version in package.json + src-tauri/Cargo.toml + src-tauri/tauri.conf.json
 git commit -am "release v0.2.0"
 git tag v0.2.0
-git push origin master --tags
+git push origin main --tags
 ```
 
-GitHub Actions takes over from there. Watch the `Release` workflow — on green, the GitHub Release page has the `.app.tar.gz`, `.sig`, and `latest.json`.
+GitHub Actions takes over from there. On green, the release contains the signed
+desktop/updater artifacts, `kapture-jvm-agent.jar`, the standalone Linux
+`kapture-ebpf-tap` loader, and `latest.json`.
 
 ## Local dry-run (macOS only)
 
 ```bash
-pnpm tauri build --bundles app
+mvn -B -q -DskipTests -f agents/jvm-tap/pom.xml package
+pnpm tauri build --bundles app \
+  --config '{"bundle":{"resources":{"../agents/jvm-tap/target/kapture-jvm-agent.jar":"resources/kapture-jvm-agent.jar"}}}'
 otool -L src-tauri/target/release/bundle/macos/Kapture.app/Contents/MacOS/kapture
+test -f src-tauri/target/release/bundle/macos/Kapture.app/Contents/Resources/resources/kapture-jvm-agent.jar
 # Verify: no /opt/homebrew/* paths.
 ```
+
+The release workflow builds helper binaries before Tauri, verifies the Linux
+loader has no dynamic libbpf/libelf/zlib dependency, and embeds the helpers via
+Tauri's resource map.
 
 ## Why we sign manually
 

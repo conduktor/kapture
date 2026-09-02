@@ -193,19 +193,18 @@ design.
 
 Hardening + UX items left on the JVM path:
 
-- [ ] Bump ByteBuddy to a release with Java 25 support (eliminates the
+- [x] Bump ByteBuddy to a release with Java 25 support (eliminates the
       `-Dio.kapture.tap.shaded.bytebuddy.experimental` workaround).
-- [ ] Add a shutdown drain hook on the agent. The current hook reports
-      dropped frames but does not flush the writer queue, so JVM exit can
-      still lose the tail of a capture.
+- [x] Add a bounded shutdown drain hook on the agent and cover queued-tail
+      delivery under UDS backpressure.
 - [x] Ship the JVM PID picker with Kafka-socket hints, dynamic attach,
       and one-click **Inject & tap**.
 - [ ] Detect Conscrypt or BouncyCastle JSSE and either extend the hook
       target or surface a clear "use proxy mode" message.
-- [ ] Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
+- [x] Ship `kapture-jvm-agent.jar` as a GitHub release asset alongside
       the desktop app so users do not have to build it from source.
 
-### eBPF tap — librdkafka family [planned · L]
+### eBPF tap — librdkafka family [shipped · L]
 
 eBPF uprobes on `SSL_write` and `SSL_read` in OpenSSL / BoringSSL,
 following the AgentSight (arXiv:2508.02736) and ecapture recipes.
@@ -213,19 +212,17 @@ Covers every Kafka client built on `librdkafka`:
 confluent-kafka-{python, node, ruby, dotnet}, plus C/C++ apps and
 `confluent-kafka-go` (which is cgo over librdkafka).
 
-Implementation outline:
+Implemented:
 
-- Use libbpf-rs (already in the Rust ecosystem) for the userspace
-  loader. Avoid bcc to keep the runtime light.
+- A small, separate C/libbpf loader; libbpf is pinned and linked statically.
+  Linux packages embed the loader and releases expose it as a standalone asset.
 - Two probes per process: entry-uprobe on `SSL_write` (captures
   the plaintext buffer before encrypt), return-uprobe on
   `SSL_read` (captures the plaintext buffer after decrypt). Carry
   the `SSL*` pointer through a BPF map to correlate.
-- Userspace ringbuf consumer in Kapture writes into the same
-  decoder pipeline as the JVM tap. Same `source: tap-ebpf` badge.
-- PID picker scans `/proc/*/maps` for `libssl*` and Kafka-shaped
-  sockets (port 9092/9093/9094 or a string match against
-  `__consumer_offsets` in the heap).
+- The loader forwards gap-aware frames over the bounded UDS receiver into the
+  same decoder pipeline as the JVM tap.
+- The PID picker scans `/proc/*/maps` for supported `libssl*` mappings.
 
 Constraints:
 
