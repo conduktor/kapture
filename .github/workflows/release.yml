@@ -118,7 +118,7 @@ jobs:
         # Pin to a specific stable so a Rust release doesn't silently change
         # codegen between v0.X and v0.X+1 of Kapture. Bump deliberately when
         # MSRV / dependencies require it.
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: aarch64-apple-darwin
 
@@ -306,7 +306,7 @@ jobs:
           java-version: "25"
           cache: maven
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: x86_64-unknown-linux-gnu
 
@@ -436,7 +436,7 @@ jobs:
           node-version: 20
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: x86_64-pc-windows-msvc
 
