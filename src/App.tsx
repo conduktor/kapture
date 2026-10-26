@@ -693,7 +693,7 @@ function App(): JSX.Element {
   const filterPlaceholder =
     tab === "messages"
       ? 'topic =~ "orders.*" && headers.tenant == "acme" && payload.amount > 1000'
-      : 'apiName == "Fetch" && conn != 42 && corrId == 7';
+      : 'apiName == "FetchRequest" && conn != 42 && corrId == 7';
   const onFilterChange = (next: string): void => {
     if (tab === "messages") {
       setFilter(next);

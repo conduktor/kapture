@@ -6,6 +6,16 @@ log if you want every commit.
 
 ## [Unreleased]
 
+- **Findings name their clients.** Kapture reads `client.id` from every
+  request header: the Protocol detail shows it, and each Expert finding
+  lists the `client.id`s of the connections behind it, so a `conn=12` or
+  `group=…` scope points at an application.
+- **Expert reads poll timeouts and offset resets.** A `LeaveGroup` whose
+  reason is "consumer poll timeout has expired." is flagged as a slow
+  consumer; a single `OFFSET_OUT_OF_RANGE` is noted, and the reset that
+  follows is flagged when `auto.offset.reset=latest` jumps to the log end.
+  Fetch v13+ topic ids resolve to topic names.
+
 ## [0.3.0] — 2026-06-30 — JVM tap mode, anti-pattern detectors, tunable thresholds
 
 ### JVM tap mode

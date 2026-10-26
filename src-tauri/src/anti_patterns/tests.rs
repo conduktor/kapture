@@ -29,6 +29,7 @@ fn frame(id: &str, ts: &str, connection_id: i32, local_port: u16) -> ProtoFrame 
         connection_id,
         local_port,
         corr_id: 0,
+        client_id: None,
         size: 0,
         captured: 0,
         rtt_ms: 0.0,
@@ -87,6 +88,55 @@ fn overcommit_flags_after_high_rate() {
 }
 
 #[test]
+fn overcommit_detail_reports_the_real_span_of_a_burst() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..30 {
+        fold.absorb(
+            &frame(&format!("f{i}"), "t", 1, 9092),
+            Some(&FrameSummary::OffsetCommitRequest {
+                group_id: "g1".into(),
+                member_id: "m".into(),
+                topics: vec!["t".into()],
+            }),
+        );
+    }
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::Overcommit)
+        .unwrap();
+    assert!(
+        det.detail.starts_with("30 OffsetCommit in "),
+        "{}",
+        det.detail
+    );
+    assert!(det.detail.contains(" ms,"), "{}", det.detail);
+    assert!(!det.detail.contains("sustained"), "{}", det.detail);
+}
+
+#[test]
+fn rolling_window_observed_wording() {
+    use crate::anti_patterns::state::RollingWindow;
+    let t0 = Instant::now();
+    let mut burst = RollingWindow::default();
+    for i in 0..30 {
+        burst.instants.push_back(t0 + Duration::from_millis(i));
+    }
+    assert_eq!(burst.observed("OffsetCommit"), "30 OffsetCommit in 29 ms");
+    let mut steady = RollingWindow::default();
+    for i in 0..40 {
+        steady
+            .instants
+            .push_back(t0 + Duration::from_millis(i * 500));
+    }
+    assert_eq!(
+        steady.observed("MetadataRequest"),
+        "40 MetadataRequest in 20 s (2.1/s)"
+    );
+}
+
+#[test]
 fn producer_per_record_ratio() {
     let mut fold = AntiPatternsFold::default();
     for i in 0..6 {
@@ -138,6 +188,7 @@ fn rebalance_loop_after_five_joins() {
             Some(&FrameSummary::JoinGroupRequest {
                 group_id: "g1".into(),
                 member_id: "m".into(),
+                protocol_type: "consumer".into(),
                 protocols: vec!["range".into()],
             }),
         );
@@ -331,6 +382,48 @@ fn transactional_zombie_fires_on_produce_without_add_partitions() {
 }
 
 #[test]
+fn transactional_zombie_ignores_transaction_v2_produce() {
+    // KIP-890 transaction v2: Produce v12+ adds the partition broker-side,
+    // so a healthy transaction never sends AddPartitionsToTxn.
+    let mut fold = AntiPatternsFold::default();
+    fold.absorb(
+        &frame("zi", "t", 3, 9092),
+        Some(&FrameSummary::InitProducerIdRequest {
+            transactional: true,
+            transactional_id: Some("txn-1".into()),
+        }),
+    );
+    let mut f = frame("zp", "t", 3, 9092);
+    f.api_version = 13;
+    fold.absorb(&f, Some(&produce(1, -1, Some(0), Some(42), true)));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::TransactionalZombie));
+}
+
+#[test]
+fn transactional_zombie_still_fires_on_v1_produce_v11() {
+    let mut fold = AntiPatternsFold::default();
+    fold.absorb(
+        &frame("zi", "t", 3, 9092),
+        Some(&FrameSummary::InitProducerIdRequest {
+            transactional: true,
+            transactional_id: Some("txn-1".into()),
+        }),
+    );
+    let mut f = frame("zp", "t", 3, 9092);
+    f.api_version = 11;
+    fold.absorb(&f, Some(&produce(1, -1, Some(0), Some(42), true)));
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::TransactionalZombie));
+}
+
+#[test]
 fn auto_commit_cadence_fires_on_near_5s_intervals() {
     let mut fold = AntiPatternsFold::default();
     // Drive 5 commits at exactly 5000ms apart by seeding the
@@ -450,33 +543,150 @@ fn metadata_storm_fires_on_high_rate() {
     );
 }
 
-#[test]
-fn classic_rebalance_on_kip848_cluster_fires() {
-    let mut fold = AntiPatternsFold::default();
-    // Broker advertises ConsumerGroupHeartbeat (api_key=68).
-    let f = frame("av", "t", 1, 9092);
+fn advertise(fold: &mut AntiPatternsFold, api_keys: &[i16]) {
+    let mut f = frame("av", "t", 1, 9092);
+    f.direction = ProtoDirection::Recv;
     fold.absorb(
         &f,
         Some(&FrameSummary::ApiVersionsResponse {
             error_code: 0,
-            max_versions: vec![(68, 1)],
+            max_versions: api_keys.iter().map(|k| (*k, 1)).collect(),
         }),
     );
-    // Client then uses classic JoinGroup.
-    let f = frame("jg", "t", 1, 9092);
+}
+
+fn join(fold: &mut AntiPatternsFold, group: &str, protocol_type: &str, protocols: &[&str]) {
     fold.absorb(
-        &f,
+        &frame("jg", "t", 1, 9092),
         Some(&FrameSummary::JoinGroupRequest {
-            group_id: "g-classic".into(),
+            group_id: group.into(),
             member_id: String::new(),
-            protocols: vec!["range".into()],
+            protocol_type: protocol_type.into(),
+            protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
         }),
     );
-    assert!(fold
-        .snapshot()
+}
+
+fn sync(fold: &mut AntiPatternsFold, group: &str, protocol_type: &str, assignor: &str) {
+    fold.absorb(
+        &frame("sg", "t", 1, 9092),
+        Some(&FrameSummary::SyncGroupRequest {
+            group_id: group.into(),
+            member_id: "m".into(),
+            generation_id: 1,
+            protocol_type: Some(protocol_type.into()),
+            protocol_name: Some(assignor.into()),
+        }),
+    );
+}
+
+fn classic(fold: &AntiPatternsFold) -> Option<crate::anti_patterns::Detection> {
+    fold.snapshot()
         .detections
-        .iter()
-        .any(|d| d.kind == AntiPatternKind::ClassicRebalanceOnModernCluster));
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::ClassicRebalanceOnModernCluster)
+}
+
+#[test]
+fn classic_rebalance_on_kip848_cluster_fires() {
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    join(&mut fold, "g-classic", "consumer", &["range"]);
+    let det = classic(&fold).expect("classic JoinGroup on a KIP-848 broker");
+    assert_eq!(det.scope, "group=g-classic");
+    assert!(
+        det.detail.contains("'range' assignor offered first"),
+        "{}",
+        det.detail
+    );
+    assert!(det.detail.contains("eager"), "{}", det.detail);
+}
+
+#[test]
+fn classic_rebalance_needs_kip848_broker() {
+    let mut fold = AntiPatternsFold::default();
+    join(&mut fold, "g", "consumer", &["range"]);
+    assert!(classic(&fold).is_none());
+}
+
+#[test]
+fn classic_rebalance_reports_the_assignor_syncgroup_chose() {
+    // Java default: offers [range, cooperative-sticky]; the coordinator
+    // may still settle on cooperative-sticky when every member agrees.
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    join(&mut fold, "g", "consumer", &["range", "cooperative-sticky"]);
+    sync(&mut fold, "g", "consumer", "cooperative-sticky");
+    let det = classic(&fold).unwrap();
+    assert!(
+        det.detail
+            .contains("with the 'cooperative-sticky' assignor"),
+        "{}",
+        det.detail
+    );
+    assert!(det.detail.contains("incremental"), "{}", det.detail);
+    assert!(
+        !det.detail.contains("revokes all partitions"),
+        "{}",
+        det.detail
+    );
+}
+
+#[test]
+fn classic_rebalance_eager_assignor_says_stop_the_world() {
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    sync(&mut fold, "g", "consumer", "range");
+    let det = classic(&fold).unwrap();
+    assert!(
+        det.detail.contains("revokes all partitions"),
+        "{}",
+        det.detail
+    );
+    assert!(
+        det.detail.contains("group.protocol=consumer"),
+        "{}",
+        det.detail
+    );
+}
+
+#[test]
+fn classic_rebalance_custom_assignor_does_not_promise_a_drop_in() {
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    sync(&mut fold, "g", "consumer", "rack-aware-custom");
+    let det = classic(&fold).unwrap();
+    assert!(det.detail.contains("does not carry over"), "{}", det.detail);
+}
+
+#[test]
+fn classic_rebalance_ignores_connect_workers() {
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    join(&mut fold, "connect-cluster", "connect", &["sessioned"]);
+    sync(&mut fold, "connect-cluster", "connect", "sessioned");
+    assert!(classic(&fold).is_none());
+}
+
+#[test]
+fn classic_rebalance_streams_needs_kip1071() {
+    // KIP-848 alone doesn't apply to Kafka Streams.
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68]);
+    join(&mut fold, "app", "consumer", &["stream"]);
+    sync(&mut fold, "app", "consumer", "stream");
+    assert!(classic(&fold).is_none());
+
+    let mut fold = AntiPatternsFold::default();
+    advertise(&mut fold, &[68, 88]);
+    sync(&mut fold, "app", "consumer", "stream");
+    let det = classic(&fold).expect("Streams group on a KIP-1071 broker");
+    assert!(det.title.contains("Streams"), "{}", det.title);
+    assert!(
+        det.detail.contains("group.protocol=streams"),
+        "{}",
+        det.detail
+    );
 }
 
 // ---------- Phase B+ detectors (#19–#25) ----------
@@ -534,7 +744,7 @@ fn offset_out_of_range_on_fetch_fires_after_threshold() {
 }
 
 #[test]
-fn offset_out_of_range_single_occurrence_does_not_fire() {
+fn offset_out_of_range_single_occurrence_is_a_note() {
     let mut fold = AntiPatternsFold::default();
     let f = frame("oor", "t", 1, 9092);
     fold.absorb(
@@ -551,11 +761,16 @@ fn offset_out_of_range_single_occurrence_does_not_fire() {
             }],
         }),
     );
-    assert!(!fold
+    // One is enough for auto.offset.reset to skip or re-read records: a
+    // Note until the reset (or a repeat) says more.
+    let det = fold
         .snapshot()
         .detections
-        .iter()
-        .any(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch));
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch)
+        .expect("single OFFSET_OUT_OF_RANGE");
+    assert_eq!(det.severity, Severity::Note);
+    assert_eq!(det.scope, "t1:5");
 }
 
 #[test]
@@ -568,6 +783,7 @@ fn cooperative_sticky_churn_fires() {
             Some(&FrameSummary::JoinGroupRequest {
                 group_id: "g-coop".into(),
                 member_id: String::new(),
+                protocol_type: "consumer".into(),
                 protocols: vec!["cooperative-sticky".into()],
             }),
         );
@@ -1055,4 +1271,255 @@ fn retry_storm_fires_on_threshold_not_single_error() {
         .detections
         .iter()
         .any(|d| d.kind == AntiPatternKind::RetryStorm));
+}
+
+#[test]
+fn detections_name_the_client_ids_of_their_connections() {
+    let mut fold = AntiPatternsFold::default();
+    let mut req = frame("p", "t", 5, 9092);
+    req.client_id = Some("orders-svc".into());
+    fold.absorb(&req, Some(&produce(50, 0, Some(1), Some(7), false)));
+    // A response carries no client.id; the connection does.
+    let mut resp = frame("r", "t", 5, 9092);
+    resp.direction = ProtoDirection::Recv;
+    fold.absorb(
+        &resp,
+        Some(&FrameSummary::ProduceResponse {
+            errors: vec![ProducePartitionError {
+                topic: "orders".into(),
+                partition: 0,
+                error_code: 10,
+                current_leader_id: None,
+            }],
+            throttle_time_ms: 0,
+        }),
+    );
+    let snap = fold.snapshot();
+    for kind in [
+        AntiPatternKind::Acks0,
+        AntiPatternKind::MessageTooLargeRejected,
+    ] {
+        let det = snap.detections.iter().find(|d| d.kind == kind).unwrap();
+        assert_eq!(det.client_ids, vec!["orders-svc".to_owned()], "{kind:?}");
+    }
+}
+
+#[test]
+fn group_detection_lists_distinct_client_ids_capped() {
+    let mut fold = AntiPatternsFold::new(DetectorConfig {
+        overcommit_min_samples: 1,
+        ..DetectorConfig::default()
+    });
+    for conn in 0..12 {
+        for _ in 0..2 {
+            let mut f = frame("c", "t", conn, 9092);
+            f.client_id = Some(format!("consumer-g-{}", conn % 10));
+            fold.absorb(
+                &f,
+                Some(&FrameSummary::OffsetCommitRequest {
+                    group_id: "g".into(),
+                    member_id: "m".into(),
+                    topics: vec!["t".into()],
+                }),
+            );
+        }
+    }
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::Overcommit)
+        .unwrap();
+    assert_eq!(det.client_ids.len(), 8);
+    let unique: std::collections::HashSet<&String> = det.client_ids.iter().collect();
+    assert_eq!(unique.len(), 8);
+}
+
+fn join_req(group: &str, member: &str, protocols: &[&str]) -> FrameSummary {
+    FrameSummary::JoinGroupRequest {
+        group_id: group.into(),
+        member_id: member.into(),
+        protocol_type: "consumer".into(),
+        protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
+    }
+}
+
+#[test]
+fn leave_group_poll_timeout_flags_the_slow_consumer() {
+    let mut fold = AntiPatternsFold::default();
+    let leave = |reason: &str| FrameSummary::LeaveGroupRequest {
+        group_id: "orders".into(),
+        reasons: vec![reason.into()],
+    };
+    fold.absorb(
+        &frame("l1", "t", 4, 9092),
+        Some(&leave("the consumer is being closed")),
+    );
+    assert!(fold.snapshot().detections.is_empty());
+    fold.absorb(
+        &frame("l2", "t", 4, 9092),
+        Some(&leave("consumer poll timeout has expired.")),
+    );
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::SlowConsumerPollStall)
+        .expect("poll timeout");
+    assert_eq!(det.scope, "group=orders");
+    assert_eq!(det.severity, Severity::Warn);
+    assert!(
+        det.detail.contains("max.poll.interval.ms"),
+        "{}",
+        det.detail
+    );
+}
+
+#[test]
+fn a_join_with_its_member_id_handshake_counts_once() {
+    // Three rebalances of one v4+ member: six JoinGroup requests.
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..3 {
+        fold.absorb(
+            &frame(&format!("a{i}"), "t", 1, 9092),
+            Some(&join_req("g", "", &["range"])),
+        );
+        fold.absorb(
+            &frame(&format!("b{i}"), "t", 1, 9092),
+            Some(&join_req("g", "m-1", &["range"])),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::RebalanceLoop));
+    // Two more rebalances reach the threshold of five.
+    for i in 3..5 {
+        fold.absorb(
+            &frame(&format!("a{i}"), "t", 1, 9092),
+            Some(&join_req("g", "", &["range"])),
+        );
+        fold.absorb(
+            &frame(&format!("b{i}"), "t", 1, 9092),
+            Some(&join_req("g", "m-1", &["range"])),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::RebalanceLoop));
+}
+
+#[test]
+fn cooperative_sticky_churn_ignores_the_default_range_first_list() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..6 {
+        fold.absorb(
+            &frame(&format!("j{i}"), "t", 1, 9092),
+            Some(&join_req("g", "m", &["range", "cooperative-sticky"])),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .all(|d| d.kind != AntiPatternKind::CooperativeStickyChurn));
+}
+
+fn oor_fetch(topic: &str) -> FrameSummary {
+    FrameSummary::FetchResponse {
+        error_code: 0,
+        session_id: 0,
+        throttle_time_ms: 0,
+        response_size: 0,
+        errors: vec![TopicPartitionError {
+            topic: topic.into(),
+            partition: 0,
+            error_code: 1,
+        }],
+    }
+}
+
+fn recv(id: &str, conn: i32) -> ProtoFrame {
+    let mut f = frame(id, "t", conn, 9092);
+    f.direction = ProtoDirection::Recv;
+    f
+}
+
+fn reset(fold: &mut AntiPatternsFold, timestamp: i64, offset: i64) {
+    fold.absorb(
+        &frame("lo", "t", 9, 9092),
+        Some(&FrameSummary::ListOffsetsRequest {
+            partitions: vec![crate::proto_summary::ListOffsetsQuery {
+                topic: "orders".into(),
+                partition: 0,
+                timestamp,
+            }],
+        }),
+    );
+    fold.absorb(
+        &recv("lor", 9),
+        Some(&FrameSummary::ListOffsetsResponse {
+            partitions: vec![crate::proto_summary::ListOffsetsAnswer {
+                topic: "orders".into(),
+                partition: 0,
+                error_code: 0,
+                offset,
+            }],
+        }),
+    );
+}
+
+#[test]
+fn a_single_offset_out_of_range_is_noted_and_its_reset_to_latest_flagged() {
+    let mut fold = AntiPatternsFold::default();
+    // Fetch v13+ names the topic by id; Metadata maps it back.
+    fold.absorb(
+        &recv("md", 9),
+        Some(&FrameSummary::MetadataResponse {
+            topics: vec!["orders".into()],
+            brokers: 1,
+            leaders: vec![],
+            brokers_map: vec![],
+            throttle_time_ms: 0,
+            topic_ids: vec![("8f1c-orders-id".into(), "orders".into())],
+        }),
+    );
+    fold.absorb(&recv("f", 9), Some(&oor_fetch("8f1c-orders-id")));
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch)
+        .unwrap();
+    assert_eq!(det.scope, "orders:0");
+    assert_eq!(det.severity, Severity::Note);
+
+    reset(&mut fold, -1, 61);
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch)
+        .unwrap();
+    assert_eq!(det.severity, Severity::Warn);
+    assert!(det.title.contains("latest"), "{}", det.title);
+    assert!(det.detail.contains("offset 61"), "{}", det.detail);
+}
+
+#[test]
+fn a_reset_to_earliest_stays_a_note() {
+    let mut fold = AntiPatternsFold::default();
+    fold.absorb(&recv("f", 9), Some(&oor_fetch("orders")));
+    reset(&mut fold, -2, 51);
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::OffsetOutOfRangeOnFetch)
+        .unwrap();
+    assert_eq!(det.severity, Severity::Note);
+    assert!(det.title.contains("earliest"), "{}", det.title);
 }

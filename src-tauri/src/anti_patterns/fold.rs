@@ -8,8 +8,9 @@ use std::time::Instant;
 
 use crate::anti_patterns::state::{
     severity_rank, ConnectionCounters, DetectionKey, DetectionState, FetchPollState, FetchShape,
-    HandshakeState, InFlightRequest, LeakWindow, PartitionTraffic, ProduceCodecStats, ProduceShape,
-    RollingWindow, SaslState, TxnState, CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
+    HandshakeState, InFlightRequest, PartitionTraffic, PendingOffsetReset, ProduceCodecStats,
+    ProduceShape, RollingWindow, SaslState, TxnState, CONNECTION_IDLE_EXPIRY, GC_SWEEP_EVERY,
+    MAX_DETECTION_CLIENT_IDS,
 };
 use crate::anti_patterns::{
     AntiPatternKind, AntiPatternsSnapshot, Detection, DetectorConfig, Severity,
@@ -40,7 +41,7 @@ pub struct AntiPatternsFold {
     /// Per-connection Produce codec + idempotence stats.
     pub(super) produce_codec: HashMap<i32, ProduceCodecStats>,
     /// Per-`local_port` rolling-window of leak-handshake completions.
-    pub(super) leak_handshakes: HashMap<u16, LeakWindow>,
+    pub(super) leak_handshakes: HashMap<u16, RollingWindow>,
     /// Per-connection partial handshake tracking.
     pub(super) in_flight_handshakes: HashMap<i32, HandshakeState>,
     /// Per-connection in-flight transactional state.
@@ -57,6 +58,9 @@ pub struct AntiPatternsFold {
     pub(super) metadata_requests: HashMap<i32, RollingWindow>,
     /// Ports where the broker advertised KIP-848 (api_key=68).
     pub(super) kip848_ports: HashSet<u16>,
+    /// Ports where the broker advertised KIP-1071, the Streams group
+    /// protocol (api_key=88).
+    pub(super) kip1071_ports: HashSet<u16>,
     /// Per-group `FindCoordinator` request timestamps (coordinator
     /// churn).
     pub(super) coordinator_requests: HashMap<String, RollingWindow>,
@@ -80,6 +84,17 @@ pub struct AntiPatternsFold {
     pub(super) read_uncommitted_ports: HashSet<u16>,
     pub(super) retry_windows: HashMap<(i32, i32), RollingWindow>,
     pub(super) partition_traffic: HashMap<String, PartitionTraffic>,
+    /// Topic id → name, from Metadata v10+. Fetch v13+ names topics by id.
+    pub(super) topic_names: HashMap<String, String>,
+    /// `(connection, partition)` → an out-of-range fetch whose reset is
+    /// not seen yet.
+    pub(super) pending_resets: HashMap<(i32, i32), PendingOffsetReset>,
+    /// Connection → group of a v4+ JoinGroup sent without a member id. The
+    /// member's next JoinGroup is the second half of the same join.
+    pub(super) join_handshakes: HashMap<i32, String>,
+    /// Per-connection `client.id`, read from request headers. Lets a
+    /// detection fired on a response still name the client.
+    pub(super) client_ids: HashMap<i32, String>,
     /// Per-connection last-touched timestamp. Drives GC of stale
     /// per-connection maps so memory doesn't grow unboundedly with
     /// short-lived TCP connections — the exact shape of the
@@ -104,6 +119,11 @@ impl AntiPatternsFold {
     /// may upsert one or more detections.
     pub fn absorb(&mut self, frame: &ProtoFrame, summary: Option<&FrameSummary>) {
         let now = Instant::now();
+        if let Some(id) = &frame.client_id {
+            if self.client_ids.get(&frame.connection_id) != Some(id) {
+                self.client_ids.insert(frame.connection_id, id.clone());
+            }
+        }
         self.track_in_flight(frame, summary, now);
         let Some(s) = summary else { return };
         // Touch the per-connection last-seen so the GC knows this
@@ -142,6 +162,9 @@ impl AntiPatternsFold {
             self.metadata_requests.remove(conn);
             self.acl_deny_window.remove(conn);
             self.last_commit_group.remove(conn);
+            self.client_ids.remove(conn);
+            self.join_handshakes.remove(conn);
+            self.pending_resets.retain(|(c, _), _| c != conn);
             self.in_flight_requests.retain(|(c, _), _| c != conn);
             self.retry_windows.retain(|(c, _), _| c != conn);
         }
@@ -228,10 +251,41 @@ impl AntiPatternsFold {
             }
             FrameSummary::JoinGroupRequest {
                 group_id,
+                member_id,
+                protocol_type,
                 protocols,
+            } => {
+                self.on_join_group_request(
+                    frame,
+                    group_id,
+                    member_id,
+                    protocol_type,
+                    protocols,
+                    now,
+                );
+            }
+            FrameSummary::LeaveGroupRequest { group_id, reasons } => {
+                self.on_leave_group_request(frame, group_id, reasons);
+            }
+            FrameSummary::ListOffsetsRequest { partitions } => {
+                self.on_list_offsets_request(frame, partitions);
+            }
+            FrameSummary::ListOffsetsResponse { partitions } => {
+                self.on_list_offsets_response(frame, partitions);
+            }
+            FrameSummary::SyncGroupRequest {
+                group_id,
+                protocol_type: Some(protocol_type),
+                protocol_name: Some(protocol_name),
                 ..
             } => {
-                self.on_join_group_request(frame, group_id, protocols, now);
+                self.check_classic_group_protocol(
+                    frame,
+                    group_id,
+                    protocol_type,
+                    protocol_name,
+                    true,
+                );
             }
             FrameSummary::OffsetCommitResponse { errors, .. } => {
                 self.on_offset_commit_response(frame, errors, now);
@@ -282,7 +336,10 @@ impl AntiPatternsFold {
             FrameSummary::MetadataRequest { .. } => {
                 self.on_metadata_request(frame, now);
             }
-            FrameSummary::MetadataResponse { .. } => {
+            FrameSummary::MetadataResponse { topic_ids, .. } => {
+                for (id, name) in topic_ids {
+                    self.topic_names.insert(id.clone(), name.clone());
+                }
                 self.on_metadata_response(frame);
             }
             _ => {}
@@ -315,6 +372,7 @@ impl AntiPatternsFold {
         frame: &ProtoFrame,
     ) {
         let key = DetectionKey { kind, scope };
+        let client_id = self.client_ids.get(&frame.connection_id);
         match self.detections.get_mut(&key) {
             Some(state) => {
                 state.severity = severity;
@@ -323,6 +381,13 @@ impl AntiPatternsFold {
                 state.last_seen.clone_from(&frame.timestamp);
                 state.occurrences = state.occurrences.saturating_add(1);
                 state.frame_id = Some(frame.id.clone());
+                if let Some(id) = client_id {
+                    if state.client_ids.len() < MAX_DETECTION_CLIENT_IDS
+                        && !state.client_ids.contains(id)
+                    {
+                        state.client_ids.push(id.clone());
+                    }
+                }
             }
             None => {
                 self.detections.insert(
@@ -335,6 +400,7 @@ impl AntiPatternsFold {
                         last_seen: frame.timestamp.clone(),
                         occurrences: 1,
                         frame_id: Some(frame.id.clone()),
+                        client_ids: client_id.cloned().into_iter().collect(),
                     },
                 );
             }
@@ -428,6 +494,7 @@ impl AntiPatternsFold {
                 last_seen: v.last_seen.clone(),
                 occurrences: v.occurrences,
                 frame_id: v.frame_id.clone(),
+                client_ids: v.client_ids.clone(),
             })
             .collect();
         let now = Instant::now();
@@ -462,6 +529,7 @@ impl AntiPatternsFold {
                     last_seen: last_seen.clone(),
                     occurrences: u32::try_from(requests.len()).unwrap_or(u32::MAX),
                     frame_id: Some(oldest.frame_id.clone()),
+                    client_ids: self.client_ids.get(&connection).cloned().into_iter().collect(),
                 });
             }
         }
@@ -493,6 +561,7 @@ impl AntiPatternsFold {
         self.fetch_session_errors.clear();
         self.metadata_requests.clear();
         self.kip848_ports.clear();
+        self.kip1071_ports.clear();
         self.coordinator_requests.clear();
         self.utop_per_partition.clear();
         self.acl_deny_window.clear();
@@ -504,6 +573,10 @@ impl AntiPatternsFold {
         self.read_uncommitted_ports.clear();
         self.retry_windows.clear();
         self.partition_traffic.clear();
+        self.client_ids.clear();
+        self.topic_names.clear();
+        self.pending_resets.clear();
+        self.join_handshakes.clear();
         self.last_seen.clear();
         self.frames_absorbed = 0;
     }

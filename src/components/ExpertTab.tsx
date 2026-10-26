@@ -1,6 +1,11 @@
 import { useState, type JSX } from "react";
 
-import { kindLabel, type AntiPatternsSnapshot, type Detection } from "../lib/antiPatterns";
+import {
+  ANTI_PATTERN_KINDS,
+  kindLabel,
+  type AntiPatternsSnapshot,
+  type Detection,
+} from "../lib/antiPatterns";
 import { DetectorSettingsModal } from "./DetectorSettingsModal";
 
 interface Props {
@@ -34,14 +39,10 @@ export function ExpertTab({ snapshot, onJumpToFrame }: Props): JSX.Element {
     detections.length === 0 ? (
       <div className="expert expert--empty">
         <div className="expert__empty">
-          No anti-patterns detected yet. The detector watches the wire for 26 client + cluster
-          patterns — overcommit, producer-per-record, tiny batches, rebalance loop, stale-leader
-          producing, mixed api_version, SASL drift, acks=0, compression-off, non-idempotent
-          producer, producer-instance leak, transactional zombie, auto-commit cadence, tight fetch
-          polling, fetch-session error cascade, throttle pressure, metadata storm, KIP-848 holdouts,
-          message-too-large, offset-out-of-range, cooperative-sticky churn, commit-during-rebalance,
-          ACL deny, unknown-topic poll loop, coordinator churn, and slow consumer poll stall. Run
-          some traffic through the proxy and findings will surface here.
+          No anti-patterns detected yet. The detector watches the wire for{" "}
+          {ANTI_PATTERN_KINDS.length} client and cluster patterns, from overcommit and
+          producer-per-record to transactional zombies and slow consumer poll stalls. Run some
+          traffic through the proxy and findings will surface here.
           <div className="expert__empty-actions">
             <button type="button" className="btn btn--ghost" onClick={openSettings}>
               Tune thresholds
@@ -115,6 +116,11 @@ function DetectionRow({
           <span className="expert__scope" title="Scope of this detection">
             {det.scope || "—"}
           </span>
+          {det.clientIds.length > 0 ? (
+            <span className="expert__clients" title="client.id of the connections behind it">
+              client.id {det.clientIds.join(", ")}
+            </span>
+          ) : null}
           <span className="expert__occurrences">
             {det.occurrences} {det.occurrences === 1 ? "occurrence" : "occurrences"}
           </span>

@@ -19,13 +19,14 @@
 //!  9. `CompressionOff` — bandwidth waste on a bursty producer.
 //! 10. `NonIdempotentProducer` — `producerId == -1`, retries can reorder.
 //! 11. `ProducerInstanceLeak` — PagerDuty 2025 shape.
-//! 12. `TransactionalZombie` — txn Produce without `EndTxn`.
+//! 12. `TransactionalZombie` — txn Produce without `AddPartitionsToTxn`
+//!     (transaction v1 only).
 //! 13. `AutoCommitCadence` — `OffsetCommit` at ~5s intervals.
 //! 14. `TightFetchPolling` — `fetch.min.bytes=1` × low traffic.
 //! 15. `FetchSessionErrorCascade` — `INVALID_FETCH_SESSION_*` recurring.
 //! 16. `ThrottlePressure` — `throttle_time_ms > 0` in responses.
 //! 17. `MetadataStorm` — `MetadataRequest` rate too high.
-//! 18. `ClassicRebalanceOnModernCluster` — KIP-848 ignored.
+//! 18. `ClassicRebalanceOnModernCluster` — KIP-848 / KIP-1071 ignored.
 //!
 //! The detector keeps tiny rolling windows of timestamps so rates can
 //! be computed without unbounded growth. Snapshot is a cheap clone of
@@ -78,8 +79,11 @@ pub enum AntiPatternKind {
     /// New TCP + full handshake triplet (ApiVersions + Metadata +
     /// InitProducerId) per record — the PagerDuty 2025 leak shape.
     ProducerInstanceLeak,
-    /// `InitProducerId` with a transactional_id then `Produce` without
-    /// `EndTxn` — abandoned txn blocks LSO.
+    /// `InitProducerId` with a transactional_id, then a transactional
+    /// `Produce` with no `AddPartitionsToTxn` before it. Only meaningful
+    /// under transaction v1: with transaction v2 (KIP-890, Produce v12+)
+    /// the broker adds the partition itself and the client never sends
+    /// `AddPartitionsToTxn`.
     TransactionalZombie,
     /// `OffsetCommitRequest` at a regular ~5s cadence — auto-commit
     /// pattern (at-least-once with crash duplicate window).
@@ -97,20 +101,25 @@ pub enum AntiPatternKind {
     /// `MetadataRequest` rate sustained above the healthy refresh
     /// cadence — broken refresh or topic-not-found loop.
     MetadataStorm,
-    /// Client uses classic `JoinGroup`/`SyncGroup` while broker
-    /// advertises `ConsumerGroupHeartbeat` (api_key 68) — KIP-848
-    /// incremental rebalance available, stop-the-world chosen instead.
+    /// Consumer group on classic `JoinGroup`/`SyncGroup` while the
+    /// broker advertises `ConsumerGroupHeartbeat` (api_key 68, KIP-848),
+    /// or a Kafka Streams group while it advertises
+    /// `StreamsGroupHeartbeat` (api_key 88, KIP-1071). The advice
+    /// depends on the assignor: eager, cooperative, Streams or custom.
     ClassicRebalanceOnModernCluster,
     /// Broker rejected a `ProduceRequest` with `MESSAGE_TOO_LARGE` (10)
     /// — producer + broker size-limit configs out of sync.
     MessageTooLargeRejected,
-    /// `FetchResponse` per-partition `OFFSET_OUT_OF_RANGE` (1) — the
-    /// consumer is past the broker's log end. Auto-reset will mask it
-    /// but the underlying drift is real.
+    /// `FetchResponse` per-partition `OFFSET_OUT_OF_RANGE` (1): the fetch
+    /// position is outside the log (below the log start after retention,
+    /// or past the end). A Note on the first one; the `ListOffsets` that
+    /// follows shows `auto.offset.reset` at work, a Warn when it jumps to
+    /// latest (unread records skipped). Repeats are a Warn too.
     OffsetOutOfRangeOnFetch,
-    /// Repeated `JoinGroup` advertising `cooperative-sticky` — the
-    /// KAFKA-12896 leader-retrigger loop or a misconfigured incremental
-    /// rebalance. Distinct from the generic `RebalanceLoop`.
+    /// Repeated `JoinGroup` preferring `cooperative-sticky` (first in the
+    /// offered list) — the KAFKA-12896 leader-retrigger loop or a
+    /// misconfigured incremental rebalance. Distinct from the generic
+    /// `RebalanceLoop`. A v4+ join and its member-id handshake count once.
     CooperativeStickyChurn,
     /// `OffsetCommitResponse` per-partition `REBALANCE_IN_PROGRESS` (27)
     /// — client committed mid-rebalance. Commit dropped; can cause
@@ -135,6 +144,8 @@ pub enum AntiPatternKind {
     /// broker evicts the member and the group rebalances. The trivago
     /// 2026 "83% fewer pods" shape: slow record processing stalled the
     /// poll loop, which read on dashboards as a broker/scaling problem.
+    /// Also raised by a `LeaveGroup` whose reason (v5+, KIP-800) is the
+    /// Java client's "consumer poll timeout has expired.".
     SlowConsumerPollStall,
     HungRequests,
     InFlightSaturation,
@@ -208,6 +219,10 @@ pub struct Detection {
     pub last_seen: String,
     pub occurrences: u32,
     pub frame_id: Option<String>,
+    /// Distinct `client.id`s of the connections whose frames raised or
+    /// refreshed this detection, at most eight. Empty when the clients
+    /// sent none.
+    pub client_ids: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, JsonSchema)]

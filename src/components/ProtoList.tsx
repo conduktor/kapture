@@ -3,6 +3,7 @@ import { List, type ListImperativeAPI, type RowComponentProps } from "react-wind
 import type { ProtoFrame } from "../types";
 import { formatBytes } from "../lib/formatBytes";
 import { formatRtt } from "../lib/formatRtt";
+import { splitApiName } from "../lib/apiName";
 import {
   applyFilter,
   isFilterEmpty,
@@ -337,6 +338,7 @@ function ProtoRow({
   const prev = index > 0 ? frames[index - 1] : undefined;
   const delta =
     prev !== undefined ? formatDelta(tsToMs(frame.timestamp) - tsToMs(prev.timestamp)) : null;
+  const api = splitApiName(frame.apiName);
   return (
     <div
       style={style}
@@ -377,10 +379,8 @@ function ProtoRow({
         activeMenuKey={activeMenuKey}
         onOpenFilterMenu={onOpenFilterMenu}
       >
-        {frame.apiName}
-        <span className="proto__api-suffix">
-          {frame.direction === "send" ? "Request" : "Response"}
-        </span>
+        {api.base}
+        <span className="proto__api-suffix">{api.suffix}</span>
         <span className="proto__api-ver"> v{frame.apiVersion}</span>
       </FilterableField>
       <span

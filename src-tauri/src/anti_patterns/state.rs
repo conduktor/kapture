@@ -138,7 +138,15 @@ pub(super) struct DetectionState {
     pub last_seen: String,
     pub occurrences: u32,
     pub frame_id: Option<String>,
+    /// Distinct `client.id`s of the connections whose frames raised or
+    /// refreshed this detection, first seen first, capped at
+    /// `MAX_DETECTION_CLIENT_IDS`.
+    pub client_ids: Vec<String>,
 }
+
+/// A port- or group-scoped detection can aggregate many clients; the
+/// row names the first few, which is enough to find the application.
+pub(super) const MAX_DETECTION_CLIENT_IDS: usize = 8;
 
 #[derive(Debug, Default)]
 pub(super) struct ConnectionCounters {
@@ -166,17 +174,22 @@ pub(super) struct ProduceCodecStats {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct LeakWindow {
-    pub instants: VecDeque<Instant>,
-}
-
-#[derive(Debug, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub(super) struct HandshakeState {
     pub saw_api_versions: bool,
     pub saw_metadata: bool,
     pub saw_init_producer_id: bool,
     pub counted: bool,
+}
+
+/// An `OFFSET_OUT_OF_RANGE` waiting for the `ListOffsets` that tells
+/// which way `auto.offset.reset` sends the consumer.
+#[derive(Debug)]
+pub(super) struct PendingOffsetReset {
+    /// The detection scope of the out-of-range finding, upgraded in place.
+    pub scope: String,
+    /// `-1` latest, `-2` earliest, once the `ListOffsetsRequest` is seen.
+    pub strategy: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -257,16 +270,43 @@ impl RollingWindow {
         self.trim(now);
         self.len()
     }
+    /// Rate for threshold checks. The span is floored at one second so
+    /// a burst can't divide by zero; detail text uses `observed`, which
+    /// reports the real span.
     pub fn rate_per_sec(&self) -> f64 {
         if self.instants.is_empty() {
             return 0.0;
         }
-        let span = match (self.instants.front(), self.instants.back()) {
+        let secs = self.span().as_secs_f64().max(1.0);
+        self.instants.len() as f64 / secs
+    }
+    /// Time between the oldest and newest sample still in the window.
+    pub fn span(&self) -> Duration {
+        match (self.instants.front(), self.instants.back()) {
             (Some(a), Some(b)) => b.duration_since(*a),
             _ => Duration::ZERO,
-        };
-        let secs = span.as_secs_f64().max(1.0);
-        self.instants.len() as f64 / secs
+        }
+    }
+    /// Detail-text fragment for this window's samples, e.g.
+    /// `30 OffsetCommit in 31 ms` or `120 MetadataRequest in 42 s (2.9/s)`.
+    pub fn observed(&self, what: &str) -> String {
+        let samples = self.len();
+        let span = self.span();
+        if span < Duration::from_secs(1) {
+            let ms = span.as_secs_f64() * 1_000.0;
+            let ms = if ms < 10.0 {
+                format!("{ms:.1}")
+            } else {
+                format!("{ms:.0}")
+            };
+            format!("{samples} {what} in {ms} ms")
+        } else {
+            let secs = span.as_secs_f64();
+            format!(
+                "{samples} {what} in {secs:.0} s ({:.1}/s)",
+                samples as f64 / secs
+            )
+        }
     }
     pub fn len(&self) -> usize {
         self.instants.len()

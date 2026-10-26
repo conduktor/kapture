@@ -65,6 +65,8 @@ export interface ProtoFrame {
    */
   localPort: number;
   corrId: number;
+  /** `client.id` from the request header. Requests only. */
+  clientId?: string;
   /** True wire size. */
   size: number;
   /** Bytes captured for inspection. `≤ size` (capped at 64 KiB). */

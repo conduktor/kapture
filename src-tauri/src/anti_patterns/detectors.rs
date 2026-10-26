@@ -14,15 +14,24 @@ use crate::anti_patterns::kafka_errors as kerr;
 // Threshold constants now live in `DetectorConfig` (read via
 // `self.config.*`); only the structural window/cap constants are used
 // directly here.
+use crate::anti_patterns::state::PendingOffsetReset;
 use crate::anti_patterns::state::{RATE_QUEUE_CAP, RATE_WINDOW};
 use crate::anti_patterns::{AntiPatternKind, Severity};
 use crate::correlator::ProtoFrame;
 use crate::proto_summary::{
-    FrameSummary, PartitionBytes, ProducePartitionError, TopicPartitionError,
+    FrameSummary, ListOffsetsAnswer, ListOffsetsQuery, PartitionBytes, ProducePartitionError,
+    TopicPartitionError,
 };
 
 /// `ConsumerGroupHeartbeat` API key — used to gate KIP-848 detection.
 const API_KEY_CONSUMER_GROUP_HEARTBEAT: i16 = 68;
+/// `StreamsGroupHeartbeat` API key — gates the Kafka Streams variant
+/// (KIP-1071).
+const API_KEY_STREAMS_GROUP_HEARTBEAT: i16 = 88;
+/// First `Produce` version a transactional producer may only use under
+/// transaction v2 (KIP-890): the broker then adds the partition to the
+/// transaction and no `AddPartitionsToTxn` precedes the Produce.
+const PRODUCE_VERSION_TRANSACTION_V2: i32 = 12;
 
 impl AntiPatternsFold {
     pub(super) fn mark_transactional_traffic(&mut self, frame: &ProtoFrame) {
@@ -266,6 +275,9 @@ impl AntiPatternsFold {
             let (open_txn, no_add_partitions, txn_id) = {
                 let st = self.txn_state.entry(conn).or_default();
                 st.produced_in_txn = true;
+                if transactional && frame.api_version >= PRODUCE_VERSION_TRANSACTION_V2 {
+                    st.add_partitions = true;
+                }
                 (
                     st.transactional_id.is_some(),
                     !st.add_partitions,
@@ -448,25 +460,14 @@ impl AntiPatternsFold {
         if st.saw_api_versions && st.saw_metadata && !st.counted {
             st.counted = true;
             let now = Instant::now();
-            let (samples, rate) = {
+            let (samples, rate, observed) = {
                 let w = self.leak_handshakes.entry(frame.local_port).or_default();
-                w.instants.push_back(now);
-                while w.instants.len() > RATE_QUEUE_CAP {
-                    w.instants.pop_front();
-                }
-                while let Some(front) = w.instants.front() {
-                    if now.duration_since(*front) > RATE_WINDOW {
-                        w.instants.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-                let span = match (w.instants.front(), w.instants.back()) {
-                    (Some(a), Some(b)) => b.duration_since(*a).as_secs_f64().max(1.0),
-                    _ => 1.0,
-                };
-                let rate = w.instants.len() as f64 / span;
-                (w.instants.len(), rate)
+                let samples = w.push_and_count(now);
+                (
+                    samples,
+                    w.rate_per_sec(),
+                    w.observed("fresh producer handshakes (ApiVersions+Metadata+InitProducerId)"),
+                )
             };
             if samples >= self.config.producer_instance_leak_min_samples
                 && rate >= self.config.producer_instance_leak_per_sec
@@ -476,10 +477,7 @@ impl AntiPatternsFold {
                     format!("port={}", frame.local_port),
                     Severity::Warn,
                     format!("Producer-instance leak (port {})", frame.local_port),
-                    format!(
-                        "{samples} fresh producer handshakes (ApiVersions+Metadata+InitProducerId) in last {}s at {rate:.1}/s on this listener — the PagerDuty leak shape.",
-                        RATE_WINDOW.as_secs(),
-                    ),
+                    format!("{observed} on this listener — the PagerDuty leak shape."),
                     frame,
                 );
             }
@@ -538,14 +536,14 @@ impl AntiPatternsFold {
         self.last_commit_group
             .insert(frame.connection_id, group_id.to_owned());
         // Overcommit rate detector.
-        let (samples, rate) = {
+        let (samples, rate, observed) = {
             let w = self
                 .commits_per_group
                 .entry(group_id.to_owned())
                 .or_default();
             w.push(now);
             w.trim(now);
-            (w.len(), w.rate_per_sec())
+            (w.len(), w.rate_per_sec(), w.observed("OffsetCommit"))
         };
         if samples >= self.config.overcommit_min_samples
             && rate >= self.config.overcommit_rate_per_sec
@@ -556,9 +554,7 @@ impl AntiPatternsFold {
                 Severity::Warn,
                 format!("Overcommit on '{group_id}'"),
                 format!(
-                    "{:.1} OffsetCommit/s sustained over the last {}s ({samples} commits in window)",
-                    rate,
-                    RATE_WINDOW.as_secs(),
+                    "{observed}, each a group-coordinator round trip and a __consumer_offsets write."
                 ),
                 frame,
             );
@@ -613,16 +609,35 @@ impl AntiPatternsFold {
         &mut self,
         frame: &ProtoFrame,
         group_id: &str,
+        member_id: &str,
+        protocol_type: &str,
         protocols: &[String],
         now: Instant,
     ) {
+        // Since JoinGroup v4 a new member joins twice: first without a member
+        // id (the broker answers MEMBER_ID_REQUIRED), then with the id it got.
+        // That second request completes the same join, so it isn't counted.
+        let second_half = if member_id.is_empty() {
+            if frame.api_version >= 4 {
+                self.join_handshakes
+                    .insert(frame.connection_id, group_id.to_owned());
+            }
+            false
+        } else {
+            self.join_handshakes
+                .remove(&frame.connection_id)
+                .is_some_and(|g| g == group_id)
+        };
         // Cooperative-sticky churn (#21): client uses cooperative-sticky
         // and fires JoinGroup repeatedly. KAFKA-12896. Distinct from
         // the generic rebalance loop in that it specifically flags
-        // the incremental-rebalance loop variant.
-        if protocols
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case("cooperative-sticky"))
+        // the incremental-rebalance loop variant. Only when the member
+        // prefers it: the Java default offers [range, cooperative-sticky]
+        // and the group settles on range.
+        if !second_half
+            && protocols
+                .first()
+                .is_some_and(|p| p.eq_ignore_ascii_case("cooperative-sticky"))
         {
             let count = self
                 .cooperative_sticky_joins
@@ -642,38 +657,185 @@ impl AntiPatternsFold {
                 );
             }
         }
-        self.on_join_group(frame, group_id, now);
+        // The coordinator's choice only reaches the wire in SyncGroup v5+;
+        // until then the member's first offered assignor stands in.
+        if let Some(first) = protocols.first() {
+            self.check_classic_group_protocol(frame, group_id, protocol_type, first, false);
+        }
+        if !second_half {
+            self.on_join_group(frame, group_id, now);
+        }
     }
 
-    pub(super) fn on_join_group(&mut self, frame: &ProtoFrame, group_id: &str, now: Instant) {
-        // Classic-protocol-on-modern-cluster detector — fires once if the
-        // listener has seen ConsumerGroupHeartbeat advertised.
-        if self.kip848_ports.contains(&frame.local_port) {
+    /// A member leaving with a reason (LeaveGroup v5+, KIP-800). The Java
+    /// consumer's heartbeat thread sends "consumer poll timeout has
+    /// expired." when the application spent longer than
+    /// `max.poll.interval.ms` between two `poll()` calls: the strongest
+    /// slow-consumer signal on the wire, stronger than a fetch gap.
+    pub(super) fn on_leave_group_request(
+        &mut self,
+        frame: &ProtoFrame,
+        group_id: &str,
+        reasons: &[String],
+    ) {
+        if let Some(reason) = reasons.iter().find(|r| r.contains("poll timeout")) {
             self.upsert(
-                AntiPatternKind::ClassicRebalanceOnModernCluster,
+                AntiPatternKind::SlowConsumerPollStall,
                 format!("group={group_id}"),
-                Severity::Note,
-                format!("Classic rebalance on KIP-848 cluster — group '{group_id}'"),
-                "Broker advertises ConsumerGroupHeartbeat (KIP-848) but client uses JoinGroup/SyncGroup. Stop-the-world rebalances chosen over incremental. Set group.protocol=consumer.".into(),
+                Severity::Warn,
+                format!("Poll timeout: a member left '{group_id}'"),
+                format!(
+                    "LeaveGroup reason \"{reason}\": the application spent longer than max.poll.interval.ms between two poll() calls. Its next commit fails in the client (CommitFailedException, nothing reaches the wire) and the records since the last commit are processed again after it rejoins. Bound the work per poll (max.poll.records).",
+                ),
                 frame,
             );
         }
-        // Existing rebalance-loop detector.
-        let samples = self
-            .joins_per_group
-            .entry(group_id.to_owned())
-            .or_default()
-            .push_and_count(now);
+    }
+
+    /// Classic `JoinGroup`/`SyncGroup` on a broker that offers the
+    /// group protocol replacing it. The remedy depends on the assignor,
+    /// so does the message. `chosen` is true when `assignor` comes from
+    /// SyncGroup (the coordinator's pick), false when it is the first
+    /// assignor a JoinGroup offered.
+    pub(super) fn check_classic_group_protocol(
+        &mut self,
+        frame: &ProtoFrame,
+        group_id: &str,
+        protocol_type: &str,
+        assignor: &str,
+        chosen: bool,
+    ) {
+        // Connect workers (`connect`) have no replacement protocol.
+        if protocol_type != "consumer" || !self.kip848_ports.contains(&frame.local_port) {
+            return;
+        }
+        let seen = if chosen {
+            format!("JoinGroup/SyncGroup with the '{assignor}' assignor")
+        } else {
+            format!("JoinGroup/SyncGroup, '{assignor}' assignor offered first")
+        };
+        let (title, detail) = match assignor {
+            "range" | "roundrobin" | "sticky" => (
+                format!("Classic rebalance on KIP-848 cluster — group '{group_id}'"),
+                format!("{seen}: eager, every rebalance revokes all partitions. The broker offers KIP-848: group.protocol=consumer assigns on the broker, no group-wide barrier."),
+            ),
+            "cooperative-sticky" => (
+                format!("Classic rebalance on KIP-848 cluster — group '{group_id}'"),
+                format!("{seen}: incremental, but each rebalance is still a group-wide JoinGroup/SyncGroup round. The broker offers KIP-848: group.protocol=consumer assigns on the broker."),
+            ),
+            // Kafka Streams' StreamsPartitionAssignor. KIP-848 does not
+            // apply to Streams; KIP-1071 does, when the broker offers it.
+            "stream" => {
+                if !self.kip1071_ports.contains(&frame.local_port) {
+                    return;
+                }
+                (
+                    format!("Classic Streams rebalance on KIP-1071 cluster — group '{group_id}'"),
+                    format!("Kafka Streams over {seen}. The broker offers KIP-1071: group.protocol=streams moves task assignment to the broker."),
+                )
+            }
+            _ => (
+                format!("Classic rebalance on KIP-848 cluster — group '{group_id}'"),
+                format!("{seen}, a client-side assignor. The broker offers KIP-848, but group.protocol=consumer assigns on the broker (group.remote.assignor): this assignor does not carry over."),
+            ),
+        };
+        self.upsert(
+            AntiPatternKind::ClassicRebalanceOnModernCluster,
+            format!("group={group_id}"),
+            Severity::Note,
+            title,
+            detail,
+            frame,
+        );
+    }
+
+    pub(super) fn on_join_group(&mut self, frame: &ProtoFrame, group_id: &str, now: Instant) {
+        let (samples, observed) = {
+            let w = self.joins_per_group.entry(group_id.to_owned()).or_default();
+            (w.push_and_count(now), w.observed("JoinGroup"))
+        };
         if u32::try_from(samples).unwrap_or(u32::MAX) >= self.config.rebalance_joins_in_window {
             self.upsert(
                 AntiPatternKind::RebalanceLoop,
                 format!("group={group_id}"),
                 Severity::Warn,
                 format!("Rebalance loop on '{group_id}'"),
-                format!(
-                    "{samples} JoinGroup in last {}s — heartbeat / session timeout likely misconfigured",
-                    RATE_WINDOW.as_secs()
-                ),
+                format!("{observed} — heartbeat / session timeout likely misconfigured"),
+                frame,
+            );
+        }
+    }
+
+    /// A topic as people know it: Fetch v13+ only carries the topic id,
+    /// resolved through the names seen in Metadata responses.
+    pub(super) fn topic_label(&self, topic: &str) -> String {
+        self.topic_names
+            .get(topic)
+            .cloned()
+            .unwrap_or_else(|| topic.to_owned())
+    }
+
+    /// `ListOffsets` by timestamp (-1 latest, -2 earliest) right after an
+    /// out-of-range fetch on the same connection: `auto.offset.reset` at work.
+    pub(super) fn on_list_offsets_request(
+        &mut self,
+        frame: &ProtoFrame,
+        queries: &[ListOffsetsQuery],
+    ) {
+        for q in queries {
+            if let Some(p) = self
+                .pending_resets
+                .get_mut(&(frame.connection_id, q.partition))
+            {
+                if q.timestamp == -1 || q.timestamp == -2 {
+                    p.strategy = Some(q.timestamp);
+                }
+            }
+        }
+    }
+
+    pub(super) fn on_list_offsets_response(
+        &mut self,
+        frame: &ProtoFrame,
+        answers: &[ListOffsetsAnswer],
+    ) {
+        for a in answers {
+            let key = (frame.connection_id, a.partition);
+            let Some(strategy) = self.pending_resets.get(&key).and_then(|p| p.strategy) else {
+                continue;
+            };
+            let Some(pending) = self.pending_resets.remove(&key) else {
+                continue;
+            };
+            if a.error_code != 0 {
+                continue;
+            }
+            let scope = pending.scope;
+            let (severity, title, detail) = if strategy == -1 {
+                (
+                    Severity::Warn,
+                    format!("Offset reset to latest on {scope}"),
+                    format!(
+                        "OFFSET_OUT_OF_RANGE, then auto.offset.reset=latest (the default): the consumer jumped to offset {}, the log end. Records still in the log that this group had not read are skipped. Use earliest, or none to fail and decide.",
+                        a.offset,
+                    ),
+                )
+            } else {
+                (
+                    Severity::Note,
+                    format!("Offset reset to earliest on {scope}"),
+                    format!(
+                        "OFFSET_OUT_OF_RANGE, then auto.offset.reset=earliest: the consumer restarts at offset {}, the log start. Records deleted before it were never read by this group.",
+                        a.offset,
+                    ),
+                )
+            };
+            self.upsert(
+                AntiPatternKind::OffsetOutOfRangeOnFetch,
+                scope,
+                severity,
+                title,
+                detail,
                 frame,
             );
         }
@@ -731,31 +893,44 @@ impl AntiPatternsFold {
         for e in errors {
             match e.error_code {
                 kerr::OFFSET_OUT_OF_RANGE => {
-                    // Rate-threshold to avoid flagging benign single-seek
-                    // cases (auto.offset.reset triggers one OFFSET_OUT_OF_RANGE
-                    // on a healthy consumer). The bug is repeated polling
-                    // at an out-of-range offset.
-                    let key = (e.topic.clone(), e.partition);
+                    // One is enough to matter: auto.offset.reset is about to
+                    // move the consumer, skipping or re-reading records. The
+                    // ListOffsets that follows says which way (see
+                    // on_list_offsets_*). Repeats mean the reset isn't working.
+                    let topic = self.topic_label(&e.topic);
+                    let scope = format!("{topic}:{}", e.partition);
+                    self.pending_resets.insert(
+                        (frame.connection_id, e.partition),
+                        PendingOffsetReset {
+                            scope: scope.clone(),
+                            strategy: None,
+                        },
+                    );
+                    let key = (topic.clone(), e.partition);
                     let count = self
                         .oor_per_partition
                         .entry(key)
                         .or_default()
                         .push_and_count(now);
-                    if count >= self.config.offset_out_of_range_threshold {
-                        self.upsert(
-                            AntiPatternKind::OffsetOutOfRangeOnFetch,
-                            format!("{}:{}", e.topic, e.partition),
-                            Severity::Warn,
-                            format!("Offset out of range on {}:{}", e.topic, e.partition),
-                            format!(
-                                "{count} FetchResponse partition errors OFFSET_OUT_OF_RANGE in the rolling window — consumer position past the broker's log end.",
-                            ),
-                            frame,
-                        );
-                    }
+                    let (severity, detail) = if count >= self.config.offset_out_of_range_threshold {
+                        (Severity::Warn, format!(
+                            "{count} FetchResponse partition errors OFFSET_OUT_OF_RANGE in the rolling window: the consumer keeps fetching outside the log and the reset is not taking hold.",
+                        ))
+                    } else {
+                        (Severity::Note, "FetchResponse error OFFSET_OUT_OF_RANGE: the fetch position is outside the log, below the log start after retention or past the end. The consumer now applies auto.offset.reset.".to_owned())
+                    };
+                    self.upsert(
+                        AntiPatternKind::OffsetOutOfRangeOnFetch,
+                        scope.clone(),
+                        severity,
+                        format!("Offset out of range on {scope}"),
+                        detail,
+                        frame,
+                    );
                 }
                 kerr::UNKNOWN_TOPIC_OR_PARTITION => {
-                    let key = (frame.connection_id, e.topic.clone(), e.partition);
+                    let topic = self.topic_label(&e.topic);
+                    let key = (frame.connection_id, topic.clone(), e.partition);
                     let count = self
                         .utop_per_partition
                         .entry(key)
@@ -764,9 +939,9 @@ impl AntiPatternsFold {
                     if count >= self.config.unknown_topic_poll_threshold {
                         self.upsert(
                             AntiPatternKind::UnknownTopicPollLoop,
-                            format!("{}:{}", e.topic, e.partition),
+                            format!("{topic}:{}", e.partition),
                             Severity::Warn,
-                            format!("Unknown-topic poll loop on {}:{}", e.topic, e.partition),
+                            format!("Unknown-topic poll loop on {topic}:{}", e.partition),
                             format!(
                                 "{count} FetchResponse partition errors UNKNOWN_TOPIC_OR_PARTITION on the same partition. Consumer pointed at a non-existent or pending topic.",
                             ),
@@ -868,6 +1043,9 @@ impl AntiPatternsFold {
             if *api_key == API_KEY_CONSUMER_GROUP_HEARTBEAT && *max_v >= 0 {
                 self.kip848_ports.insert(port);
             }
+            if *api_key == API_KEY_STREAMS_GROUP_HEARTBEAT && *max_v >= 0 {
+                self.kip1071_ports.insert(port);
+            }
             let mut conflict: Option<(u16, i16)> = None;
             for ((other_port, other_key), other_v) in &self.api_versions {
                 if *other_key == *api_key && *other_port != port && *other_v != *max_v {
@@ -907,14 +1085,14 @@ impl AntiPatternsFold {
             st.saw_metadata = true;
         }
         // Metadata storm rate.
-        let (samples, rate) = {
+        let (samples, rate, observed) = {
             let w = self
                 .metadata_requests
                 .entry(frame.connection_id)
                 .or_default();
             w.push(now);
             w.trim(now);
-            (w.len(), w.rate_per_sec())
+            (w.len(), w.rate_per_sec(), w.observed("MetadataRequest"))
         };
         if samples >= self.config.metadata_storm_min_samples
             && rate >= self.config.metadata_storm_rate_per_sec
@@ -925,7 +1103,7 @@ impl AntiPatternsFold {
                 Severity::Warn,
                 format!("Metadata storm (conn {})", frame.connection_id),
                 format!(
-                    "{rate:.2} MetadataRequest/s sustained ({samples} in the window) — healthy clients refresh every metadata.max.age.ms (~5min). Likely broken refresh or topic-not-found loop.",
+                    "{observed} — healthy clients refresh every metadata.max.age.ms (~5min). Likely broken refresh or topic-not-found loop.",
                 ),
                 frame,
             );

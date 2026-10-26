@@ -8,39 +8,42 @@
  * contributing frames update the same row instead of fanning out.
  */
 
-export type AntiPatternKind =
-  | "overcommit"
-  | "producerPerRecord"
-  | "tinyBatches"
-  | "rebalanceLoop"
-  | "staleLeaderProducing"
-  | "mixedApiVersion"
-  | "saslSessionTooShort"
-  | "acks0"
-  | "compressionOff"
-  | "nonIdempotentProducer"
-  | "producerInstanceLeak"
-  | "transactionalZombie"
-  | "autoCommitCadence"
-  | "tightFetchPolling"
-  | "fetchSessionErrorCascade"
-  | "throttlePressure"
-  | "metadataStorm"
-  | "classicRebalanceOnModernCluster"
-  | "messageTooLargeRejected"
-  | "offsetOutOfRangeOnFetch"
-  | "cooperativeStickyChurn"
-  | "commitDuringRebalance"
-  | "aclDeny"
-  | "unknownTopicPollLoop"
-  | "coordinatorChurn"
-  | "slowConsumerPollStall"
-  | "hungRequests"
-  | "inFlightSaturation"
-  | "excessiveIdempotentInFlight"
-  | "readUncommittedTransactional"
-  | "partitionSkew"
-  | "retryStorm";
+export const ANTI_PATTERN_KINDS = [
+  "overcommit",
+  "producerPerRecord",
+  "tinyBatches",
+  "rebalanceLoop",
+  "staleLeaderProducing",
+  "mixedApiVersion",
+  "saslSessionTooShort",
+  "acks0",
+  "compressionOff",
+  "nonIdempotentProducer",
+  "producerInstanceLeak",
+  "transactionalZombie",
+  "autoCommitCadence",
+  "tightFetchPolling",
+  "fetchSessionErrorCascade",
+  "throttlePressure",
+  "metadataStorm",
+  "classicRebalanceOnModernCluster",
+  "messageTooLargeRejected",
+  "offsetOutOfRangeOnFetch",
+  "cooperativeStickyChurn",
+  "commitDuringRebalance",
+  "aclDeny",
+  "unknownTopicPollLoop",
+  "coordinatorChurn",
+  "slowConsumerPollStall",
+  "hungRequests",
+  "inFlightSaturation",
+  "excessiveIdempotentInFlight",
+  "readUncommittedTransactional",
+  "partitionSkew",
+  "retryStorm",
+] as const;
+
+export type AntiPatternKind = (typeof ANTI_PATTERN_KINDS)[number];
 
 export type Severity = "warn" | "note";
 
@@ -54,6 +57,8 @@ export interface Detection {
   lastSeen: string;
   occurrences: number;
   frameId: string | null;
+  /** Distinct `client.id`s of the connections behind the detection, at most eight. */
+  clientIds: string[];
 }
 
 export interface AntiPatternsSnapshot {

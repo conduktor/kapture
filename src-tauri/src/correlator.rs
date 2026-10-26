@@ -78,6 +78,9 @@ pub struct ProtoFrameSummary {
     /// Lets the frontend aggregate send/recv counters per broker.
     pub local_port: u16,
     pub corr_id: i32,
+    /// `client.id` from the request header; requests only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     pub size: usize,
     pub captured: usize,
     pub rtt_ms: f64,
@@ -128,6 +131,7 @@ impl From<&ProtoFrame> for ProtoFrameSummary {
             connection_id: f.connection_id,
             local_port: f.local_port,
             corr_id: f.corr_id,
+            client_id: f.client_id.clone(),
             size: f.size,
             captured: f.captured,
             rtt_ms: f.rtt_ms,
@@ -159,6 +163,10 @@ pub struct ProtoFrame {
     /// frames retain their broker attribution in the ring buffer.
     pub local_port: u16,
     pub corr_id: i32,
+    /// `client.id` from the request header. Requests only: responses
+    /// don't carry it on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
     /// True wire size (request size on Send, response size on Recv).
     pub size: usize,
     /// Bytes captured for inspection — this is `≤ size` because the
@@ -467,16 +475,22 @@ impl ProtoCorrelator {
             // The compact summary drives incremental folds and must be
             // available now. Full JSON and hex are intentionally left
             // lazy until a detail/batch inspection asks for them.
+            let api_version = i16::try_from(event.api_version).unwrap_or(0);
             let summary = if raw_payload.is_empty() {
                 None
             } else {
-                let api_version = i16::try_from(event.api_version).unwrap_or(0);
                 proto_summary::extract_summary(
                     event.api_key,
                     api_version,
                     event.direction,
                     &raw_payload,
                 )
+            };
+            let client_id = match event.direction {
+                ProtoDirection::Send => {
+                    proto_summary::request_client_id(event.api_key, api_version, &raw_payload)
+                }
+                ProtoDirection::Recv => None,
             };
             let frame = ProtoFrame {
                 id: Uuid::new_v4().simple().to_string(),
@@ -488,6 +502,7 @@ impl ProtoCorrelator {
                 connection_id: event.connection_id,
                 local_port: event.local_port,
                 corr_id: event.corr_id,
+                client_id,
                 size: event.payload_size,
                 captured,
                 rtt_ms: event.rtt_ms,
@@ -765,6 +780,30 @@ mod tests {
         assert_eq!(map.len(), 2);
         let latest = c.lookup("any", 0).unwrap();
         assert_eq!(latest.connection_id, 1);
+    }
+
+    #[test]
+    fn request_frames_carry_client_id_responses_do_not() {
+        let c = ProtoCorrelator::new();
+        let mut req = ev(ProtoDirection::Send, 18, 3, 0.0);
+        req.api_version = 3;
+        req.payload = [
+            0i32.to_be_bytes().as_slice(),
+            &18i16.to_be_bytes(),
+            &3i16.to_be_bytes(),
+            &42i32.to_be_bytes(),
+            &6i16.to_be_bytes(),
+            b"orders",
+            &[0],
+        ]
+        .concat();
+        c.record_event(&req);
+        let mut resp = ev(ProtoDirection::Recv, 18, 3, 1.0);
+        resp.api_version = 3;
+        c.record_event(&resp);
+        let frames = c.summaries(2);
+        assert_eq!(frames[0].client_id.as_deref(), Some("orders"));
+        assert_eq!(frames[1].client_id, None);
     }
 
     #[test]

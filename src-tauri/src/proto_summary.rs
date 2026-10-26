@@ -78,6 +78,9 @@ pub enum FrameSummary {
         /// `throttle_time_ms > 0` indicates the broker delayed this
         /// response due to a request-time quota.
         throttle_time_ms: i32,
+        /// `(topic_id, topic name)` for topics with an id (Metadata v10+).
+        /// Fetch v13+ names topics by id only; this resolves them.
+        topic_ids: Vec<(String, String)>,
     },
     /// Topic names + record-batch shape a client wrote to. Record
     /// values stay opaque — we only crack the `RecordBatch` v2 header
@@ -202,6 +205,9 @@ pub enum FrameSummary {
     JoinGroupRequest {
         group_id: String,
         member_id: String,
+        /// `consumer` for consumers and Kafka Streams, `connect` for
+        /// Connect workers. KIP-848 only replaces the `consumer` kind.
+        protocol_type: String,
         /// Assignor protocol names advertised by the member (e.g.
         /// `["cooperative-sticky"]`, `["range", "roundrobin"]`). Feeds
         /// the cooperative-sticky-churn detector (KAFKA-12896).
@@ -217,6 +223,11 @@ pub enum FrameSummary {
         group_id: String,
         member_id: String,
         generation_id: i32,
+        /// v5+ only; `None` on older versions.
+        protocol_type: Option<String>,
+        /// Assignor the coordinator selected for this generation. v5+
+        /// only; `None` on older versions.
+        protocol_name: Option<String>,
     },
     SyncGroupResponse {
         error_code: i16,
@@ -233,6 +244,17 @@ pub enum FrameSummary {
     },
     LeaveGroupRequest {
         group_id: String,
+        /// Reason each member gives for leaving (v5+, KIP-800), e.g.
+        /// "consumer poll timeout has expired.". Empty before v5.
+        reasons: Vec<String>,
+    },
+    /// Offset lookups by timestamp: `-1` latest, `-2` earliest. A consumer
+    /// sends one when `auto.offset.reset` applies.
+    ListOffsetsRequest {
+        partitions: Vec<ListOffsetsQuery>,
+    },
+    ListOffsetsResponse {
+        partitions: Vec<ListOffsetsAnswer>,
     },
     LeaveGroupResponse {
         error_code: i16,
@@ -303,6 +325,23 @@ pub struct PartitionBytes {
 /// that omit it (legacy versions).
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct ListOffsetsQuery {
+    pub topic: String,
+    pub partition: i32,
+    pub timestamp: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListOffsetsAnswer {
+    pub topic: String,
+    pub partition: i32,
+    pub error_code: i16,
+    pub offset: i64,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct TopicPartitionError {
     pub topic: String,
     pub partition: i32,
@@ -354,6 +393,26 @@ pub fn extract_summary(
             extract_response(api, api_version, &mut buf)
         }
     }
+}
+
+/// `client.id` from a request's header, without decoding the body.
+///
+/// Wire layout is `size_prefix : i32 || api_key : i16 || api_version :
+/// i16 || corr_id : i32 || client_id : nullable STRING || …`. Request
+/// header v1 and v2 both have the field, and it stays a classic
+/// `int16`-length string even in flexible v2. Header v0 (only the
+/// inter-broker `ControlledShutdown` v0) has none. `None` for a null or
+/// empty id, or an API key the decoder doesn't know.
+#[must_use]
+pub fn request_client_id(api_key: i32, api_version: i16, payload: &[u8]) -> Option<String> {
+    let api = ApiKey::try_from(i16::try_from(api_key).ok()?).ok()?;
+    if api.request_header_version(api_version) < 1 {
+        return None;
+    }
+    let len = i16::from_be_bytes(payload.get(12..14)?.try_into().ok()?);
+    let len = usize::try_from(len).ok()?;
+    let id = std::str::from_utf8(payload.get(14..14 + len)?).ok()?;
+    (!id.is_empty()).then(|| id.to_owned())
 }
 
 /// `ProduceRequest` summary extraction — split out of
@@ -534,6 +593,7 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
             Some(FrameSummary::JoinGroupRequest {
                 group_id: req.group_id.0.to_string(),
                 member_id: req.member_id.to_string(),
+                protocol_type: req.protocol_type.to_string(),
                 protocols,
             })
         }
@@ -543,6 +603,8 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
                 group_id: req.group_id.0.to_string(),
                 member_id: req.member_id.to_string(),
                 generation_id: req.generation_id,
+                protocol_type: req.protocol_type.map(|s| s.to_string()),
+                protocol_name: req.protocol_name.map(|s| s.to_string()),
             })
         }
         ApiKey::Heartbeat => {
@@ -557,6 +619,28 @@ fn extract_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameSu
             let req = LeaveGroupRequest::decode(buf, version).ok()?;
             Some(FrameSummary::LeaveGroupRequest {
                 group_id: req.group_id.0.to_string(),
+                reasons: req
+                    .members
+                    .iter()
+                    .filter_map(|m| m.reason.as_ref().map(ToString::to_string))
+                    .filter(|r| !r.is_empty())
+                    .collect(),
+            })
+        }
+        ApiKey::ListOffsets => {
+            let req = ListOffsetsRequest::decode(buf, version).ok()?;
+            Some(FrameSummary::ListOffsetsRequest {
+                partitions: req
+                    .topics
+                    .iter()
+                    .flat_map(|t| {
+                        t.partitions.iter().map(|p| ListOffsetsQuery {
+                            topic: t.name.0.to_string(),
+                            partition: p.partition_index,
+                            timestamp: p.timestamp,
+                        })
+                    })
+                    .collect(),
             })
         }
         ApiKey::OffsetCommit => {
@@ -594,6 +678,7 @@ fn extract_metadata_response(buf: &mut Bytes, version: i16) -> Option<FrameSumma
         .collect();
     let mut topic_names: Vec<String> = Vec::with_capacity(resp.topics.len());
     let mut leaders: Vec<TopicLeaders> = Vec::with_capacity(resp.topics.len());
+    let mut topic_ids: Vec<(String, String)> = Vec::new();
     for t in resp.topics {
         let Some(name) = t.name.map(|n| n.0.to_string()) else {
             continue;
@@ -602,6 +687,9 @@ fn extract_metadata_response(buf: &mut Bytes, version: i16) -> Option<FrameSumma
             continue;
         }
         topic_names.push(name.clone());
+        if !t.topic_id.is_nil() {
+            topic_ids.push((t.topic_id.to_string(), name.clone()));
+        }
         let partitions: Vec<(i32, i32)> = t
             .partitions
             .iter()
@@ -620,6 +708,7 @@ fn extract_metadata_response(buf: &mut Bytes, version: i16) -> Option<FrameSumma
         leaders,
         brokers_map,
         throttle_time_ms: resp.throttle_time_ms,
+        topic_ids,
     })
 }
 
@@ -678,7 +767,13 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
                 .sum();
             let mut errors: Vec<TopicPartitionError> = Vec::new();
             for t in &resp.responses {
-                let topic = t.topic.0.to_string();
+                // Fetch v13+ carries only the topic id; the fold maps it
+                // back to a name learned from Metadata.
+                let topic = if t.topic.0.is_empty() && !t.topic_id.is_nil() {
+                    t.topic_id.to_string()
+                } else {
+                    t.topic.0.to_string()
+                };
                 for p in &t.partitions {
                     if p.error_code != 0 {
                         errors.push(TopicPartitionError {
@@ -761,6 +856,23 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
             Some(FrameSummary::HeartbeatResponse {
                 error_code: resp.error_code,
                 throttle_time_ms: resp.throttle_time_ms,
+            })
+        }
+        ApiKey::ListOffsets => {
+            let resp = ListOffsetsResponse::decode(buf, version).ok()?;
+            Some(FrameSummary::ListOffsetsResponse {
+                partitions: resp
+                    .topics
+                    .iter()
+                    .flat_map(|t| {
+                        t.partitions.iter().map(|p| ListOffsetsAnswer {
+                            topic: t.name.0.to_string(),
+                            partition: p.partition_index,
+                            error_code: p.error_code,
+                            offset: p.offset,
+                        })
+                    })
+                    .collect(),
             })
         }
         ApiKey::LeaveGroup => {
@@ -885,4 +997,50 @@ fn first_batch_meta(bytes: &[u8]) -> (u32, Option<u8>, Option<i64>) {
         cursor = cursor.saturating_add(advance);
     }
     (total, first_attr, first_pid)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::request_client_id;
+
+    fn request(api_key: i16, version: i16, client_id: Option<&str>) -> Vec<u8> {
+        let mut b = vec![0, 0, 0, 0];
+        b.extend(api_key.to_be_bytes());
+        b.extend(version.to_be_bytes());
+        b.extend(7i32.to_be_bytes());
+        match client_id {
+            Some(id) => {
+                b.extend(i16::try_from(id.len()).unwrap().to_be_bytes());
+                b.extend(id.as_bytes());
+            }
+            None => b.extend((-1i16).to_be_bytes()),
+        }
+        b.push(0);
+        b
+    }
+
+    #[test]
+    fn reads_client_id_from_classic_and_flexible_headers() {
+        // Produce v8: request header v1. ApiVersions v3: flexible header v2.
+        assert_eq!(
+            request_client_id(0, 8, &request(0, 8, Some("orders-svc"))).as_deref(),
+            Some("orders-svc")
+        );
+        assert_eq!(
+            request_client_id(18, 3, &request(18, 3, Some("orders-svc"))).as_deref(),
+            Some("orders-svc")
+        );
+    }
+
+    #[test]
+    fn null_empty_truncated_and_header_v0_yield_none() {
+        assert_eq!(request_client_id(0, 8, &request(0, 8, None)), None);
+        assert_eq!(request_client_id(0, 8, &request(0, 8, Some(""))), None);
+        let mut cut = request(0, 8, Some("orders-svc"));
+        cut.truncate(18);
+        assert_eq!(request_client_id(0, 8, &cut), None);
+        // ControlledShutdown (inter-broker) is unknown to the decoder.
+        assert_eq!(request_client_id(7, 0, &request(7, 0, Some("x"))), None);
+    }
 }

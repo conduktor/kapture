@@ -60,6 +60,7 @@ export function ProtoDetail({ frame, onAddDecodedFilter }: Props): JSX.Element {
           <Field name="api_version" value={`v${String(frame.apiVersion)}`} />
           <Field name="connection_id" value={String(frame.connectionId)} />
           <Field name="corr_id" value={String(frame.corrId)} />
+          {frame.clientId !== undefined ? <Field name="client_id" value={frame.clientId} /> : null}
           <Field name="size" value={formatBytes(frame.size)} />
           {frame.captured < frame.size ? (
             <Field
@@ -131,6 +132,9 @@ function buildFrameClipboard(frame: ProtoFrameDetail): string {
   lines.push(`api_version: v${String(frame.apiVersion)}`);
   lines.push(`connection_id: ${String(frame.connectionId)}`);
   lines.push(`corr_id: ${String(frame.corrId)}`);
+  if (frame.clientId !== undefined) {
+    lines.push(`client_id: ${frame.clientId}`);
+  }
   lines.push(`size: ${formatBytes(frame.size)}`);
   if (frame.captured < frame.size) {
     lines.push(

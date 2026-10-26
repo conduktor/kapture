@@ -385,6 +385,7 @@ mod tests {
             connection_id: 0,
             local_port: 0,
             corr_id: 0,
+            client_id: None,
             size: 0,
             captured: 0,
             rtt_ms: 0.0,

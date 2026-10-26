@@ -127,7 +127,8 @@
   color: var(--text-faint);
   flex-wrap: wrap;
 }
-.expert__scope {
+.expert__scope,
+.expert__clients {
   font-family: var(--mono);
 }
 .expert__jump {

@@ -262,6 +262,8 @@ impl SessionFold {
             | FrameSummary::EndTxnRequest { .. }
             | FrameSummary::FetchResponse { .. }
             | FrameSummary::MetadataRequest { .. }
+            | FrameSummary::ListOffsetsRequest { .. }
+            | FrameSummary::ListOffsetsResponse { .. }
             | FrameSummary::SaslAuthenticateResponse { .. } => {}
             FrameSummary::FetchRequest { topics, .. } => {
                 for name in topics {
@@ -286,6 +288,7 @@ impl SessionFold {
                 group_id,
                 member_id,
                 generation_id,
+                ..
             } => {
                 let g = self.groups.entry(group_id.clone()).or_default();
                 if !member_id.is_empty() {
@@ -311,7 +314,7 @@ impl SessionFold {
             FrameSummary::HeartbeatResponse { error_code, .. } => {
                 self.push_error_if_nonzero(*error_code, frame, None);
             }
-            FrameSummary::LeaveGroupRequest { group_id } => {
+            FrameSummary::LeaveGroupRequest { group_id, .. } => {
                 self.groups.entry(group_id.clone()).or_default();
             }
             FrameSummary::LeaveGroupResponse { error_code, .. } => {
