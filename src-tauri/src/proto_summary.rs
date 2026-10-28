@@ -141,6 +141,12 @@ pub enum FrameSummary {
         /// transactional-zombie detector to track txn lifecycle.
         transactional_id: Option<String>,
     },
+    /// A failed `InitProducerId` is retried, not a new producer. On
+    /// `CLUSTER_AUTHORIZATION_FAILED` the idempotent Java producer asks
+    /// again on every sender loop, with no backoff.
+    InitProducerIdResponse {
+        error_code: i16,
+    },
     /// Begin a transactional segment by registering partitions with the
     /// coordinator. Detector uses presence + transactional_id to
     /// distinguish in-flight vs abandoned txns.
@@ -805,6 +811,12 @@ fn extract_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<FrameS
             })
         }
         ApiKey::Produce => extract_produce_response(buf, version),
+        ApiKey::InitProducerId => {
+            let resp = InitProducerIdResponse::decode(buf, version).ok()?;
+            Some(FrameSummary::InitProducerIdResponse {
+                error_code: resp.error_code,
+            })
+        }
         ApiKey::SaslAuthenticate => {
             let resp = SaslAuthenticateResponse::decode(buf, version).ok()?;
             let error_message = resp

@@ -151,6 +151,9 @@ pub(super) const MAX_DETECTION_CLIENT_IDS: usize = 8;
 #[derive(Debug, Default)]
 pub(super) struct ConnectionCounters {
     pub init_producer_id: u32,
+    /// `InitProducerId` answered with an error: the next request is the
+    /// same producer asking again, not a new one.
+    pub init_producer_id_failed: u32,
     pub produce_requests: u32,
 }
 
@@ -310,6 +313,11 @@ impl RollingWindow {
     }
     pub fn len(&self) -> usize {
         self.instants.len()
+    }
+    /// `push_and_count`, then the `observed` text for the window.
+    pub fn observe(&mut self, now: Instant, what: &str) -> String {
+        self.push_and_count(now);
+        self.observed(what)
     }
 }
 

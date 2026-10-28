@@ -422,21 +422,39 @@ impl AntiPatternsFold {
             .is_some_and(|st| st.transactional_id.is_some() && !st.ended)
     }
 
+    /// A failed `InitProducerId` is counted out of the producer-per-record
+    /// ratio (the next request is a retry), and an authorization failure
+    /// feeds the ACL-deny window.
+    pub(super) fn on_init_producer_id_response(
+        &mut self,
+        frame: &ProtoFrame,
+        error_code: i16,
+        now: Instant,
+    ) {
+        if error_code == 0 {
+            return;
+        }
+        let c = self.per_connection.entry(frame.connection_id).or_default();
+        c.init_producer_id_failed = c.init_producer_id_failed.saturating_add(1);
+        self.on_auth_error_response(frame, "InitProducerId", error_code, now);
+    }
+
     pub(super) fn check_producer_per_record(&mut self, frame: &ProtoFrame) {
         let Some(c) = self.per_connection.get(&frame.connection_id) else {
             return;
         };
-        if c.init_producer_id < self.config.producer_per_record_min_inits {
+        let inits = c.init_producer_id.saturating_sub(c.init_producer_id_failed);
+        if inits < self.config.producer_per_record_min_inits {
             return;
         }
-        let total = c.init_producer_id.saturating_add(c.produce_requests).max(1);
-        let ratio = f64::from(c.init_producer_id) / f64::from(total);
+        let total = inits.saturating_add(c.produce_requests).max(1);
+        let ratio = f64::from(inits) / f64::from(total);
         if ratio < self.config.producer_per_record_init_ratio {
             return;
         }
         let detail = format!(
             "{} InitProducerId vs {} Produce (ratio {:.0}%) — a fresh producer per record",
-            c.init_producer_id,
+            inits,
             c.produce_requests,
             ratio * 100.0
         );
@@ -1137,12 +1155,19 @@ impl AntiPatternsFold {
         };
         if error_code != 0 {
             let msg = error_message.unwrap_or("(no message)");
+            let observed = self
+                .sasl_failures
+                .entry(frame.local_port)
+                .or_default()
+                .observe(Instant::now(), "failed SASL authentications");
             self.upsert(
-                AntiPatternKind::SaslSessionTooShort,
-                format!("conn={}", frame.connection_id),
+                AntiPatternKind::SaslAuthFailed,
+                format!("port={}", frame.local_port),
                 Severity::Warn,
-                format!("SASL auth failed (conn {})", frame.connection_id),
-                format!("error_code={error_code} message='{msg}'"),
+                format!("SASL authentication failing (port {})", frame.local_port),
+                format!(
+                    "{observed}, latest error_code={error_code} message='{msg}'. A client whose credentials stopped working reconnects on its own, about once a second (reconnect.backoff.max.ms), and never recovers: fix the secret, or close the client on AuthenticationException.",
+                ),
                 frame,
             );
         } else if count >= 2
@@ -1241,21 +1266,30 @@ impl AntiPatternsFold {
     }
 
     fn fire_acl_deny(&mut self, frame: &ProtoFrame, api_name: &str, error_code: i16, now: Instant) {
-        let count = self
-            .acl_deny_window
-            .entry(frame.connection_id)
-            .or_default()
-            .push_and_count(now);
+        let (count, observed) = {
+            let w = self.acl_deny_window.entry(frame.connection_id).or_default();
+            let count = w.push_and_count(now);
+            (count, w.observed("denials"))
+        };
         if count >= self.config.acl_deny_threshold {
             let name = kerr::name(error_code);
+            let detail = if api_name == "InitProducerId"
+                && error_code == kerr::CLUSTER_AUTHORIZATION_FAILED
+            {
+                format!(
+                    "{observed} on this connection, all {name} on InitProducerId. The idempotent producer has no producer ID and asks again on every sender loop, with no backoff, until it is closed. Grant WRITE on the topic (it implies IdempotentWrite), or close the producer on AuthorizationException.",
+                )
+            } else {
+                format!(
+                    "{count} {name} errors on this connection (latest from {api_name}). Principal lacks the required ACL — fix grants or stop retrying blindly.",
+                )
+            };
             self.upsert(
                 AntiPatternKind::AclDeny,
                 format!("conn={}", frame.connection_id),
                 Severity::Warn,
                 format!("ACL deny (conn {})", frame.connection_id),
-                format!(
-                    "{count} {name} errors on this connection (latest from {api_name}). Principal lacks the required ACL — fix grants or stop retrying blindly.",
-                ),
+                detail,
                 frame,
             );
         }

@@ -258,6 +258,7 @@ impl SessionFold {
             FrameSummary::ApiVersionsResponse { .. }
             | FrameSummary::ProduceResponse { .. }
             | FrameSummary::InitProducerIdRequest { .. }
+            | FrameSummary::InitProducerIdResponse { .. }
             | FrameSummary::AddPartitionsToTxnRequest { .. }
             | FrameSummary::EndTxnRequest { .. }
             | FrameSummary::FetchResponse { .. }

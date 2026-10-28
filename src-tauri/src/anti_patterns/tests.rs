@@ -280,6 +280,41 @@ fn sasl_session_too_short_on_reauth() {
         .any(|d| d.kind == AntiPatternKind::SaslSessionTooShort));
 }
 
+#[test]
+fn sasl_failures_on_new_connections_are_one_detection_per_listener() {
+    // A client with a rotated password: every attempt is a new
+    // connection that ends in SASL_AUTHENTICATION_FAILED.
+    let mut fold = AntiPatternsFold::default();
+    for conn in 1..=25 {
+        fold.absorb(
+            &frame(&format!("sa{conn}"), "t", conn, 9092),
+            Some(&FrameSummary::SaslAuthenticateResponse {
+                error_code: 58,
+                error_message: Some(
+                    "Authentication failed during authentication due to invalid credentials".into(),
+                ),
+                session_lifetime_ms: 0,
+            }),
+        );
+    }
+    let dets = fold.snapshot().detections;
+    let sasl: Vec<_> = dets
+        .iter()
+        .filter(|d| d.kind == AntiPatternKind::SaslAuthFailed)
+        .collect();
+    assert_eq!(sasl.len(), 1, "{dets:?}");
+    assert_eq!(sasl[0].scope, "port=9092");
+    assert_eq!(sasl[0].occurrences, 25);
+    assert!(
+        sasl[0].detail.contains("25 failed SASL authentications"),
+        "{}",
+        sasl[0].detail
+    );
+    assert!(!dets
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::SaslSessionTooShort));
+}
+
 // ---------- New detectors ----------
 
 #[test]
@@ -854,6 +889,40 @@ fn acl_deny_fires_after_threshold() {
         .detections
         .iter()
         .any(|d| d.kind == AntiPatternKind::AclDeny && d.scope == "conn=7"));
+}
+
+#[test]
+fn init_producer_id_authorization_loop_is_an_acl_deny_not_a_producer_per_record() {
+    // One idempotent producer with no WRITE anywhere: InitProducerId comes
+    // back CLUSTER_AUTHORIZATION_FAILED and is asked again, on the same
+    // connection, with no Produce in between.
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..50 {
+        fold.absorb(
+            &frame(&format!("ipr{i}"), "t", 9, 9092),
+            Some(&FrameSummary::InitProducerIdRequest {
+                transactional: false,
+                transactional_id: None,
+            }),
+        );
+        fold.absorb(
+            &frame(&format!("ips{i}"), "t", 9, 9092),
+            Some(&FrameSummary::InitProducerIdResponse { error_code: 31 }),
+        );
+    }
+    let dets = fold.snapshot().detections;
+    assert!(
+        !dets
+            .iter()
+            .any(|d| d.kind == AntiPatternKind::ProducerPerRecord),
+        "retries of a failed InitProducerId are one producer: {dets:?}",
+    );
+    let acl = dets
+        .iter()
+        .find(|d| d.kind == AntiPatternKind::AclDeny && d.scope == "conn=9")
+        .expect("the CLUSTER_AUTHORIZATION_FAILED loop should raise an ACL deny");
+    assert!(acl.detail.contains("50 denials"), "{}", acl.detail);
+    assert!(acl.detail.contains("IdempotentWrite"), "{}", acl.detail);
 }
 
 #[test]

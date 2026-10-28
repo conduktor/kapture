@@ -38,6 +38,10 @@ pub struct AntiPatternsFold {
     pub(super) api_versions: HashMap<(u16, i16), i16>,
     /// Per-connection SASL re-auth state.
     pub(super) sasl_state: HashMap<i32, SaslState>,
+    /// Per-`local_port` failed SASL authentications. A failing client
+    /// opens a new connection per attempt, so a per-connection count
+    /// never grows past one.
+    pub(super) sasl_failures: HashMap<u16, RollingWindow>,
     /// Per-connection Produce codec + idempotence stats.
     pub(super) produce_codec: HashMap<i32, ProduceCodecStats>,
     /// Per-`local_port` rolling-window of leak-handshake completions.
@@ -201,6 +205,9 @@ impl AntiPatternsFold {
                 if transactional_id.is_some() {
                     self.mark_transactional_traffic(frame);
                 }
+            }
+            FrameSummary::InitProducerIdResponse { error_code } => {
+                self.on_init_producer_id_response(frame, *error_code, now);
             }
             FrameSummary::AddPartitionsToTxnRequest { transactional_id } => {
                 self.on_add_partitions_to_txn(frame, transactional_id);
@@ -551,6 +558,7 @@ impl AntiPatternsFold {
         self.produce_shape.clear();
         self.api_versions.clear();
         self.sasl_state.clear();
+        self.sasl_failures.clear();
         self.produce_codec.clear();
         self.leak_handshakes.clear();
         self.in_flight_handshakes.clear();

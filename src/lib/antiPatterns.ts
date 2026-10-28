@@ -41,6 +41,7 @@ export const ANTI_PATTERN_KINDS = [
   "readUncommittedTransactional",
   "partitionSkew",
   "retryStorm",
+  "saslAuthFailed",
 ] as const;
 
 export type AntiPatternKind = (typeof ANTI_PATTERN_KINDS)[number];
@@ -136,5 +137,7 @@ export function kindLabel(kind: AntiPatternKind): string {
       return "Partition traffic skew";
     case "retryStorm":
       return "Retriable-error storm";
+    case "saslAuthFailed":
+      return "SASL authentication failing";
   }
 }

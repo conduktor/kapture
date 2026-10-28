@@ -153,6 +153,11 @@ pub enum AntiPatternKind {
     ReadUncommittedTransactional,
     PartitionSkew,
     RetryStorm,
+    /// `SaslAuthenticateResponse` with an error, counted per listener: a
+    /// client whose credentials stopped working (rotated password,
+    /// expired token) reconnects on its own, one new connection and one
+    /// failed exchange per attempt, until it is closed.
+    SaslAuthFailed,
 }
 
 impl AntiPatternKind {
@@ -191,6 +196,7 @@ impl AntiPatternKind {
             Self::ReadUncommittedTransactional => "read_uncommitted on transactional traffic",
             Self::PartitionSkew => "Partition traffic skew",
             Self::RetryStorm => "Retriable-error storm",
+            Self::SaslAuthFailed => "SASL authentication failing",
         }
     }
 }

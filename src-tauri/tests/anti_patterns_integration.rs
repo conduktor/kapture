@@ -423,8 +423,8 @@ async fn sasl_failure_detected_through_proxy() {
     assert!(
         wait_for_kind(
             &proxy,
-            |d| matches!(d.kind, AntiPatternKind::SaslSessionTooShort),
-            "SaslSessionTooShort",
+            |d| matches!(d.kind, AntiPatternKind::SaslAuthFailed),
+            "SaslAuthFailed",
         )
         .await
     );
