@@ -15,6 +15,18 @@ log if you want every commit.
   consumer; a single `OFFSET_OUT_OF_RANGE` is noted, and the reset that
   follows is flagged when `auto.offset.reset=latest` jumps to the log end.
   Fetch v13+ topic ids resolve to topic names.
+- **Expert names auth loops.** A producer with no ACL loops on
+  `InitProducerId` (`CLUSTER_AUTHORIZATION_FAILED`, no backoff, thousands
+  of requests a second): it is now an ACL deny with the cause and the fix,
+  no longer "producer per record". A client whose credentials stopped
+  working reconnects about once a second; its failures now add up in one
+  "SASL authentication failing" finding per listener instead of one row
+  per connection. Both errors show in the Session tab.
+- **SASL server messages are redacted.** `SaslAuthenticate` responses no
+  longer keep their `auth_bytes` in the inspector, exports or MCP: for
+  SCRAM, the salt and the server signature were enough for an offline
+  dictionary attack on the password. The error code, message and session
+  lifetime stay visible.
 
 ## [0.3.0] — 2026-06-30 — JVM tap mode, anti-pattern detectors, tunable thresholds
 

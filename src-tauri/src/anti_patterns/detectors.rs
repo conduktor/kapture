@@ -1155,11 +1155,12 @@ impl AntiPatternsFold {
         };
         if error_code != 0 {
             let msg = error_message.unwrap_or("(no message)");
-            let observed = self
-                .sasl_failures
-                .entry(frame.local_port)
-                .or_default()
-                .observe(Instant::now(), "failed SASL authentications");
+            let w = self.sasl_failures.entry(frame.local_port).or_default();
+            let observed = if w.push_and_count(Instant::now()) == 1 {
+                "1 failed SASL authentication".to_owned()
+            } else {
+                w.observed("failed SASL authentications")
+            };
             self.upsert(
                 AntiPatternKind::SaslAuthFailed,
                 format!("port={}", frame.local_port),

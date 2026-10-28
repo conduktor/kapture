@@ -258,14 +258,19 @@ impl SessionFold {
             FrameSummary::ApiVersionsResponse { .. }
             | FrameSummary::ProduceResponse { .. }
             | FrameSummary::InitProducerIdRequest { .. }
-            | FrameSummary::InitProducerIdResponse { .. }
             | FrameSummary::AddPartitionsToTxnRequest { .. }
             | FrameSummary::EndTxnRequest { .. }
             | FrameSummary::FetchResponse { .. }
             | FrameSummary::MetadataRequest { .. }
             | FrameSummary::ListOffsetsRequest { .. }
-            | FrameSummary::ListOffsetsResponse { .. }
-            | FrameSummary::SaslAuthenticateResponse { .. } => {}
+            | FrameSummary::ListOffsetsResponse { .. } => {}
+            // Top-level error codes a client retries on its own: an ACL or
+            // a credential that stopped working shows up here as a stream
+            // of failures.
+            FrameSummary::InitProducerIdResponse { error_code }
+            | FrameSummary::SaslAuthenticateResponse { error_code, .. } => {
+                self.push_error_if_nonzero(*error_code, frame, None);
+            }
             FrameSummary::FetchRequest { topics, .. } => {
                 for name in topics {
                     self.topics.entry(name.clone()).or_default().consumed = true;
@@ -444,5 +449,71 @@ impl SessionFold {
         self.groups.clear();
         self.errors.clear();
         self.latencies.clear();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::proto_event::ProtoDirection;
+
+    fn response(api_name: &str) -> ProtoFrame {
+        ProtoFrame {
+            id: "f1".into(),
+            timestamp: "2026-10-28T03:11:06Z".into(),
+            direction: ProtoDirection::Recv,
+            api_key: 22,
+            api_name: api_name.into(),
+            api_version: 5,
+            connection_id: 1,
+            local_port: 9092,
+            corr_id: 1,
+            client_id: None,
+            size: 0,
+            captured: 0,
+            rtt_ms: 0.0,
+            capture_lag_ms: 0.0,
+            analysis_lag_ms: 0.0,
+            frame_error: None,
+            payload_hex: String::new(),
+            raw_payload: Vec::new(),
+            decoded_json: None,
+            summary: None,
+        }
+    }
+
+    #[test]
+    fn init_producer_id_and_sasl_failures_are_session_errors() {
+        let mut fold = SessionFold::default();
+        fold.absorb(
+            &response("InitProducerIdResponse"),
+            Some(&FrameSummary::InitProducerIdResponse { error_code: 31 }),
+        );
+        fold.absorb(
+            &response("InitProducerIdResponse"),
+            Some(&FrameSummary::InitProducerIdResponse { error_code: 0 }),
+        );
+        fold.absorb(
+            &response("SaslAuthenticateResponse"),
+            Some(&FrameSummary::SaslAuthenticateResponse {
+                error_code: 58,
+                error_message: None,
+                session_lifetime_ms: 0,
+            }),
+        );
+        let codes: Vec<_> = fold
+            .snapshot()
+            .errors
+            .iter()
+            .map(|e| (e.api_name.clone(), e.error_code))
+            .collect();
+        assert_eq!(
+            codes,
+            vec![
+                ("InitProducerIdResponse".to_owned(), 31),
+                ("SaslAuthenticateResponse".to_owned(), 58)
+            ]
+        );
     }
 }
