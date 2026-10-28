@@ -6,6 +6,8 @@ log if you want every commit.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-27 — Findings name their clients, auth loops, SASL redaction
+
 - **Findings name their clients.** Kapture reads `client.id` from every
   request header: the Protocol detail shows it, and each Expert finding
   lists the `client.id`s of the connections behind it, so a `conn=12` or
