@@ -219,6 +219,69 @@ fn build_proto_event_for_response_resolves_from_map() {
 }
 
 #[test]
+fn build_proto_event_redacts_sasl_authenticate_response_auth_bytes() {
+    use kafka_protocol::messages::SaslAuthenticateResponse;
+    // The request records api_key 36 v2 for corr 78 in the map; the
+    // response is matched to it and its SCRAM server-first message masked.
+    let map = CorrelationMap::default();
+    let mut req = Vec::new();
+    req.extend_from_slice(&36i16.to_be_bytes());
+    req.extend_from_slice(&2i16.to_be_bytes());
+    req.extend_from_slice(&78i32.to_be_bytes());
+    req.extend_from_slice(&(-1i16).to_be_bytes());
+    req.push(0);
+    req.extend_from_slice(b"\x0bn,,n=user");
+    build_proto_event(
+        ProxyDirection::ClientToUpstream,
+        ConnectionId(12),
+        0,
+        &req,
+        &map,
+    )
+    .unwrap();
+
+    let salt = b"s=Zml4dHVyZS1zYWx0";
+    let mut resp = SaslAuthenticateResponse::default();
+    resp.auth_bytes = bytes::Bytes::copy_from_slice(b"r=fixturenonce,s=Zml4dHVyZS1zYWx0,i=4096");
+    resp.session_lifetime_ms = 60_000;
+    let mut header = ResponseHeader::default();
+    header.correlation_id = 78;
+    let hv = ApiKey::SaslAuthenticate.response_header_version(2);
+    let mut out = BytesMut::new();
+    header.encode(&mut out, hv).unwrap();
+    resp.encode(&mut out, 2).unwrap();
+
+    let event = build_proto_event(
+        ProxyDirection::UpstreamToClient,
+        ConnectionId(12),
+        0,
+        &out,
+        &map,
+    )
+    .unwrap();
+    assert_eq!(event.api_key, API_KEY_SASL_AUTHENTICATE);
+    assert!(
+        !event.payload.windows(salt.len()).any(|w| w == salt),
+        "SaslAuthenticate response inspector payload must not contain the SCRAM salt",
+    );
+    let summary =
+        crate::proto_summary::extract_summary(36, 2, ProtoDirection::Recv, &event.payload);
+    assert!(
+        matches!(
+            summary,
+            Some(
+                crate::proto_summary::FrameSummary::SaslAuthenticateResponse {
+                    error_code: 0,
+                    session_lifetime_ms: 60_000,
+                    ..
+                }
+            )
+        ),
+        "the redacted response must still summarize: {summary:?}",
+    );
+}
+
+#[test]
 fn build_proto_event_redacts_sasl_authenticate_request_payload() {
     // Build a SaslAuthenticate (api_key=36) v2 request frame whose
     // body carries a PLAIN credential. Neutral fixture string —

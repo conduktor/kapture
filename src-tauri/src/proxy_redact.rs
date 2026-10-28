@@ -21,6 +21,18 @@
 //! The Protocol-tab decoder will fail to parse this as a real
 //! `SaslAuthenticate` — that's correct: there's nothing to inspect, the
 //! bytes are gone.
+//!
+//! The response carries credential material too. For SCRAM, the server
+//! messages hold the salt, the iteration count and the server signature;
+//! with the user name, that is enough for an offline dictionary attack on
+//! the password. The response is decoded and re-encoded with `auth_bytes`
+//! replaced, so `error_code`, `error_message` and `session_lifetime_ms`
+//! stay readable for the inspector and the detectors. A response that
+//! doesn't decode gets the request placeholder instead.
+
+use bytes::{Bytes, BytesMut};
+use kafka_protocol::messages::{ApiKey, ResponseHeader, SaslAuthenticateResponse};
+use kafka_protocol::protocol::{Decodable, Encodable};
 
 /// Kafka API key for `SaslAuthenticate` — the one frame whose body
 /// carries credential material.
@@ -30,6 +42,9 @@ pub const API_KEY_SASL_AUTHENTICATE: i32 = 36;
 /// fixed-length (rather than `[REDACTED <N> bytes]`) sidesteps any
 /// length-encoding leak about the original credential size.
 const PLACEHOLDER: &[u8] = b"[REDACTED SaslAuthenticate body]";
+
+/// Replacement for `auth_bytes` in a `SaslAuthenticateResponse`.
+const AUTH_BYTES_PLACEHOLDER: &[u8] = b"[REDACTED SaslAuthenticate auth_bytes]";
 
 /// Build a redacted copy of `payload` (the value `build_proto_event`
 /// would otherwise put in `ProtoEvent.payload`, i.e. it includes the
@@ -54,6 +69,39 @@ pub fn redact_sasl_authenticate_body(payload: Vec<u8>) -> Vec<u8> {
     out.extend_from_slice(&body_len.to_be_bytes());
     out.extend_from_slice(PLACEHOLDER);
     out
+}
+
+/// Redacted copy of a `SaslAuthenticateResponse` payload (4-byte size
+/// prefix, response header, body): `auth_bytes` replaced, every other
+/// field kept, size prefix recomputed. An empty `auth_bytes` (PLAIN, a
+/// failed exchange) comes back unchanged.
+#[must_use]
+pub fn redact_sasl_authenticate_response(payload: Vec<u8>, api_version: i16) -> Vec<u8> {
+    match reencode_without_auth_bytes(&payload, api_version) {
+        Some(redacted) => redacted,
+        None => redact_sasl_authenticate_body(payload),
+    }
+}
+
+/// `None` when the payload doesn't decode.
+fn reencode_without_auth_bytes(payload: &[u8], api_version: i16) -> Option<Vec<u8>> {
+    let body = payload.get(4..)?;
+    let mut buf = Bytes::copy_from_slice(body);
+    let header_version = ApiKey::SaslAuthenticate.response_header_version(api_version);
+    let header = ResponseHeader::decode(&mut buf, header_version).ok()?;
+    let mut resp = SaslAuthenticateResponse::decode(&mut buf, api_version).ok()?;
+    if resp.auth_bytes.is_empty() {
+        return Some(payload.to_vec());
+    }
+    resp.auth_bytes = Bytes::from_static(AUTH_BYTES_PLACEHOLDER);
+    let mut out = BytesMut::new();
+    header.encode(&mut out, header_version).ok()?;
+    resp.encode(&mut out, api_version).ok()?;
+    let len = i32::try_from(out.len()).ok()?;
+    let mut framed = Vec::with_capacity(4 + out.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(&out);
+    Some(framed)
 }
 
 #[cfg(test)]
@@ -107,6 +155,75 @@ mod tests {
         assert!(!redacted
             .windows(b"fixture-secret".len())
             .any(|w| w == b"fixture-secret"));
+    }
+
+    /// A `SaslAuthenticateResponse` payload as the proxy sees it.
+    fn sasl_response(version: i16, error_code: i16, auth: &[u8], lifetime_ms: i64) -> Vec<u8> {
+        let mut resp = SaslAuthenticateResponse::default();
+        resp.error_code = error_code;
+        resp.auth_bytes = Bytes::copy_from_slice(auth);
+        resp.session_lifetime_ms = lifetime_ms;
+        let header_version = ApiKey::SaslAuthenticate.response_header_version(version);
+        let mut header = ResponseHeader::default();
+        header.correlation_id = 9;
+        let mut out = BytesMut::new();
+        header.encode(&mut out, header_version).unwrap();
+        resp.encode(&mut out, version).unwrap();
+        let mut payload = i32::try_from(out.len()).unwrap().to_be_bytes().to_vec();
+        payload.extend_from_slice(&out);
+        payload
+    }
+
+    fn decode_response(payload: &[u8], version: i16) -> (ResponseHeader, SaslAuthenticateResponse) {
+        let len = usize::try_from(i32::from_be_bytes(payload[..4].try_into().unwrap())).unwrap();
+        assert_eq!(
+            len,
+            payload.len() - 4,
+            "size prefix must match the re-encoded body"
+        );
+        let mut buf = Bytes::copy_from_slice(&payload[4..]);
+        let hv = ApiKey::SaslAuthenticate.response_header_version(version);
+        let header = ResponseHeader::decode(&mut buf, hv).unwrap();
+        (
+            header,
+            SaslAuthenticateResponse::decode(&mut buf, version).unwrap(),
+        )
+    }
+
+    #[test]
+    fn redact_response_drops_scram_server_message_keeps_fields() {
+        let server_first = b"r=fixturenonce,s=Zml4dHVyZS1zYWx0,i=4096";
+        for version in [1i16, 2] {
+            let redacted = redact_sasl_authenticate_response(
+                sasl_response(version, 0, server_first, 3_600_000),
+                version,
+            );
+            assert!(!redacted
+                .windows(b"Zml4dHVyZS1zYWx0".len())
+                .any(|w| w == b"Zml4dHVyZS1zYWx0"));
+            let (header, resp) = decode_response(&redacted, version);
+            assert_eq!(header.correlation_id, 9);
+            assert_eq!(resp.error_code, 0);
+            assert_eq!(resp.session_lifetime_ms, 3_600_000);
+            assert_eq!(&resp.auth_bytes[..], AUTH_BYTES_PLACEHOLDER);
+        }
+    }
+
+    #[test]
+    fn redact_response_without_auth_bytes_is_unchanged() {
+        let payload = sasl_response(2, 58, b"", 0);
+        assert_eq!(
+            redact_sasl_authenticate_response(payload.clone(), 2),
+            payload
+        );
+    }
+
+    #[test]
+    fn redact_response_that_does_not_decode_gets_the_placeholder() {
+        let mut payload = sasl_response(2, 0, b"v=fixture-server-signature", 0);
+        payload.truncate(payload.len() - 6);
+        let redacted = redact_sasl_authenticate_response(payload, 2);
+        assert_eq!(&redacted[4..], PLACEHOLDER);
     }
 
     #[test]

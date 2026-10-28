@@ -34,7 +34,9 @@ use crate::proxy_records::{
     extract_from_fetch_response_bytes, extract_produce_offsets_bytes,
     extract_produce_request_bytes, extracted_to_captured, ExtractedRecord,
 };
-use crate::proxy_redact::{redact_sasl_authenticate_body, API_KEY_SASL_AUTHENTICATE};
+use crate::proxy_redact::{
+    redact_sasl_authenticate_body, redact_sasl_authenticate_response, API_KEY_SASL_AUTHENTICATE,
+};
 use crate::proxy_topic_ids::TopicIdMap;
 
 /// Cap on `payload` we copy into the `ProtoEvent`. Bounds the
@@ -609,19 +611,28 @@ pub fn build_proto_event_at(
             };
             let pending = corr_map.take_response(corr_id);
             let rtt_ms = pending.map_or(0.0, |p| p.rtt_at(Instant::now(), observed_nanos));
+            let api_key = pending.map_or(-1, |p| i32::from(p.header.api_key));
+            let api_version = pending.map_or(-1, |p| p.header.api_version);
+            // The SCRAM server messages are credential material as well;
+            // the inspector copy keeps every field but `auth_bytes`.
+            let inspector_payload = if api_key == API_KEY_SASL_AUTHENTICATE {
+                redact_sasl_authenticate_response(payload, api_version)
+            } else {
+                payload
+            };
             ProtoEvent {
                 observed_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
                 queued_at: Instant::now(),
                 direction: ProtoDirection::Recv,
-                api_key: pending.map_or(-1, |p| i32::from(p.header.api_key)),
-                api_version: pending.map_or(-1, |p| i32::from(p.header.api_version)),
+                api_key,
+                api_version: i32::from(api_version),
                 corr_id,
                 connection_id,
                 local_port,
                 payload_size,
                 rtt_ms,
                 capture_lag_ms,
-                payload,
+                payload: inspector_payload,
                 frame_error: None,
             }
         }
