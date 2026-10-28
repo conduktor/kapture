@@ -198,10 +198,18 @@ impl AntiPatternsFold {
         frame: &ProtoFrame,
         transactional_id: Option<&str>,
     ) {
-        // Counters for the producer-per-record ratio.
+        // Counters for the producer-per-record ratio. A retry of a failed
+        // InitProducerId (same transactional_id, or both idempotent) is
+        // the same producer.
         {
             let c = self.per_connection.entry(frame.connection_id).or_default();
-            c.init_producer_id = c.init_producer_id.saturating_add(1);
+            let retry =
+                c.last_init_failed && c.last_init_transactional_id.as_deref() == transactional_id;
+            c.last_init_failed = false;
+            c.last_init_transactional_id = transactional_id.map(str::to_owned);
+            if !retry {
+                c.init_producer_id = c.init_producer_id.saturating_add(1);
+            }
         }
         self.check_producer_per_record(frame);
         // Handshake fingerprint for the producer-instance leak.
@@ -422,9 +430,9 @@ impl AntiPatternsFold {
             .is_some_and(|st| st.transactional_id.is_some() && !st.ended)
     }
 
-    /// A failed `InitProducerId` is counted out of the producer-per-record
-    /// ratio (the next request is a retry), and an authorization failure
-    /// feeds the ACL-deny window.
+    /// A failed `InitProducerId` marks the next request for the same
+    /// producer as a retry, and an authorization failure feeds the
+    /// ACL-deny window.
     pub(super) fn on_init_producer_id_response(
         &mut self,
         frame: &ProtoFrame,
@@ -434,8 +442,10 @@ impl AntiPatternsFold {
         if error_code == 0 {
             return;
         }
-        let c = self.per_connection.entry(frame.connection_id).or_default();
-        c.init_producer_id_failed = c.init_producer_id_failed.saturating_add(1);
+        self.per_connection
+            .entry(frame.connection_id)
+            .or_default()
+            .last_init_failed = true;
         self.on_auth_error_response(frame, "InitProducerId", error_code, now);
     }
 
@@ -443,7 +453,7 @@ impl AntiPatternsFold {
         let Some(c) = self.per_connection.get(&frame.connection_id) else {
             return;
         };
-        let inits = c.init_producer_id.saturating_sub(c.init_producer_id_failed);
+        let inits = c.init_producer_id;
         if inits < self.config.producer_per_record_min_inits {
             return;
         }

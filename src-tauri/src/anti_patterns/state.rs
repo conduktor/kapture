@@ -151,9 +151,13 @@ pub(super) const MAX_DETECTION_CLIENT_IDS: usize = 8;
 #[derive(Debug, Default)]
 pub(super) struct ConnectionCounters {
     pub init_producer_id: u32,
-    /// `InitProducerId` answered with an error: the next request is the
-    /// same producer asking again, not a new one.
-    pub init_producer_id_failed: u32,
+    /// `transactional_id` of the last `InitProducerId` on the connection
+    /// (`None` for an idempotent producer).
+    pub last_init_transactional_id: Option<String>,
+    /// The last `InitProducerId` came back with an error. A request for
+    /// the same `transactional_id` right after it is that producer asking
+    /// again, not a new producer.
+    pub last_init_failed: bool,
     pub produce_requests: u32,
 }
 

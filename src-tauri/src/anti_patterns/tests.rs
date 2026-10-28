@@ -926,6 +926,31 @@ fn init_producer_id_authorization_loop_is_an_acl_deny_not_a_producer_per_record(
 }
 
 #[test]
+fn failed_inits_for_distinct_transactional_ids_are_distinct_producers() {
+    // Six transactional producers, each answered NOT_COORDINATOR: no
+    // retry here, six producers on one connection.
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..6 {
+        fold.absorb(
+            &frame(&format!("tr{i}"), "t", 11, 9092),
+            Some(&FrameSummary::InitProducerIdRequest {
+                transactional: true,
+                transactional_id: Some(format!("txn-{i}")),
+            }),
+        );
+        fold.absorb(
+            &frame(&format!("ts{i}"), "t", 11, 9092),
+            Some(&FrameSummary::InitProducerIdResponse { error_code: 16 }),
+        );
+    }
+    assert!(fold
+        .snapshot()
+        .detections
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::ProducerPerRecord && d.scope == "conn=11"));
+}
+
+#[test]
 fn unknown_topic_poll_loop_fires_after_threshold() {
     let mut fold = AntiPatternsFold::default();
     for i in 0..3 {
