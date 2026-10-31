@@ -6,6 +6,13 @@ log if you want every commit.
 
 ## [Unreleased]
 
+- **Expert spots a client that ignores quota throttling.** When a response
+  carries `throttle_time_ms` and more than 5 requests are still in flight
+  on that connection, the client kept sending instead of waiting
+  (KIP-219): librdkafka-based clients and kafka-go do this, the Java client
+  does not. The broker stops reading the connection, so those requests wait
+  and their round trips stretch to the throttle.
+
 ## [0.5.0] — 2026-10-27 — Findings name their clients, auth loops, SASL redaction
 
 - **Findings name their clients.** Kapture reads `client.id` from every
