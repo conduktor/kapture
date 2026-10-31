@@ -356,8 +356,9 @@ fn decode_request(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_js
         ApiKey::Vote => None,             // broker-internal: KRaft consensus
         ApiKey::BeginQuorumEpoch => None, // broker-internal: KRaft consensus
         ApiKey::EndQuorumEpoch => None,   // broker-internal: KRaft consensus
-        ApiKey::DescribeQuorum => None,   // broker-internal: KRaft consensus
-        ApiKey::AlterPartition => None,   // broker-internal: broker -> controller
+        // Admin clients send it too (`kafka-metadata-quorum --bootstrap-server`).
+        ApiKey::DescribeQuorum => decode_one::<DescribeQuorumRequest>(buf, version),
+        ApiKey::AlterPartition => None, // broker-internal: broker -> controller
         ApiKey::UpdateFeatures => decode_one::<UpdateFeaturesRequest>(buf, version),
         ApiKey::Envelope => None, // broker-internal: KRaft envelope routing
         ApiKey::FetchSnapshot => None, // broker-internal: KRaft snapshot replication
@@ -471,8 +472,8 @@ fn decode_response(api: ApiKey, version: i16, buf: &mut Bytes) -> Option<serde_j
         ApiKey::Vote => None,             // broker-internal: KRaft consensus
         ApiKey::BeginQuorumEpoch => None, // broker-internal: KRaft consensus
         ApiKey::EndQuorumEpoch => None,   // broker-internal: KRaft consensus
-        ApiKey::DescribeQuorum => None,   // broker-internal: KRaft consensus
-        ApiKey::AlterPartition => None,   // broker-internal: broker -> controller
+        ApiKey::DescribeQuorum => decode_one::<DescribeQuorumResponse>(buf, version),
+        ApiKey::AlterPartition => None, // broker-internal: broker -> controller
         ApiKey::UpdateFeatures => decode_one::<UpdateFeaturesResponse>(buf, version),
         ApiKey::Envelope => None, // broker-internal: KRaft envelope routing
         ApiKey::FetchSnapshot => None, // broker-internal: KRaft snapshot replication
@@ -625,5 +626,43 @@ mod tests {
         let snapshot = value.clone();
         elide_records(&mut value);
         assert_eq!(value, snapshot);
+    }
+
+    /// `kafka-metadata-quorum --bootstrap-server … describe --status`
+    /// against a single-node Kafka 4.3.1 KRaft broker, captured through
+    /// the proxy. Admin clients send DescribeQuorum, so it isn't
+    /// broker-internal traffic.
+    #[test]
+    fn describe_quorum_v2_from_admin_client_decodes() {
+        let request = hex::decode(
+            "000000340037000200000004000d61646d696e636c69656e742d310002135f5f636c757374\
+             65725f6d657461646174610200000000000000",
+        )
+        .unwrap();
+        let body = decode_frame(55, 2, ProtoDirection::Send, &request).expect("request decodes");
+        assert_eq!(
+            body.pointer("/topics/0/topic_name")
+                .and_then(serde_json::Value::as_str),
+            Some("__cluster_metadata")
+        );
+
+        let response = hex::decode(
+            "00000085000000040000000102135f5f636c75737465725f6d65746164617461020000000000\
+             000100000001000000020000000000000a350200000001fc674eafac784ed999be35bc7d4dbd\
+             9c0000000000000a35000001a1941109f2000001a1941109f2000100000200000001020b434f\
+             4e54524f4c4c45520a6c6f63616c686f737471a5000000",
+        )
+        .unwrap();
+        let body = decode_frame(55, 2, ProtoDirection::Recv, &response).expect("response decodes");
+        assert_eq!(
+            body.pointer("/topics/0/partitions/0/leader_id")
+                .and_then(serde_json::Value::as_i64),
+            Some(1)
+        );
+        assert_eq!(
+            body.pointer("/nodes/0/listeners/0/port")
+                .and_then(serde_json::Value::as_u64),
+            Some(29093)
+        );
     }
 }
