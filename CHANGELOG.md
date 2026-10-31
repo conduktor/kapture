@@ -6,6 +6,19 @@ log if you want every commit.
 
 ## [Unreleased]
 
+- **Record timestamps stay right when a batch spans more than 24.8 days.**
+  Each record's timestamp delta was read as a 32-bit varint instead of a
+  varlong, so records further apart than that within one batch (a compacted
+  topic, a producer that sets old timestamps) showed a wrong timestamp, with
+  no error: two records 30 days apart came out 5.1 days apart. The vendored
+  kafka-protocol fork now carries the upstream fix, and its checks that
+  reject array and header counts larger than the frame.
+- **The Protocol view decodes DescribeQuorum.** `kafka-metadata-quorum
+--bootstrap-server` and `Admin.describeMetadataQuorum` send it from a
+  client, so it is no longer treated as broker-internal KRaft traffic: the
+  detail shows the leader, its epoch, the high watermark and every voter's
+  log end offset.
+
 ## [0.5.2] — 2026-10-31 — Throttled clients that keep sending
 
 - **Expert spots a client that ignores quota throttling.** When a response
