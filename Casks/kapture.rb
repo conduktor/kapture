@@ -9,8 +9,8 @@
 #   brew install --cask kapture
 
 cask "kapture" do
-  version "0.5.0"
-  sha256 "c9dae4e2cf721ae4f07a21ca9da0ebe2055fed534dcfa5c3a5511e6f00295e55"
+  version "0.5.2"
+  sha256 "e52a94d33637767331143b9f8168cec383ecd5dacefa13ccc4c2ad21324dab81"
 
   url "https://github.com/conduktor/kapture/releases/download/v#{version}/Kapture_#{version}_aarch64.dmg",
       verified: "github.com/conduktor/kapture/"
