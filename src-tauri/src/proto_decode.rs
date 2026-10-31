@@ -26,12 +26,11 @@ use kafka_protocol::protocol::Decodable;
 
 use crate::proto_event::ProtoDirection;
 
-/// Max `ApiVersions` request/response version the bundled
-/// kafka-protocol 0.16 crate knows how to decode. Newer librdkafka
-/// builds ask for v5+ which is wire-compatible with v4 for the fields
-/// we surface (v5+ only adds further optional tagged fields). When
-/// the primary decode at `v_requested` fails, we retry at this
-/// version so the user still sees a decoded view.
+/// Highest `ApiVersions` version a released Kafka speaks: 4.3.1
+/// clients and brokers stop at v4. The vendored crate also decodes
+/// v5, generated from trunk where it is not released yet. When the
+/// primary decode above v4 fails, we retry at this version so the
+/// user still sees a decoded view.
 const MAX_KNOWN_API_VERSIONS_VERSION: i16 = 4;
 
 /// Decode the captured wire bytes (size prefix + header + body) of a
@@ -59,9 +58,10 @@ pub fn decode_frame(
     // ApiVersions has TWO documented fallback paths once the primary
     // fails:
     //
-    //   1. Crate-version cap: kafka-protocol 0.16 knows ApiVersions
-    //      0..=4. Modern librdkafka asks for v5; the wire layout for
-    //      the fields we surface is identical, so retry at v4.
+    //   1. Version cap: the frame claims a version the crate can't
+    //      decode (v6+, or a v5 that drifted from trunk's draft).
+    //      Retry at v4. Responses have the same layout in v4 and v5;
+    //      a v5 request adds `ClusterId` and `NodeId`.
     //
     //   2. KIP-511 downgrade (response only): when a broker doesn't
     //      support the requested version, it MUST frame the response
