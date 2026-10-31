@@ -6,6 +6,8 @@ log if you want every commit.
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-10-31 — Record timestamps, DescribeQuorum
+
 - **Record timestamps stay right when a batch spans more than 24.8 days.**
   Each record's timestamp delta was read as a 32-bit varint instead of a
   varlong, so records further apart than that within one batch (a compacted
