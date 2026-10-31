@@ -950,6 +950,65 @@ fn failed_inits_for_distinct_transactional_ids_are_distinct_producers() {
         .any(|d| d.kind == AntiPatternKind::ProducerPerRecord && d.scope == "conn=11"));
 }
 
+fn on_conn(id: &str, conn: i32, corr: i32, direction: ProtoDirection) -> ProtoFrame {
+    let mut f = frame(id, "t", conn, 9092);
+    f.corr_id = corr;
+    f.direction = direction;
+    f
+}
+
+fn throttled_produce_response(throttle_time_ms: i32) -> FrameSummary {
+    FrameSummary::ProduceResponse {
+        errors: vec![],
+        throttle_time_ms,
+    }
+}
+
+#[test]
+fn throttled_client_that_keeps_sending_is_flagged() {
+    // librdkafka shape: 20 Produce requests in flight, then a throttled
+    // response: 19 are still waiting on the connection.
+    let mut fold = AntiPatternsFold::default();
+    for corr in 1..=20 {
+        fold.absorb(
+            &on_conn(&format!("q{corr}"), 5, corr, ProtoDirection::Send),
+            Some(&produce(1, -1, Some(0), Some(-1), false)),
+        );
+    }
+    fold.absorb(
+        &on_conn("r1", 5, 1, ProtoDirection::Recv),
+        Some(&throttled_produce_response(3_000)),
+    );
+    let det = fold
+        .snapshot()
+        .detections
+        .into_iter()
+        .find(|d| d.kind == AntiPatternKind::ThrottlePressure && d.scope == "conn=5|queued")
+        .expect("a throttled connection with 19 requests queued should be flagged");
+    assert!(det.detail.contains("Up to 19 requests"), "{}", det.detail);
+}
+
+#[test]
+fn throttled_client_within_its_in_flight_limit_is_not_flagged() {
+    // Java shape: at most 5 in flight; the throttled response leaves 4.
+    let mut fold = AntiPatternsFold::default();
+    for corr in 1..=5 {
+        fold.absorb(
+            &on_conn(&format!("j{corr}"), 6, corr, ProtoDirection::Send),
+            Some(&produce(1, -1, Some(0), Some(-1), false)),
+        );
+    }
+    fold.absorb(
+        &on_conn("jr1", 6, 1, ProtoDirection::Recv),
+        Some(&throttled_produce_response(3_000)),
+    );
+    let dets = fold.snapshot().detections;
+    assert!(dets
+        .iter()
+        .any(|d| d.kind == AntiPatternKind::ThrottlePressure && d.scope == "conn=6|api=Produce"));
+    assert!(!dets.iter().any(|d| d.scope == "conn=6|queued"), "{dets:?}");
+}
+
 #[test]
 fn unknown_topic_poll_loop_fires_after_threshold() {
     let mut fold = AntiPatternsFold::default();

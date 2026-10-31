@@ -39,9 +39,10 @@ use crate::anti_patterns::state::{
     PARTITION_SKEW_RATIO, POLL_STALL_GAP, POLL_STALL_MIN_FETCHES,
     PRODUCER_INSTANCE_LEAK_MIN_SAMPLES, PRODUCER_INSTANCE_LEAK_PER_SEC,
     PRODUCER_PER_RECORD_INIT_RATIO, PRODUCER_PER_RECORD_MIN_INITS, REBALANCE_JOINS_IN_WINDOW,
-    RETRY_STORM_THRESHOLD, SASL_SHORT_SESSION_MS, TIGHT_FETCH_AVG_RESPONSE_BYTES,
-    TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES, TINY_BATCH_MIN_PRODUCE_RATE,
-    TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE, UNKNOWN_TOPIC_POLL_THRESHOLD,
+    RETRY_STORM_THRESHOLD, SASL_SHORT_SESSION_MS, THROTTLED_IN_FLIGHT_THRESHOLD,
+    TIGHT_FETCH_AVG_RESPONSE_BYTES, TIGHT_FETCH_MIN_RATE, TIGHT_FETCH_MIN_SAMPLES,
+    TINY_BATCH_MIN_PRODUCE_RATE, TINY_BATCH_MIN_SAMPLES, TINY_BATCH_RECORDS_PER_PRODUCE,
+    UNKNOWN_TOPIC_POLL_THRESHOLD,
 };
 
 /// Tunable thresholds for the anti-pattern detectors. Serialized into a
@@ -97,6 +98,7 @@ pub struct DetectorConfig {
     pub acl_deny_threshold: usize,
     pub hung_request_timeout_ms: u64,
     pub in_flight_saturation_threshold: usize,
+    pub throttled_in_flight_threshold: usize,
     pub idempotent_produce_in_flight_threshold: usize,
     pub retry_storm_threshold: usize,
     pub partition_skew_min_bytes: u64,
@@ -140,6 +142,7 @@ impl Default for DetectorConfig {
             hung_request_timeout_ms: u64::try_from(HUNG_REQUEST_TIMEOUT.as_millis())
                 .unwrap_or(30_000),
             in_flight_saturation_threshold: IN_FLIGHT_SATURATION_THRESHOLD,
+            throttled_in_flight_threshold: THROTTLED_IN_FLIGHT_THRESHOLD,
             idempotent_produce_in_flight_threshold: IDEMPOTENT_PRODUCE_IN_FLIGHT_THRESHOLD,
             retry_storm_threshold: RETRY_STORM_THRESHOLD,
             partition_skew_min_bytes: PARTITION_SKEW_MIN_BYTES,

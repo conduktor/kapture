@@ -117,6 +117,11 @@ pub(super) const POLL_STALL_GAP: Duration = Duration::from_secs(10);
 pub(super) const POLL_STALL_MIN_FETCHES: u32 = 3;
 pub(super) const HUNG_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) const IN_FLIGHT_SATURATION_THRESHOLD: usize = 100;
+/// Requests still in flight on a connection when a throttled response
+/// comes back. A client that honours KIP-219 stops sending, so it holds
+/// at most its in-flight limit (Java: max.in.flight.requests.per.connection,
+/// 5 by default and the cap with idempotence); above that, it kept sending.
+pub(super) const THROTTLED_IN_FLIGHT_THRESHOLD: usize = 5;
 pub(super) const IDEMPOTENT_PRODUCE_IN_FLIGHT_THRESHOLD: usize = 5;
 pub(super) const RETRY_STORM_THRESHOLD: usize = 10;
 pub(super) const PARTITION_SKEW_MIN_BYTES: u64 = 1024 * 1024;

@@ -96,6 +96,9 @@ pub struct AntiPatternsFold {
     /// Connection → group of a v4+ JoinGroup sent without a member id. The
     /// member's next JoinGroup is the second half of the same join.
     pub(super) join_handshakes: HashMap<i32, String>,
+    /// Per-connection peak of requests still in flight when a throttled
+    /// response came back (the throttled-client-keeps-sending finding).
+    pub(super) throttled_queue_peak: HashMap<i32, usize>,
     /// Per-connection `client.id`, read from request headers. Lets a
     /// detection fired on a response still name the client.
     pub(super) client_ids: HashMap<i32, String>,
@@ -165,6 +168,7 @@ impl AntiPatternsFold {
             self.fetch_session_errors.remove(conn);
             self.metadata_requests.remove(conn);
             self.acl_deny_window.remove(conn);
+            self.throttled_queue_peak.remove(conn);
             self.last_commit_group.remove(conn);
             self.client_ids.remove(conn);
             self.join_handshakes.remove(conn);
@@ -573,6 +577,7 @@ impl AntiPatternsFold {
         self.coordinator_requests.clear();
         self.utop_per_partition.clear();
         self.acl_deny_window.clear();
+        self.throttled_queue_peak.clear();
         self.cooperative_sticky_joins.clear();
         self.oor_per_partition.clear();
         self.last_commit_group.clear();

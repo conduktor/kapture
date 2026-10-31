@@ -1354,6 +1354,33 @@ impl AntiPatternsFold {
             ),
             frame,
         );
+        // The response has already left the in-flight map: what remains on
+        // this connection was sent before the client learnt of the throttle.
+        let queued = self
+            .in_flight_requests
+            .keys()
+            .filter(|(connection, _)| *connection == frame.connection_id)
+            .count();
+        if queued > self.config.throttled_in_flight_threshold {
+            let peak = {
+                let p = self
+                    .throttled_queue_peak
+                    .entry(frame.connection_id)
+                    .or_default();
+                *p = (*p).max(queued);
+                *p
+            };
+            self.upsert(
+                AntiPatternKind::ThrottlePressure,
+                format!("conn={}|queued", frame.connection_id),
+                Severity::Warn,
+                format!("Throttled client keeps sending (conn {})", frame.connection_id),
+                format!(
+                    "Up to {peak} requests were still in flight when the broker answered with throttle_time_ms. A client that honours KIP-219 stops sending for that long; this one does not (librdkafka and kafka-go keep sending). The broker stops reading the connection, so these requests wait unread and their round trips stretch to the throttle.",
+                ),
+                frame,
+            );
+        }
     }
 }
 
