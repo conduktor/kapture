@@ -6,7 +6,7 @@ log if you want every commit.
 
 ## [Unreleased]
 
-## [0.5.1] — 2026-10-31 — Throttled clients that keep sending
+## [0.5.2] — 2026-10-31 — Throttled clients that keep sending
 
 - **Expert spots a client that ignores quota throttling.** When a response
   carries `throttle_time_ms` and more than 5 requests are still in flight
