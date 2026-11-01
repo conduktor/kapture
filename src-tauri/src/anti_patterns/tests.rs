@@ -506,6 +506,85 @@ fn tight_fetch_polling_fires() {
 }
 
 #[test]
+fn tight_fetch_polling_names_a_zero_setting_and_warns() {
+    for (min_bytes, max_wait_ms, needle) in
+        [(0, 500, "fetch.min.bytes=0"), (1, 0, "fetch.max.wait.ms=0")]
+    {
+        let mut fold = AntiPatternsFold::default();
+        for i in 0..30 {
+            let req = frame(&format!("fq{i}"), "t", 5, 9092);
+            fold.absorb(
+                &req,
+                Some(&FrameSummary::FetchRequest {
+                    topics: vec!["orders".into()],
+                    min_bytes,
+                    max_wait_ms,
+                    isolation_level: 1,
+                    session_id: 1,
+                    session_epoch: i,
+                }),
+            );
+            let resp = frame(&format!("fr{i}"), "t", 5, 9092);
+            fold.absorb(
+                &resp,
+                Some(&FrameSummary::FetchResponse {
+                    error_code: 0,
+                    session_id: 1,
+                    throttle_time_ms: 0,
+                    response_size: 60,
+                    errors: vec![],
+                }),
+            );
+        }
+        let snap = fold.snapshot();
+        let d = snap
+            .detections
+            .iter()
+            .find(|d| d.kind == AntiPatternKind::TightFetchPolling)
+            .expect("tight fetch polling");
+        assert_eq!(d.severity, Severity::Warn);
+        assert!(d.detail.contains(needle), "{}", d.detail);
+    }
+}
+
+#[test]
+fn tight_fetch_polling_stays_a_note_with_default_settings() {
+    let mut fold = AntiPatternsFold::default();
+    for i in 0..30 {
+        let req = frame(&format!("fq{i}"), "t", 5, 9092);
+        fold.absorb(
+            &req,
+            Some(&FrameSummary::FetchRequest {
+                topics: vec!["orders".into()],
+                min_bytes: 1,
+                max_wait_ms: 500,
+                isolation_level: 1,
+                session_id: 1,
+                session_epoch: i,
+            }),
+        );
+        let resp = frame(&format!("fr{i}"), "t", 5, 9092);
+        fold.absorb(
+            &resp,
+            Some(&FrameSummary::FetchResponse {
+                error_code: 0,
+                session_id: 1,
+                throttle_time_ms: 0,
+                response_size: 60,
+                errors: vec![],
+            }),
+        );
+    }
+    let snap = fold.snapshot();
+    let d = snap
+        .detections
+        .iter()
+        .find(|d| d.kind == AntiPatternKind::TightFetchPolling)
+        .expect("tight fetch polling");
+    assert_eq!(d.severity, Severity::Note);
+}
+
+#[test]
 fn fetch_session_error_cascade_fires_after_3() {
     let mut fold = AntiPatternsFold::default();
     for i in 0..4 {
@@ -1126,9 +1205,9 @@ fn slow_consumer_poll_stall_fires_after_fetch_gap() {
     let f = frame("fr", "t", 7, 9092);
     let t0 = Instant::now();
     // Establish an active fetch cadence (3 fetches, sub-second apart).
-    fold.on_fetch_request(&f, t0);
-    fold.on_fetch_request(&f, t0 + Duration::from_millis(500));
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(1));
+    fold.on_fetch_request(&f, 1, 500, t0);
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_millis(500));
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(1));
     // No stall yet.
     assert!(fold
         .snapshot()
@@ -1137,7 +1216,7 @@ fn slow_consumer_poll_stall_fires_after_fetch_gap() {
         .all(|d| d.kind != AntiPatternKind::SlowConsumerPollStall));
     // Stall then resume: 11s gap > POLL_STALL_GAP (10s) → fires on the
     // resuming fetch, scoped to the connection.
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(12));
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(12));
     let snap = fold.snapshot();
     let det = snap
         .detections
@@ -1156,16 +1235,20 @@ fn slow_consumer_poll_stall_ignores_short_gaps_and_startup() {
     let t0 = Instant::now();
     // A long first inter-fetch gap before the cadence is established
     // (only 1 prior fetch) must NOT fire — that's startup, not a stall.
-    fold.on_fetch_request(&f, t0);
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(30));
+    fold.on_fetch_request(&f, 1, 500, t0);
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(30));
     // Then a healthy 500ms cadence, well under the threshold.
     fold.on_fetch_request(
         &f,
+        1,
+        500,
         t0 + Duration::from_secs(30) + Duration::from_millis(500),
     );
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(31));
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(31));
     fold.on_fetch_request(
         &f,
+        1,
+        500,
         t0 + Duration::from_secs(31) + Duration::from_millis(500),
     );
     assert!(
@@ -1189,10 +1272,10 @@ fn detector_config_override_changes_poll_stall_threshold() {
     let mut fold = AntiPatternsFold::new(cfg);
     let f = frame("fr", "t", 9, 9092);
     let t0 = Instant::now();
-    fold.on_fetch_request(&f, t0);
-    fold.on_fetch_request(&f, t0 + Duration::from_millis(500));
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(1));
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(12)); // 11s gap < 300s
+    fold.on_fetch_request(&f, 1, 500, t0);
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_millis(500));
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(1));
+    fold.on_fetch_request(&f, 1, 500, t0 + Duration::from_secs(12)); // 11s gap < 300s
     assert!(
         fold.snapshot()
             .detections
@@ -1201,7 +1284,12 @@ fn detector_config_override_changes_poll_stall_threshold() {
         "raised poll_stall_gap should suppress an 11s gap",
     );
     // A 301s gap clears the raised bar.
-    fold.on_fetch_request(&f, t0 + Duration::from_secs(12) + Duration::from_secs(301));
+    fold.on_fetch_request(
+        &f,
+        1,
+        500,
+        t0 + Duration::from_secs(12) + Duration::from_secs(301),
+    );
     assert!(
         fold.snapshot()
             .detections

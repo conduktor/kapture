@@ -876,7 +876,18 @@ impl AntiPatternsFold {
     /// slow-processing shape that breaches `max.poll.interval.ms` and
     /// triggers an eviction + rebalance. Fires on the resuming fetch so
     /// the evidence frame is the one that broke the silence.
-    pub(super) fn on_fetch_request(&mut self, frame: &ProtoFrame, now: Instant) {
+    pub(super) fn on_fetch_request(
+        &mut self,
+        frame: &ProtoFrame,
+        min_bytes: i32,
+        max_wait_ms: i32,
+        now: Instant,
+    ) {
+        {
+            let shape = self.fetch_shape.entry(frame.connection_id).or_default();
+            shape.last_min_bytes = Some(min_bytes);
+            shape.last_max_wait_ms = Some(max_wait_ms);
+        }
         let min_fetches = self.config.poll_stall_min_fetches;
         let stall_gap = self.config.poll_stall_gap();
         let (prior_count, gap) = {
@@ -1006,7 +1017,7 @@ impl AntiPatternsFold {
             }
         }
         // Tight-fetch polling shape.
-        let (samples, avg_size, rate) = {
+        let (samples, avg_size, rate, min_bytes, max_wait_ms) = {
             let shape = self.fetch_shape.entry(frame.connection_id).or_default();
             shape.samples = shape.samples.saturating_add(1);
             shape.total_response_bytes = shape.total_response_bytes.saturating_add(response_size);
@@ -1027,20 +1038,50 @@ impl AntiPatternsFold {
                 _ => 1.0,
             };
             let rate = shape.instants.len() as f64 / span;
-            (shape.samples, avg_size, rate)
+            (
+                shape.samples,
+                avg_size,
+                rate,
+                shape.last_min_bytes,
+                shape.last_max_wait_ms,
+            )
         };
         if samples >= self.config.tight_fetch_min_samples
             && avg_size <= self.config.tight_fetch_avg_response_bytes
             && rate >= self.config.tight_fetch_min_rate
         {
+            // The broker answers a Fetch at once when max_wait_ms <= 0 or when the bytes it has reach min_bytes, so a
+            // zero in either field means an immediate answer, empty or not, and the client asks again straight away.
+            let zero = match (min_bytes, max_wait_ms) {
+                (Some(m), Some(w)) if m <= 0 && w <= 0 => {
+                    Some("min_bytes=0 and max_wait_ms=0 (fetch.min.bytes=0, fetch.max.wait.ms=0)")
+                }
+                (Some(m), _) if m <= 0 => Some("min_bytes=0 (fetch.min.bytes=0)"),
+                (_, Some(w)) if w <= 0 => Some("max_wait_ms=0 (fetch.max.wait.ms=0)"),
+                _ => None,
+            };
+            let (severity, title, detail) = match zero {
+                Some(cause) => (
+                    Severity::Warn,
+                    format!("Fetch busy loop (conn {})", frame.connection_id),
+                    format!(
+                        "{rate:.0} Fetch/s, {avg_size:.0} response bytes on average over {samples} samples. The requests carry {cause}: the broker answers at once even with nothing to return, and the client asks again. Every round trip costs broker CPU. Defaults are fetch.min.bytes=1 and fetch.max.wait.ms=500.",
+                    ),
+                ),
+                None => (
+                    Severity::Note,
+                    format!("Tight fetch polling (conn {})", frame.connection_id),
+                    format!(
+                        "{rate:.1} Fetch/s averaging {avg_size:.0} response bytes over {samples} samples — raise fetch.min.bytes / fetch.max.wait.ms.",
+                    ),
+                ),
+            };
             self.upsert(
                 AntiPatternKind::TightFetchPolling,
                 format!("conn={}", frame.connection_id),
-                Severity::Note,
-                format!("Tight fetch polling (conn {})", frame.connection_id),
-                format!(
-                    "{rate:.1} Fetch/s averaging {avg_size:.0} response bytes over {samples} samples — raise fetch.min.bytes / fetch.max.wait.ms.",
-                ),
+                severity,
+                title,
+                detail,
                 frame,
             );
         }

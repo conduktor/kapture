@@ -320,9 +320,12 @@ impl AntiPatternsFold {
                 self.on_auth_error_response(frame, "LeaveGroup", *error_code, now);
             }
             FrameSummary::FetchRequest {
-                isolation_level, ..
+                isolation_level,
+                min_bytes,
+                max_wait_ms,
+                ..
             } => {
-                self.on_fetch_request(frame, now);
+                self.on_fetch_request(frame, *min_bytes, *max_wait_ms, now);
                 if *isolation_level == 0 {
                     self.mark_read_uncommitted(frame);
                 }

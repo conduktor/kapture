@@ -217,6 +217,10 @@ pub(super) struct FetchShape {
     pub samples: u32,
     pub total_response_bytes: u64,
     pub instants: VecDeque<Instant>,
+    /// `min_bytes` / `max_wait_ms` of the last `FetchRequest` on the connection. The broker answers at once when
+    /// either is 0 (`ReplicaManager.fetchMessages`), so a zero names the cause of a tight loop.
+    pub last_min_bytes: Option<i32>,
+    pub last_max_wait_ms: Option<i32>,
 }
 
 #[derive(Debug, Default)]
