@@ -1065,7 +1065,7 @@ impl AntiPatternsFold {
                     Severity::Warn,
                     format!("Fetch busy loop (conn {})", frame.connection_id),
                     format!(
-                        "{rate:.0} Fetch/s, {avg_size:.0} response bytes on average over {samples} samples. The requests carry {cause}: the broker answers at once even with nothing to return, and the client asks again. Every round trip costs broker CPU. Defaults are fetch.min.bytes=1 and fetch.max.wait.ms=500.",
+                        "{rate:.0} Fetch/s, {avg_size:.0} record bytes per answer on average over {samples} samples. The requests carry {cause}: the broker answers at once even with nothing to return, and the client asks again. Every round trip costs broker CPU. Defaults are fetch.min.bytes=1 and fetch.max.wait.ms=500.",
                     ),
                 ),
                 None => (
