@@ -1054,10 +1054,10 @@ impl AntiPatternsFold {
             // zero in either field means an immediate answer, empty or not, and the client asks again straight away.
             let zero = match (min_bytes, max_wait_ms) {
                 (Some(m), Some(w)) if m <= 0 && w <= 0 => {
-                    Some("min_bytes=0 and max_wait_ms=0 (fetch.min.bytes=0, fetch.max.wait.ms=0)")
+                    Some("min_bytes=0 and max_wait_ms=0 (fetch.min.bytes=0, fetch.max.wait.ms=0; fetch.wait.max.ms in librdkafka)")
                 }
                 (Some(m), _) if m <= 0 => Some("min_bytes=0 (fetch.min.bytes=0)"),
-                (_, Some(w)) if w <= 0 => Some("max_wait_ms=0 (fetch.max.wait.ms=0)"),
+                (_, Some(w)) if w <= 0 => Some("max_wait_ms=0 (fetch.max.wait.ms=0; fetch.wait.max.ms in librdkafka)"),
                 _ => None,
             };
             let (severity, title, detail) = match zero {
@@ -1065,7 +1065,7 @@ impl AntiPatternsFold {
                     Severity::Warn,
                     format!("Fetch busy loop (conn {})", frame.connection_id),
                     format!(
-                        "{rate:.0} Fetch/s, {avg_size:.0} record bytes per answer on average over {samples} samples. The requests carry {cause}: the broker answers at once even with nothing to return, and the client asks again. Every round trip costs broker CPU. Defaults are fetch.min.bytes=1 and fetch.max.wait.ms=500.",
+                        "{rate:.0} Fetch/s, {avg_size:.0} record bytes per answer on average over {samples} samples. The requests carry {cause}: the broker answers at once even with nothing to return, and the client asks again. Every round trip costs broker CPU. Defaults are fetch.min.bytes=1 and a 500 ms wait.",
                     ),
                 ),
                 None => (
