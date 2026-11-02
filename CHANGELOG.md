@@ -11,8 +11,10 @@ log if you want every commit.
   `fetch.max.wait.ms=0`), the broker answers at once even with nothing to
   return and the client asks again: one Java consumer on an idle topic sent
   about 21,000 Fetch a second and took half a broker core, against 2 a second
-  with the defaults. "Tight fetch polling" now says which setting does it and
-  is a warning in that case; without a zero setting it stays a note.
+  with the defaults; librdkafka refuses `fetch.min.bytes=0` but loops the
+  same on `fetch.wait.max.ms=0`. "Tight fetch polling" now says which setting
+  does it and is a warning in that case; without a zero setting it stays a
+  note.
 
 ## [0.5.3] — 2026-10-31 — Record timestamps, DescribeQuorum
 
